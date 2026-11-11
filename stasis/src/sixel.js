@@ -1,6 +1,6 @@
-// Logos for where an advisory comes from, sixel images `stasis audit` may draw beside it (see supported()). Each
-// is prepared once: square pixels (P1 9, raster 1:1), the background left as is (P2 1), 8 colours at most, its
-// edges inside blended, and its outline, as nothing tells it what it's drawn over, a pixel where half is covered.
+// Sixel logos `stasis audit` may draw beside an advisory's source: square pixels (P1 9, raster 1:1), the background
+// left as is (P2 1), 8 colours at most, edges inside blended, and, as nothing tells what it's drawn over, an outline
+// pixel where half is covered.
 
 // npm's registry (upstream's `registry` source): simple-icons' npm (16.36.0, CC0-1.0), #CB3837, its
 // knocked-out n filled white.
@@ -26,9 +26,8 @@ export const OSV = '\x1bP9;1q"1;1;16;16#1;2;55;58;62#2;2;88;13;16#3;2;98;86;86#4
   '#1???CEF!4MFFB@' +
   '\x1b\\'
 
-// The three at each size, made as those above are (simple-icons' and triage's paths, at least half a
-// pixel covered for a pixel to be drawn, in 8 colours at most): 16 pixels for the cells most terminals
-// draw sixel images over, more for larger ones, as a Retina screen's are in iTerm2, two pixels a point.
+// The three at each size, made as those above are: 16 pixels for most terminals' cells, more for larger ones, as a
+// Retina screen's are in iTerm2, two pixels a point.
 const LOGOS = {
   12: {
     npm: '\x1bP9;1q"1;1;12;12#1;2;80;22;22#2;2;100;100;100#3;2;84;40;40#4;2;93;71;71#5;2;90;61;61#6;2;89;56;56#7;' +
@@ -164,8 +163,7 @@ const LOGOS = {
 
 const SIZES = Object.keys(LOGOS).map(Number)
 
-// An image's size, its colours by register, and each pixel's register (0 for none), as sixel data draws
-// them: in bands of six rows, a character's bits a band's column, top first.
+// Each pixel's register (0 for none): sixel data draws in bands of six rows, a character's bits a column, top first.
 function decode(image) {
   const header = image.slice(0, image.indexOf('#'))
   const [width, height] = header.split(';').slice(-2).map(Number)
@@ -191,8 +189,7 @@ function decode(image) {
   return { width, height, colours, pixels }
 }
 
-// decode()'s image as sixel data, as the logos above are written: square pixels, the background left as
-// it is, a band's registers each a line, runs of three or more counted.
+// As the logos above are written: a band's registers each a line, runs of three or more counted.
 function encode({ width, height, colours, pixels }) {
   const bands = []
   for (let y = 0; y < height; y += 6) {
@@ -226,9 +223,8 @@ function lowered(image, top) {
 // where other terminals leave it as it is; so it is drawn with, a blank character, which draws nothing.
 const BACKGROUND = 9
 
-// The logos to draw over two of the terminal's cells, `cell` (in its sixel pixels, capabilities()'s): the largest
-// leaving an eighth of a row (two pixels at least), lowered to sit mid-row, else the smallest; the 16-pixel ones
-// where `cell` isn't known. With `background` (`r;g;b` in percent), what a logo leaves undrawn is that, for iTerm2.
+// The logos for two cells of `cell`'s size (capabilities()'s): the largest leaving an eighth of a row (two pixels at
+// least), lowered to sit mid-row, else the smallest. `background` (`r;g;b` in percent) fills what they leave, for iTerm2.
 export function logos(cell, background) {
   let size = 16
   let top = 0
@@ -244,9 +240,8 @@ export function logos(cell, background) {
   return Object.fromEntries(Object.entries(LOGOS[size]).map(([name, image]) => [name, fitted(image)]))
 }
 
-// Primary Device Attributes (DA1), which a terminal answers `CSI ? 62 ; 4 ; 22 c`, say: its class, then
-// what it has, 4 being sixel graphics (tmux's `CSI ? 1 ; 2 ; 4 c` too). Every terminal answers it, so it is
-// asked last, its answer telling the others have come, or won't.
+// Primary Device Attributes, answered `CSI ? 62 ; 4 ; 22 c`, say: its class, then what it has, 4 sixel graphics. Every
+// terminal answers it, so it is asked last, its answer telling the others have come, or won't.
 const DA1 = '\x1b[c'
 const SIXEL = '4'
 
@@ -256,19 +251,15 @@ const REPORT_CELL_SIZE = '\x1b]1337;ReportCellSize\x1b\\'
 // A cell's size in pixels (XTWINOPS 16), answered `CSI 6 ; height ; width t`: as xterm.js draws sixel images,
 // in CSS pixels; but iTerm2's in points, which it doesn't draw them in.
 const CELL_SIZE = '\x1b[16t'
-// The terminal's background colour (OSC 11), answered `OSC 11 ; rgb:RRRR/GGGG/BBBB ST`, each of 1 to 4 hex
-// digits.
+// OSC 11, answered `OSC 11 ; rgb:RRRR/GGGG/BBBB ST`, each of 1 to 4 hex digits.
 const BACKGROUND_COLOUR = '\x1b]11;?\x1b\\'
 
-// The first reply in `read` that `pattern` matches after an ESC, its parameters; text like a reply,
-// without its ESC, is not one.
+// The first reply in `read` that `pattern` matches after an ESC: text like a reply, without its ESC, is not one.
 const reply = (read, pattern) => [...read.matchAll(pattern)].find(({ index }) => read[index - 1] === '\x1b')
 
-// Whether DA1's answer in `read` has sixel graphics among what the terminal has.
 const sixelIn = (read) => reply(read, /\[\?([\d;]*)c/gu)?.[1].split(';').slice(1).includes(SIXEL) ?? false
 
-// A cell's size in the pixels the terminal draws sixel images in: iTerm2's, its points by its scale; else
-// XTWINOPS 16's; null where neither is answered.
+// In the pixels the terminal draws sixel images in: iTerm2's points by its scale, else XTWINOPS 16's.
 function cellIn(read) {
   const iterm2 = reply(read, /\]1337;ReportCellSize=([\d.]+);([\d.]+)(?:;([\d.]+))?/gu)
   if (iterm2) return { height: iterm2[1] * (iterm2[3] ?? 1), width: iterm2[2] * (iterm2[3] ?? 1) }
@@ -276,9 +267,8 @@ function cellIn(read) {
   return xtwinops ? { height: Number(xtwinops[1]), width: Number(xtwinops[2]) } : null
 }
 
-// What the terminal answers `question` (DA1 last) with on `input`, up to DA1's answer; null, asking nothing, where
-// either stream is no terminal or it is a dumb one (Emacs' shell), or where it hasn't answered in `timeout` ms.
-// Meanwhile `input` is raw, then left as it was; a key pressed in that time is read with the answer and dropped.
+// The terminal's answer to `question` (DA1 last), up to DA1's; null, asking nothing, where a stream is no terminal or
+// a dumb one (Emacs' shell), or after `timeout` ms. A key pressed meanwhile is read with the answer and dropped.
 function ask(question, { input = process.stdin, output = process.stdout, env = process.env, timeout = 1000 } = {}) {
   if (!input?.isTTY || !output?.isTTY || env.TERM === 'dumb') return Promise.resolve(null)
   const { promise, resolve } = Promise.withResolvers()
@@ -305,20 +295,15 @@ function ask(question, { input = process.stdin, output = process.stdout, env = p
   return promise
 }
 
-// Whether the terminal `output` writes to draws sixel images: whether it answers DA1 with sixel graphics
-// among what it has (see ask(), for `options`).
 export const supported = async (options) => sixelIn((await ask(DA1, options)) ?? '')
 
-// The background colour in `read`, `r;g;b` in percent, as a sixel image's colours are; null where it isn't
-// answered.
+// `r;g;b` in percent, as a sixel image's colours are.
 function backgroundIn(read) {
   const colour = reply(read, /\]11;rgb:([\da-f]{1,4})\/([\da-f]{1,4})\/([\da-f]{1,4})/giu)
   return colour ? colour.slice(1).map((hex) => Math.round((Number.parseInt(hex, 16) / (16 ** hex.length - 1)) * 100)).join(';') : null
 }
 
-// What the terminal `output` writes to tells of its images, in one round trip: whether it draws sixel images
-// (`sixel`, as supported()), its cells' size in the pixels it draws them in (`cell`, `{ width, height }`, see
-// cellIn), and its background colour (`background`, see backgroundIn), each null where it doesn't tell.
+// In one round trip: `sixel` (as supported()), `cell` (`{ width, height }`) and `background`, each null where untold.
 export async function capabilities(options) {
   const read = (await ask(REPORT_CELL_SIZE + CELL_SIZE + BACKGROUND_COLOUR + DA1, options)) ?? ''
   return { sixel: sixelIn(read), cell: cellIn(read), background: backgroundIn(read) }

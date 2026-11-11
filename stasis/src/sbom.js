@@ -1,13 +1,10 @@
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import pkg from '../package.json' with { type: 'json' }
 
-// Derive an SPDX 2.3 or CycloneDX 1.5 SBOM from already-parsed stasis artifacts (`Bundle`/`Lockfile`).
-// Deliberately free of file/transport concerns (no disk, no brotli); the disk-reading CLI glue is src/cmd/sbom.js.
+// An SPDX 2.3 or CycloneDX 1.5 SBOM of parsed artifacts, free of disk and brotli (the CLI's glue is src/cmd/sbom.js).
 
-// Tool/creator identity stamped into every generated SBOM.
 const DEFAULT_TOOL = { name: '@exodus/stasis', version: pkg.version, vendor: 'Exodus Movement, Inc.' }
 
-// Web Crypto (global) instead of node:crypto, keeping this module dependency-light.
 const newUuid = () => globalThis.crypto.randomUUID()
 
 // purl types we can mint: `soldeer` has no registered type, and `pkg:cargo` names crates.io's crate, which a
@@ -18,17 +15,15 @@ const PURL_TYPES = new Set(['npm', 'composer', 'cargo', 'github'])
 // bucket's in an artifact predating the per-dependency `ecosystem` field.
 const detectEcosystem = (artifact) => ([...(artifact.formats?.values?.() ?? [])].includes('php') ? 'composer' : 'npm')
 
-// Legacy scope classification (pre-`ecosystem` artifacts): non-`node_modules` dirs are first-party,
-// except in a Composer bundle where vendor packages live outside `node_modules`. `node_modules` is
-// a path segment, as stasis-core's hasNodeModulesSegment has it: `foo_node_modules/x` is first-party.
+// For a pre-`ecosystem` artifact: a dir is first-party outside a `node_modules` segment (`foo_node_modules/x` is),
+// but in a Composer bundle, whose vendor packages live outside one.
 function classifyScope(ecosystem, dir) {
   if (dir === '.') return 'workspace'
   if (ecosystem === 'composer') return 'dependency'
   return dir.split('/').includes('node_modules') ? 'dependency' : 'workspace'
 }
 
-// Split a package name into purl/CycloneDX namespace (group) + bare name: npm scopes, Composer
-// vendors and GitHub owners use the segment before the first slash; cargo and bare names have none.
+// The purl/CycloneDX namespace (group): an npm scope, a Composer vendor or a GitHub owner.
 function splitName(ecosystem, name) {
   const namespaced = ecosystem === 'composer' || ecosystem === 'github' || (ecosystem === 'npm' && name.startsWith('@'))
   const slash = name.indexOf('/')
@@ -52,7 +47,7 @@ export function buildPurl(ecosystem, rawName, version) {
 
 function compareComponents(a, b) {
   if (a.name !== b.name) return a.name < b.name ? -1 : 1
-  // A missing version sorts first, as '' (comparing raw undefined would be order-unstable).
+  // As '': comparing raw undefined would be order-unstable.
   const [av, bv] = [a.version ?? '', b.version ?? '']
   if (av !== bv) {
     if (valid(av) && valid(bv)) return compareVersions(av, bv)
@@ -97,20 +92,17 @@ export function collectComponents(artifacts) {
   return [...seen.values()].toSorted(compareComponents)
 }
 
-// Pick the single component the SBOM is *about* (its primary/root): the lone workspace package when
-// there is exactly one; with zero or several workspace roots there's no single subject, so every
-// package is a plain component. `rest` is everything that is not the primary.
+// The component the SBOM is *about*: the lone workspace package, none with zero or several.
 function selectPrimary(components) {
   const workspace = components.filter((c) => c.scope === 'workspace')
   const primary = workspace.length === 1 ? workspace[0] : null
   return { primary, rest: primary ? components.filter((c) => c !== primary) : components }
 }
 
-// SBOM timestamps are RFC 3339 to whole seconds; drop the milliseconds Date.toISOString includes.
+// RFC 3339 to whole seconds.
 const isoSeconds = (date) => date.toISOString().replace(/\.\d{3}Z$/u, 'Z')
 
-// A CycloneDX bom-ref must uniquely identify a component; use the purl when present, else
-// ecosystem+name(+version) (unique by construction -- it's the dedup key).
+// Unique by construction: the purl, else the dedup key.
 const bomRef = (c) => c.purl ?? `${c.ecosystem}:${c.name}${c.version == null ? '' : `@${c.version}`}`
 
 // An SPDX 2.3 document: it DESCRIBES its primary, which DEPENDS_ON each dependency (flat), else the workspace
@@ -121,12 +113,9 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
   const ordered = primary ? [primary, ...rest] : components
   const ids = new Map(ordered.map((c, i) => [c, `SPDXRef-Package-${i}`]))
 
-  // The SPDX package of `c` (a component, or one vendored) as `id`, `purpose` its primaryPackagePurpose,
-  // `extra` fields after its version.
   const spdxPackage = (id, c, purpose, extra = {}) => ({
     SPDXID: id,
     name: c.name,
-    // SPDX versionInfo is optional; omit it for a versionless workspace package.
     ...(c.version == null ? {} : { versionInfo: c.version }),
     ...extra,
     downloadLocation: 'NOASSERTION',
@@ -174,7 +163,6 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
 // its directory there the location of its one occurrence.
 export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
   const { primary, rest } = selectPrimary(components)
-  // `c` (a component, or one vendored) as a CycloneDX component of `type`, `ref` its bom-ref, `tail` after its purl.
   const component = (c, type, ref, tail) => {
     const { group, name } = splitName(c.ecosystem, c.name)
     return {
@@ -182,7 +170,6 @@ export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(),
       'bom-ref': ref,
       ...(group && { group }),
       name,
-      // CycloneDX 1.5 `version` is optional; omit it for a versionless workspace package.
       ...(c.version == null ? {} : { version: c.version }),
       ...(c.purl && { purl: c.purl }),
       ...tail,
@@ -201,7 +188,7 @@ export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(),
     version: 1,
     metadata: {
       timestamp: isoSeconds(now),
-      // CycloneDX 1.5 `tools.components` shape: the flat tools array is deprecated in 1.5 (removed in 1.6).
+      // Not the flat tools array, deprecated in 1.5 and removed in 1.6.
       tools: { components: [{ type: 'application', publisher: tool.vendor, name: tool.name, version: tool.version }] },
       ...(primary && { component: toComponent(primary) }),
     },
@@ -214,7 +201,7 @@ export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(),
   return doc
 }
 
-// Dispatch to the requested format; options: { tool, now, uuid } for custom identity / deterministic output.
+// `options` { tool, now, uuid } for a custom identity or deterministic output.
 export function generateSbom(format, components, options) {
   if (format === 'spdx') return toSpdx(components, options)
   if (format === 'cyclonedx') return toCyclonedx(components, options)

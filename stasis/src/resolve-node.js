@@ -6,22 +6,18 @@ import { packageJSONStat, packageJSONText } from '@exodus/stasis-core/bundle-uti
 import { isPlainObject } from '@exodus/stasis-core/util'
 import { hostMemo } from './vfs-bundle/lazy.js'
 
-// Node's CommonJS resolution (`createRequire(parent).resolve(spec, { conditions })`) over a
-// `host` (@exodus/stasis-core/host), mirroring lib/internal/modules/cjs/loader.js and
-// esm/resolve.js step for step, errors with Node's `code`s included. Global folders (NODE_PATH,
-// ~/.node_modules) are not consulted: a virtual tree resolves hermetically.
+// Node's `createRequire(parent).resolve(spec, { conditions })` over a `host`, mirroring cjs/loader.js and esm/resolve.js
+// step for step, error codes included. Global folders (NODE_PATH, ~/.node_modules) aren't consulted: a tree is hermetic.
+// A miss carries `target`, the missing file it would have resolved to, where it names one (Scan's missTargets).
 
 const codedError = (code, message) => Object.assign(new Error(message), { code })
 
 const REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'module-sync'])
 
-// esm/resolve.js's deprecatedInvalidSegmentRegEx (an empty segment is only deprecated there, so no error here).
+// Node's invalidSegmentRegEx also matches an empty segment, which it only deprecates: no error here.
 const deprecatedInvalidSegmentRegEx = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/iu
 const encodedSepRegEx = /%2F|%5C/iu
-// Module._findPath's bare-package matcher: `name` or `@scope/name`, optional `/subpath`.
 const EXPORTS_PATTERN = /^((?:@[^/\\%]+\/)?[^./\\%][^/\\%]*)(\/.*)?$/u
-// cjs/loader.js's character tests: relative requests, directory requests (no file probes), and
-// requests that skip the node_modules lookup.
 export const RELATIVE_REQUEST = /^\.\.?(?:\/|$)/u
 const TRAILING_SLASH = /\/$|(?:^|\/)\.\.?$/u
 const RELATIVE_LOOKUP = /^\.(?:$|[./])/u
@@ -57,7 +53,6 @@ function isConditionalExportsMainSugar(exports, pkgPath) {
   return sugar
 }
 
-// esm/resolve.js's best `*` pattern key of `map` for `subpath`: -> [key, wildcard] or null.
 function bestPatternMatch(map, subpath) {
   let bestMatch = ''
   let bestMatchSubpath
@@ -73,7 +68,6 @@ function bestPatternMatch(map, subpath) {
   return bestMatch ? [bestMatch, bestMatchSubpath] : null
 }
 
-// esm/resolve.js's parsePackageName: -> { packageName, packageSubpath, isScoped }.
 function parsePackageName(specifier, base) {
   let separatorIndex = specifier.indexOf('/')
   const isScoped = specifier[0] === '@'
@@ -89,12 +83,7 @@ function parsePackageName(specifier, base) {
   return { packageName, packageSubpath: `.${separatorIndex === -1 ? '' : specifier.slice(separatorIndex)}`, isScoped }
 }
 
-// `host.touches`, where it has one, counts the reads it makes of what a tree does not hold yet
-// (vfs-bundle/tree.js's vfsHost of a lazy tree): what is read with none is cached alone, or with
-// `host.retouch`, what is read with some too (untouchedMemo's `retouch`).
 export function createNodeResolver(host) {
-  // package.json reads, memoized per path; a malformed manifest, or one there that can't be read,
-  // throws ERR_INVALID_PACKAGE_CONFIG on every access.
   const parsePackage = (pjsonPath) => {
     let stat
     try {
@@ -111,7 +100,6 @@ export function createNodeResolver(host) {
     }
     if (!isPlainObject(data)) return codedError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}.`)
     const string = (value) => (typeof value === 'string' ? value : undefined)
-    // Node keeps `exports` and `imports` only as a string, an array or an object.
     const map = (value) => (typeof value === 'string' || (typeof value === 'object' && value !== null) ? value : undefined)
     return { exists: true, path: pjsonPath, name: string(data.name), main: string(data.main), exports: map(data.exports), imports: map(data.imports) }
   }
@@ -122,7 +110,6 @@ export function createNodeResolver(host) {
     return pkg
   }
 
-  // Node's readPackageScope: the nearest package.json, never crossing out of a node_modules dir.
   const readPackageScope = (checkPath) => {
     for (let dir = dirname(checkPath); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
       const pkg = readPackage(join(dir, 'package.json'))
@@ -152,14 +139,11 @@ export function createNodeResolver(host) {
     const filename = resolve(requestPath, pkg.main)
     const actual = tryFile(filename) || tryExtensions(filename, exts) || tryExtensions(resolve(filename, 'index'), exts) || index()
     if (actual) return actual
-    // `target`: the file the request resolved to, which isn't there (the scan records it, see Scan).
     throw Object.assign(
       codedError('MODULE_NOT_FOUND', `Cannot find module '${filename}'. Please verify that the package.json has a valid "main" entry`),
       { path: join(requestPath, 'package.json'), requestPath: originalPath, target: filename },
     )
   }
-
-  // --- esm/resolve.js: exports / imports ---
 
   const fileExists = (url) => stat(fileURLToPath(url)) === 0
 
@@ -175,7 +159,6 @@ export function createNodeResolver(host) {
   const resolvePackageTargetString = (target, subpath, match, packageJSONUrl, pattern, internal, conditions) => {
     if (subpath !== '' && !pattern && !target.endsWith('/')) throwInvalidPackageTarget(match, target, packageJSONUrl, internal)
     if (!target.startsWith('./')) {
-      // A bare `imports` target (`"#x": "dep"`) is a package specifier, resolved the ESM way.
       if (internal && !target.startsWith('../') && !target.startsWith('/') && !URL.canParse(target)) {
         return packageResolve(pattern ? target.replaceAll('*', () => subpath) : target + subpath, packageJSONUrl, conditions)
       }
@@ -258,7 +241,7 @@ export function createNodeResolver(host) {
   }
 
   const packageImportsResolve = (name, base, conditions) => {
-    // (`#/x` is merely "not defined" in Node 24, so it is not screened here.)
+    // `#/x` is merely "not defined" in Node 24, so it is not screened here.
     if (name === '#' || name.endsWith('/')) {
       throw codedError('ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${name}" is not a valid internal imports specifier name imported from ${fileURLToPath(base)}`)
     }
@@ -289,7 +272,6 @@ export function createNodeResolver(host) {
     for (const index of ['./index.js', './index.json', './index.node']) {
       if (fileExists(guess = new URL(index, packageJSONUrl))) return guess
     }
-    // `target`: the file `main` names, which isn't there (viaEsm keeps it).
     const target = packageConfig.main === undefined ? {} : { target: fileURLToPath(new URL(`./${packageConfig.main}`, packageJSONUrl)) }
     throw Object.assign(codedError('ERR_MODULE_NOT_FOUND', `Cannot find package '${fileURLToPath(new URL('.', packageJSONUrl))}' imported from ${fileURLToPath(base)}`), target)
   }
@@ -320,12 +302,9 @@ export function createNodeResolver(host) {
     throw codedError('ERR_MODULE_NOT_FOUND', `Cannot find package '${packageName}' imported from ${fileURLToPath(base)}`)
   }
 
-  // --- cjs/loader.js glue ---
-
   const createEsmNotFoundErr = (request, path) => Object.assign(codedError('MODULE_NOT_FOUND', `Cannot find module '${request}'`), path ? { path } : {})
 
-  // An esm/resolve.js answer under CJS rules (finalizeEsmResolution): it must be a file URL to a
-  // file that exists, and an ESM "not found" becomes MODULE_NOT_FOUND naming `request`.
+  // finalizeEsmResolution: an ESM "not found" becomes MODULE_NOT_FOUND naming `request`.
   const viaEsm = (resolveUrl, request, errPath, parentPath, pkgDir) => {
     let resolved
     try {
@@ -341,11 +320,9 @@ export function createNodeResolver(host) {
     const filename = fileURLToPath(resolved)
     const actual = tryFile(filename)
     if (actual) return actual
-    // `target`: the file an `exports` or `imports` target resolved to, which isn't there.
     throw Object.assign(createEsmNotFoundErr(filename, resolve(pkgDir, 'package.json')), { target: filename })
   }
 
-  // Self-reference: a request naming the enclosing package, through its `exports`.
   const trySelf = (parentPath, request, conditions) => {
     const pkg = readPackageScope(parentPath)
     if (!pkg || pkg.exports == null || pkg.name === undefined) return false
@@ -356,7 +333,6 @@ export function createNodeResolver(host) {
     return viaEsm(() => packageExportsResolve(pathToFileURL(pkg.path), expansion, pkg, conditions), request, pkg.path, parentPath, dirname(pkg.path))
   }
 
-  // A bare request into `nmPath` whose package has `exports`.
   const resolveExports = (nmPath, request, conditions) => {
     const m = EXPORTS_PATTERN.exec(request)
     if (!m) return false
@@ -367,7 +343,6 @@ export function createNodeResolver(host) {
     return viaEsm(() => packageExportsResolve(pathToFileURL(pkg.path), `.${expansion}`, pkg, conditions), request, pkg.path, null, pkgPath)
   }
 
-  // Module._findPath over `paths`.
   const findPath = (request, paths, conditions) => {
     const absoluteRequest = isAbsolute(request)
     if (absoluteRequest) paths = ['']
@@ -392,16 +367,13 @@ export function createNodeResolver(host) {
   }
 
   const notFound = (request, parentFile) => Object.assign(codedError('MODULE_NOT_FOUND', `Cannot find module '${request}'\nRequire stack:\n- ${parentFile}`), { requireStack: [parentFile] })
-  // `target`, for a bare request that misses a package without `exports`: the file it names in the nearest package
-  // of that name, which isn't there (with `exports`, viaEsm's; a missing `main`, tryPackage's).
+  // A bare request missing a package without `exports`: `target` is the file it names in the nearest package so named.
   const packageMiss = (request, paths) => {
     const name = !RELATIVE_LOOKUP.test(request) && !isAbsolute(request) && EXPORTS_PATTERN.exec(request)?.[1]
     const at = name ? paths.find((curPath) => stat(resolve(curPath, name)) === 1) : undefined
     return at === undefined ? {} : { target: resolve(at, request) }
   }
 
-  // Module._resolveFilename: -> the file's real path, or a builtin's id. Without `builtins`, a
-  // request naming a builtin is looked up like any bare name (see resolve).
   const resolveFilename = (parentFile, request, conditions, builtins) => {
     if (builtins && isBuiltin(request)) return request
     if (request === '') throw notFound(request, parentFile)
@@ -415,13 +387,12 @@ export function createNodeResolver(host) {
     throw Object.assign(notFound(request, parentFile), packageMiss(request, paths))
   }
 
-  // Node's Module._pathCache: the tree is immutable for the build.
+  // As Node's Module._pathCache: the tree is immutable for the build.
   const memo = hostMemo(host)
 
   return {
-    // `conditions`: `require.resolve`'s own by default. A builtin returns its id, as it does.
-    // `builtins: false` resolves for a target with no Node builtins: a bare builtin name (`buffer`)
-    // is the installed package of that name, through its `exports` like any other.
+    // A builtin returns its id. `builtins: false` resolves for a target with no Node builtins: a bare builtin name
+    // (`buffer`) is the installed package of that name, through its `exports` like any other.
     resolve(parentFile, request, conditions = REQUIRE_CONDITIONS, { builtins = true } = {}) {
       parentFile = resolve(parentFile)
       if (!(conditions instanceof Set)) conditions = new Set(conditions)

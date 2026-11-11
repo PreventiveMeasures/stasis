@@ -2,16 +2,14 @@ import { join } from 'node:path'
 
 import { isTomlTable, readToml } from '../loaders/toml.js'
 
-// What `soldeer install` 0.12.0 writes beside the dependencies folder (soldeer-core's update_config_libs and
-// edit_remappings, RemappingsAction::Update): the remappings.txt it would write goes into the tree, served in place
-// of the project's; a foundry.toml it would edit, or what this can't tell it leaves as it is, is refused.
+// What `soldeer install` 0.12.0 writes beside dependencies/: its remappings.txt goes into the tree; a foundry.toml edit is refused.
 
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?(?:\+[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?$/u
 // A requirement Soldeer takes as exact: a bare version (its `^` made `=`), or one written `=`.
 const EXACT = /^=?\s*(\S+)$/u
 const withoutBuild = (version) => version.replace(/\+.*$/u, '')
 
-// A file's text as Soldeer reads it (a byte order mark kept), or undefined.
+// A byte order mark kept, as Soldeer reads it.
 function textOf(view, path) {
   try {
     return view.stat(path).type === 'file' ? view.readFile(path).toString('utf8') : undefined
@@ -20,17 +18,13 @@ function textOf(view, path) {
   }
 }
 
-// Rust's `Path::components` of a remapping's target, `.` kept only at the start.
+// Rust's `Path::components`, `.` kept only at the start.
 function components(path) {
-  const out = path.startsWith('/') ? ['/'] : []
-  for (const [i, part] of path.split('/').entries()) {
-    if (part !== '' && (part !== '.' || i === 0)) out.push(part)
-  }
-  return out
+  const parts = path.split('/').filter((part, i) => part !== '' && (part !== '.' || i === 0))
+  return path.startsWith('/') ? ['/', ...parts] : parts
 }
 
-// Whether the folder `name` of a remapping's target (its dependencies folder and the one in it) is
-// `dep`'s, as soldeer's path_matches tells, or null where only Rust's semver could tell.
+// As soldeer's path_matches tells, or null where only Rust's semver could tell.
 function folderMatches(dep, name) {
   if (!name.startsWith(`${dep.name}-`)) return false
   const version = name.slice(dep.name.length + 1)
@@ -41,8 +35,6 @@ function folderMatches(dep, name) {
   return null
 }
 
-// The remappings Soldeer's update leaves, of `existing` (`[name, target]` pairs) and the config's
-// dependencies, sorted as it sorts them (by their UTF-8 bytes).
 function updatedRemappings(existing, deps, { regenerate, where }) {
   const lines = []
   let rest = regenerate ? [] : existing
@@ -64,26 +56,20 @@ function updatedRemappings(existing, deps, { regenerate, where }) {
   return lines.toSorted((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
 }
 
-// `[name, target]` of each remapping in `lines`, as Soldeer reads them: split at the first `=`, any
-// line without one passed over.
 const pairs = (lines) => lines.flatMap((line) => {
   const at = line.indexOf('=')
   return at === -1 ? [] : [[line.slice(0, at), line.slice(at + 1)]]
 })
 
-// `view` is the project's root by paths from `/`, `root` its real path, for messages.
 export function settleSoldeer(view, vfs, root) {
   const foundryText = textOf(view, '/foundry.toml')
   const foundry = foundryText === undefined ? undefined : readToml(foundryText)
   const inFoundry = isTomlTable(foundry?.dependencies)
   const config = inFoundry ? foundry : readToml(textOf(view, '/soldeer.toml') ?? '')
   const where = (file) => join(root, file)
-
-  if (inFoundry) {
-    const libs = foundry.profile?.default?.libs
-    if (!Array.isArray(libs) || !libs.includes('dependencies')) {
-      throw new Error(`${where('foundry.toml')}: [profile.default] libs holds no "dependencies", which \`soldeer install\` adds`)
-    }
+  const libs = foundry?.profile?.default?.libs
+  if (inFoundry && !(Array.isArray(libs) && libs.includes('dependencies'))) {
+    throw new Error(`${where('foundry.toml')}: [profile.default] libs holds no "dependencies", which \`soldeer install\` adds`)
   }
 
   const settings = { remappings_generate: true, remappings_regenerate: false, remappings_version: true, remappings_prefix: '', remappings_location: 'txt', ...config.soldeer }

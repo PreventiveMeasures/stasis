@@ -7,19 +7,15 @@ import { diskHost } from '@exodus/stasis-core/host'
 import { isPlainObject, isTypeDeclaration } from '@exodus/stasis-core/util'
 import { isDir, isSourceFile } from './resolve-typescript.js'
 
-// A type declaration's runtime stem (`dist/index.d.ts` -> `dist/index`); any other name as it is.
-export const stripTypeDeclaration = (name) => name.replace(/\.d\.[mc]?ts$/iu, '')
-
-// Metro's module resolution is @preventive/rn's, for `stasis bundle --metro` (resolve-fields.js) and
-// `--metro-resolver` (createMetroResolver). What stays stasis's: no `.d.ts` is a module (metroHost), a builtin
+// Metro's module resolution is @preventive/rn's. What stays stasis's: no `.d.ts` is a module (metroHost), a builtin
 // Metro misses is a builtin, and answers take the shape scan.js expects (scanResolution).
+
+export const stripTypeDeclaration = (name) => name.replace(/\.d\.[mc]?ts$/iu, '')
 
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 const DECLARATION = /\.d\.[cm]?ts\b/iu
 
-// A manifest as stasis has Metro read it: an entry field (of `mainFields`) naming a `.d.ts` names its stem, so
-// the entry lands on the real module beside it (`dist/index.d.ts` -> `dist/index.js`). Any other manifest, or one
-// that is no JSON object (which the resolver refuses), is read as it is.
+// An entry field naming a `.d.ts` names its stem, so the entry lands on the real module beside it.
 function manifestStems(bytes, mainFields) {
   let manifest
   try {
@@ -36,9 +32,7 @@ function manifestStems(bytes, mainFields) {
   return Buffer.from(JSON.stringify(manifest))
 }
 
-// `host` (@exodus/stasis-core/host) as @preventive/rn reads one, for Metro's `mainFields`. A `.d.ts`
-// is types-only, erased at runtime, so the resolver never lands on one: no `.d.ts` is a file, and a
-// manifest's entry naming one names its stem (manifestStems).
+// A `.d.ts` is types-only, erased at runtime, so the resolver never lands on one.
 export function metroHost(host, mainFields = defaults.mainFields) {
   return {
     isFile: (path) => isSourceFile(path, host),
@@ -48,12 +42,10 @@ export function metroHost(host, mainFields = defaults.mainFields) {
   }
 }
 
-// The file Metro builds an asset of several into the module of (getArrayLowestItem): the lowest path.
+// Metro builds an asset of several files into the module of the lowest path (getArrayLowestItem).
 const lowestPath = (paths) => paths.reduce((lowest, path) => (path < lowest ? path : lowest))
 
-// @preventive/rn's Resolution of `specifier` (null where Metro fails it) as scan.js takes a custom resolver's:
-// `{ url }`, a file's real path's; `{ empty }`, mapped to `false` by a browser/react-native field; `{ builtin }`, a
-// Node builtin Metro failed, where `builtin` says it is one; or null, unresolved.
+// `builtin`: whether a specifier Metro failed (null) is a Node builtin.
 export function scanResolution(resolution, builtin) {
   if (resolution === null) return builtin ? { builtin: true } : null
   if (resolution.type === 'empty') return { empty: true }
@@ -61,35 +53,21 @@ export function scanResolution(resolution, builtin) {
   return { url: pathToFileURL(file).toString() }
 }
 
-// `stasis bundle --metro --metro-resolver`: resolve as the project's installed Metro does, through its own
-// `metro-resolver` (which does no I/O of its own) given the context Metro's DependencyGraph builds over the disk.
-// The options are Metro's resolver config, React Native's defaults where left out.
+// `--metro-resolver`: through the project's own `metro-resolver`, given the context Metro's DependencyGraph builds.
 export function createMetroResolver({ projectDir, platform, sourceExts, mainFields, conditionNames, conditionsByPlatform, assetExts, assetResolutions, host = diskHost } = {}) {
   if (host !== diskHost) throw new Error('createMetroResolver: metro-resolver reads the disk, so it is not supported off disk')
   let metroResolver
   try {
     metroResolver = createRequire(join(projectDir, 'noop.js'))('metro-resolver')
   } catch (cause) {
-    throw new Error(
-      `StasisMetroResolver: couldn't load 'metro-resolver' from ${projectDir}. --metro-resolver ` +
-      'resolves through the project\'s own Metro; install it (it ships with react-native/metro) ' +
-      'or drop --metro-resolver to use the built-in resolver.',
-      { cause }
-    )
+    throw new Error(`StasisMetroResolver: couldn't load 'metro-resolver' from ${projectDir}. --metro-resolver resolves through the `
+      + 'project\'s own Metro; install it (it ships with react-native/metro) or drop --metro-resolver to use the built-in resolver.', { cause })
   }
   const resolve = createRnMetroResolver({
-    host: metroHost(host, mainFields),
-    sourceExts,
-    assetExts,
-    assetResolutions,
-    mainFields,
-    conditionNames,
-    conditionsByPlatform,
-    preferNativePlatform: platform !== 'web',
-    metroResolver,
+    host: metroHost(host, mainFields), sourceExts, assetExts, assetResolutions, mainFields, conditionNames, conditionsByPlatform,
+    preferNativePlatform: platform !== 'web', metroResolver,
   })
-  // Metro splits `exports` on whether the edge was an ESM import or a CJS require: scan.js hands over
-  // the parent's format-derived condition set, so `import` in it is that signal.
+  // Metro splits `exports` on whether the edge is an ESM import: `import` in scan.js's format-derived conditions.
   return (parentFile, specifier, callConditions) => {
     const isESMImport = callConditions instanceof Set && callConditions.has('import')
     return scanResolution(resolve(parentFile, specifier, { platform, isESMImport }), isBuiltin(specifier))

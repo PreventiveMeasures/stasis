@@ -4,8 +4,8 @@ import { brotliDecompressStrict } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 
-// Read a stasis artifact into a Lockfile or Bundle, with its `kind` ('lockfile' | 'bundle'), by its leading
-// byte: a lockfile's JSON starts with `{`, a bundle is brotli. A Lockfile or Bundle in place of the path is taken as it is.
+// A stasis artifact by its leading byte: a lockfile's JSON starts with `{`, a bundle is brotli. A Lockfile or Bundle
+// in place of the path is taken as it is.
 export function parseFileWithKind(file) {
   if (file instanceof Lockfile) return { kind: 'lockfile', artifact: file }
   if (file instanceof Bundle) return { kind: 'bundle', artifact: file }
@@ -37,7 +37,6 @@ export function parseFileWithKind(file) {
   }
 }
 
-// parseFileWithKind's artifact alone.
 export function parseFile(file) {
   return parseFileWithKind(file).artifact
 }

@@ -1,4 +1,4 @@
-// Types of `@exodus/stasis/validate` (validate.js), whose comments tell what each does.
+// Types of `@exodus/stasis/validate` (validate.js).
 import type { Client, RepoDirEntry } from '@preventive/upstream/github.js'
 
 export { HttpError } from '@preventive/upstream/npm.js'

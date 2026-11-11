@@ -10,16 +10,15 @@ import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescrip
 import { getParser, literalSpec, syntaxErrors } from '../scan.js'
 import { holding, nearest, projectView } from './tree.js'
 
-// buildVfsBundle's `generate: ['prisma']`: the client each project's `prisma generate` would write with its installed
-// Prisma, running nothing of the repo (schema, config, tsconfig.json and package.json are read as data). The optional
-// peer GENERATOR builds it in memory; an older version's is 7.10.0's rewritten (DOWN), tested byte for byte.
+// The client `prisma generate` would write, running nothing of the repo: schema, config, tsconfig.json and package.json
+// are read as data. GENERATOR builds 7.10.0's in memory; an older version's is that rewritten (DOWN).
 
 const GENERATOR = '@prisma/client-generator-ts'
 const GENERATOR_VERSION = '7.10.0'
 const PROVIDER = 'prisma-client'
 const require = createRequire(import.meta.url)
 
-// The engine hash each Prisma stamps its client with, newest first.
+// Newest first.
 const ENGINES = {
   '7.10.0': '0edf323efd1d98336f3f0a68684b56f689b900d3',
   '7.9.1': 'e922089b7d7502aff4249d5da3420f6fa55fc6ad',
@@ -35,26 +34,19 @@ const ENGINES = {
 export const PRISMA_VERSIONS = Object.keys(ENGINES)
 const newerThan = (version, than) => PRISMA_VERSIONS.indexOf(version) < PRISMA_VERSIONS.indexOf(than)
 
-// --- the generator ---
-
-// The bundle's readSourceFile, for the client `at` describes: an edge runtime's client copies the
-// query compiler from `prisma generate`'s own build, which here is the tree's `prisma`.
 const readQueryCompiler = (at) => (name) => {
   const file = posix.join(at.prismaDir, 'build', name)
   if (!isFile(file, at.host)) throw new Error(`prisma: ${file}, which a ${at.target} client carries, is not in the tree`)
   return Buffer.from(at.host.readFile(file))
 }
 
-// The bundle's inferModuleFormatFromNearestPackageJson, for node16 and nodenext; ESM before 7.10.0.
 const packageFormat = ({ host, version }) => (dir) => {
   if (!newerThan(version, '7.9.1')) return 'esm'
   const file = nearestFile(host, dir, 'package.json')
   try { return file !== null && JSON.parse(host.readFile(file).toString('utf8')).type === 'module' ? 'esm' : 'cjs' } catch { return 'cjs' }
 }
 
-// The esbuild bundle at `main` as a function of `parameters` returning `roots`, kept to the top-level
-// statements they reach by name (any word of a statement: more is kept than used, never less), and
-// refused where it then requires anything `given` doesn't hold, or by no literal name.
+// Kept to the statements `roots` reach by any word (more than used, never less); refused if it requires what `given` lacks.
 function compiled(main, roots, parameters, given) {
   const source = readFileSync(main, 'utf8')
   const { body } = getParser().parseSync(main, source, { sourceType: 'script' }).program
@@ -73,8 +65,6 @@ function compiled(main, roots, parameters, given) {
   return compileFunction(`${reached}\nreturn { ${roots.join(', ')} }`, ['require', ...parameters], { filename: main }).bind(null, (id) => given[id])
 }
 
-// CommonJS files from `main` on, compiled requiring nothing outside their package but what `given`
-// holds, and reading `globals` in place of the globals they name; each call loads them anew.
 function commonjs(main, given, globals = {}) {
   const modules = new Map()
   const load = (file) => {
@@ -93,12 +83,9 @@ function commonjs(main, given, globals = {}) {
   return load(main)
 }
 
-// The schema engine's refusals are JSON with a `message`.
 const engineMessage = (message) => { try { return JSON.parse(message).message ?? message } catch { return message } }
 
-// A maker of schema engines (the wasm, and @prisma/get-dmmf over it), one per schema: a panic traps out of an
-// instance mid-call, leaving it in a state none was built for, so no instance reads a schema after another's. Its
-// panic hook writes to a registry of its own, not the process's PRISMA_WASM_PANIC_REGISTRY. The .wasm is read once.
+// One engine per schema, its panic hook its own: a panic leaves an instance in a state none was built for.
 function schemaEngines(near) {
   const glue = near.resolve('@prisma/prisma-schema-wasm')
   const fs = { readFileSync: memoized((file) => readFileSync(file)) }
@@ -110,7 +97,6 @@ function schemaEngines(near) {
     let panic
     const engine = commonjs(glue, { fs }, { global: { PRISMA_WASM_PANIC_REGISTRY: { set_message: (message) => { panic = message } } } })
     const { getDMMF } = getDmmf(engine)
-    // `run`, but where the engine panicked in it, throwing that it did, with the engine's message.
     const calling = (run) => (options) => {
       try {
         return run(options)
@@ -119,7 +105,7 @@ function schemaEngines(near) {
       }
     }
     return {
-      // But for resolving binaryTargets, which the generator never reads.
+      // Without resolving binaryTargets, which the generator never reads.
       getConfig: calling(({ datamodel }) => {
         const { config, errors } = JSON.parse(engine.get_config(JSON.stringify({ prismaSchema: datamodel })))
         if (errors.length > 0) throw new Error(errors.map((error) => error.message).join('\n'))
@@ -137,17 +123,14 @@ function schemaEngines(near) {
   return { schemaEngine, externalToInternalDmmf: getDmmf({}).externalToInternalDmmf }
 }
 
-// What the compiled generator returns, is given, and requires as Node loads it (none of it the
-// disk's); given, as readSourceFile and inferModuleFormatFromNearestPackageJson read the disk,
-// `debug` would require @prisma/debug, and buildTypedSql is undefined: stasis passes no typedSql.
+// buildTypedSql is left undefined: stasis passes no typedSql.
 const EXPORTS = ['buildClient', 'validateDmmfAgainstDenylists', 'parseRuntimeTargetFromUnknown', 'parseGeneratedFileExtension', 'parseImportFileExtension', 'inferImportFileExtension', 'parseModuleFormatFromUnknown', 'inferModuleFormat', 'parseCompilerBuildFromUnknown']
 const PARAMETERS = ['readSourceFile', 'inferModuleFormatFromNearestPackageJson', 'debug', 'buildTypedSql']
 const REQUIRES = ['@prisma/client-common', '@prisma/dmmf', '@prisma/param-graph-builder', 'indent-string', 'klona', 'pluralize', 'ts-pattern']
 let loaded
 
-// The peer exports neither buildClient, the reserved-names check nor its option parsing, so its bundle is compiled to
-// return them, stripped of what they never reach (cleanup, not a sandbox). @prisma/internals is never loaded (it reads
-// the host's npm and yarn config, and patches fs and process.cwd): its users get a stand-in.
+// The peer exports none of EXPORTS, so its bundle is compiled to return them (stripping is cleanup, not a sandbox).
+// @prisma/internals is never loaded (it reads the host's npm and yarn config, and patches fs and process.cwd).
 export function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -155,7 +138,6 @@ export function loadGenerator() {
   const own = createRequire(main)
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
-  // Prisma's packages beside the @prisma/internals the peer was built with.
   const near = createRequire(own.resolve('@prisma/internals'))
   const { schemaEngine, externalToInternalDmmf } = schemaEngines(near)
   const internals = {
@@ -167,20 +149,16 @@ export function loadGenerator() {
   const given = { ...Object.fromEntries(REQUIRES.map((id) => [id, own(id)])), '@prisma/internals': internals, '@prisma/ts-builders': commonjs(own.resolve('@prisma/ts-builders'), { '@prisma/internals': internals }) }
   const run = compiled(main, EXPORTS, PARAMETERS, given)
   const { loadSchemaFiles } = compiled(near.resolve('@prisma/schema-files-loader'), ['loadSchemaFiles'], ['realFsResolver'], { 'node:path': posix })()
-  // `peer` is evaluated for each client (a millisecond), its functions given what they read.
   loaded = { peer: (at) => run(readQueryCompiler(at), packageFormat(at), () => {}), schemaEngine, loadSchemaFiles }
   return loaded
 }
-
-// --- what `prisma generate` reads ---
 
 const nearestFile = (host, dir, name) => {
   const at = nearest(dir, holding(host, name))
   return at === null ? null : posix.join(at, name)
 }
 
-// The `prisma` Node resolves from `dir`, or where that is unsupported (Prisma 8, say), the one
-// `@prisma/prisma7` runs as `prisma7` beside it.
+// Where the `prisma` Node resolves is unsupported (Prisma 8, say), the one `@prisma/prisma7` runs as `prisma7`.
 function installedPrisma(host, dir) {
   const installed = (from) => {
     const file = nearestFile(host, from, 'node_modules/prisma/package.json')
@@ -192,18 +170,14 @@ function installedPrisma(host, dir) {
   return PRISMA_VERSIONS.includes(beside?.version) ? beside : prisma
 }
 
-// @prisma/config's search order; only 7.10.0 reads the first two (prisma7.config.*).
+// @prisma/config's search order; only 7.10.0 reads the first two.
 const CONFIG_BASES = ['prisma7.config', '.config/prisma7', ...['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [base, `${base}/index`])]
 const configFiles = (bases) => bases.flatMap((base) => ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'].map((ext) => `${base}${ext}`))
-// Where `prisma generate` looks for a schema without a config's.
 const DEFAULT_SCHEMAS = ['schema.prisma', 'prisma/schema.prisma']
 
-// The modules a config's top-level imports and requires may bind, as `name.export` (`name.*`: the module).
 const MODULES = { path: 'path', 'node:path': 'path', 'prisma/config': 'config', '@prisma/config': 'config' }
 
-// The `schema` a Prisma config names, read from its syntax tree: the config is never run, nor
-// anything built from it. A string literal or path.join of them is taken, through defineConfig,
-// `as`, `satisfies`, parentheses and top-level consts; anything else is refused.
+// Read from the syntax tree: the config is never run, nor anything built from it.
 function configSchema(file, text) {
   const parsed = getParser().parseSync(file, text, { sourceType: 'unambiguous' })
   const [error] = syntaxErrors(parsed)
@@ -252,7 +226,6 @@ function configSchema(file, text) {
   return schema
 }
 
-// A schema directory is read by Prisma's own loader, over the tree.
 function schemaFilesAt(host, path) {
   if (isFile(path, host)) return schemaTexts(host, path)
   const view = projectView(host, '/')
@@ -263,8 +236,6 @@ function schemaFilesAt(host, path) {
   })
 }
 
-// The schema path `prisma generate` takes at `dir`: the config's `schema` (relative to the config),
-// else ./schema.prisma or ./prisma/schema.prisma; null if none.
 function projectSchema(host, dir, version) {
   const first = (names) => names.map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
   const config = first(configFiles(CONFIG_BASES.slice(newerThan(version, '7.9.1') ? 0 : 2)))
@@ -275,10 +246,7 @@ function projectSchema(host, dir, version) {
   return path
 }
 
-// --- the generator's options, as its generate() parses and infers them, with its own functions ---
-
-// The inference reads the nearest tsconfig.json as get-tsconfig 4.10 gives it, defaults included: an
-// ES2015+ target's module, else preserve's bundler resolution.
+// As its generate() infers them, from the nearest tsconfig.json as get-tsconfig 4.10 gives it, defaults included.
 const ES_TARGETS = new Set(['es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'])
 function generatorOptions(peer, host, config, outputDir) {
   const file = nearestFile(host, outputDir, 'tsconfig.json')
@@ -294,8 +262,6 @@ function generatorOptions(peer, host, config, outputDir) {
   return { target, generatedFileExtension, importFileExtension, moduleFormat, compilerBuild }
 }
 
-// --- 7.10.0's client as each older version writes it ---
-
 // A missing `from` means the client isn't the one these rewrites were written against: refused unless `optional` (null).
 function swap(text, from, to, { path, all, optional }) {
   if (typeof from === 'string' ? text.includes(from) : from.test(text)) return all ? text.replaceAll(from, () => to) : text.replace(from, () => to)
@@ -303,7 +269,6 @@ function swap(text, from, to, { path, all, optional }) {
   throw new Error(`prisma: ${path} of the ${GENERATOR_VERSION} client holds no ${JSON.stringify(String(from).slice(0, 80))}`)
 }
 
-// File stems, without the generated extension (MODELS: each of models/).
 const CLASS = 'internal/class'
 const NAMESPACE = 'internal/prismaNamespace'
 const MODELS = 'models/*'
@@ -370,14 +335,12 @@ const DOWN = {
   '7.4.0': { [CLASS]: (text, path) => swap(text, 'https://www.prisma.io/docs/orm/prisma-client/queries/transactions', 'https://www.prisma.io/docs/concepts/components/prisma-client/transactions', { path }) },
 }
 
-// Where each client stamps its version and engine.
 const STAMPS = [
   [CLASS, (version) => `"clientVersion": "${version}",\n  "engineVersion": "${ENGINES[version]}",`],
   [NAMESPACE, (version) => ` * Prisma Client JS version: ${version}\n * Query Engine version: ${ENGINES[version]}\n`],
   [NAMESPACE, (version) => `  client: "${version}",\n  engine: "${ENGINES[version]}"\n`],
 ]
 
-// A 7.10.0 client file as `version` writes it.
 function asVersion(text, path, version, extension) {
   if (typeof text !== 'string') return text
   const key = path.startsWith('models/') ? MODELS : path.slice(0, -extension.length - 1)
@@ -386,9 +349,6 @@ function asVersion(text, path, version, extension) {
   return text
 }
 
-// --- generating ---
-
-// One generator's client: path in the output -> text (bytes for the query compiler's .wasm).
 function generateClientFor({ schemaPath, datamodel, generator, dmmf, datasources, outputDir, prisma, host }) {
   const client = { host, version: prisma.version, prismaDir: posix.dirname(prisma.file) }
   const peer = loadGenerator().peer(client)
@@ -400,19 +360,15 @@ function generateClientFor({ schemaPath, datamodel, generator, dmmf, datasources
   })
   const denied = peer.validateDmmfAgainstDenylists(built.prismaClientDmmf)
   if (denied) throw new Error(`prisma: ${schemaPath} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
-  // fileMap nests directories as objects.
   const flat = (map, at) => Object.entries(map).flatMap(([name, content]) => (typeof content === 'string' || Buffer.isBuffer(content) ? [[at + name, content]] : flat(content, `${at}${name}/`)))
   return new Map(flat(built.fileMap, '').map(([path, content]) => [path, asVersion(content, path, prisma.version, options.generatedFileExtension)]))
 }
 
 const readingSchema = (path, what) => Promise.try(what).catch((cause) => { throw new Error(`prisma: ${path}: ${cause.message}`, { cause }) })
 
-// Where a generator's `output` points, relative to the schema file declaring it.
 const outputOf = (generator, path) => posix.resolve(posix.dirname(generator.sourceFilePath ?? path), generator.output.value)
 
-// The output of a generator stasis doesn't run, where the tree already has it: the bundle takes what it
-// reaches there as committed, however stale -> its path, or undefined. Not one in node_modules, laid out
-// from the lockfile, nor one no `output` or an env() names, which stasis can't know.
+// The bundle takes what it reaches there as committed, however stale; none in node_modules, nor one env() names.
 function committedOutput(host, generator, path) {
   if (generator.output === null || generator.output.fromEnvVar !== null) return undefined
   const output = outputOf(generator, path)
@@ -421,22 +377,17 @@ function committedOutput(host, generator, path) {
 
 const ours = (generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null
 const SKIPPED = `stasis generates the ${JSON.stringify(PROVIDER)} provider's alone`
-// That `writer` (a schema's generator) isn't generated, `why`; and where the tree has its output, `committed`, that
-// the bundle takes it as committed.
 const notGenerating = (writer, why, committed) => `not generating ${writer}: ${why}${committed === undefined ? '' : `, and takes its output, ${committed}, as committed, not as \`prisma generate\` would write it`}`
 
-// A generator whose output no bundle needs, not warned of: @pothos/plugin-prisma's with no `output`, which writes
-// types alone into its own package (generated.d.ts), there in node_modules as a placeholder. With
-// `generateDatamodel = "true"` it writes getDatamodel() there too, code a bundle may run.
+// Not warned of: with no `output`, it writes types alone into its own package (a placeholder in node_modules), but
+// with `generateDatamodel = "true"` getDatamodel() too, code a bundle may run.
 const POTHOS = 'prisma-pothos-types'
 const needsNoOutput = (generator) => generator.provider.value === POTHOS && generator.provider.fromEnvVar === null &&
   generator.output === null && generator.config.generateDatamodel !== 'true'
 
-// Where a generator with no `output` writes, by its provider: into a package, imported by this specifier.
 const DEFAULT_OUTPUTS = { __proto__: null, 'prisma-client-js': '.prisma/client', [POTHOS]: '@pothos/plugin-prisma/generated' }
 
-// The files of the schema at `path` (a file, or a directory of .prisma files, walked as Prisma's loader walks it:
-// through links, by real path), read as text.
+// A directory of .prisma files is walked as Prisma's loader walks it: through links, by real path.
 function schemaTexts(host, path) {
   if (isFile(path, host)) return [[path, host.readFile(path).toString('utf8')]]
   const seen = new Set()
@@ -453,9 +404,7 @@ function schemaTexts(host, path) {
   return walk(path)
 }
 
-// The generator blocks of the schema at `path`, as getConfig gives them (name, provider, output, the file declaring
-// it), read without Prisma's parser, which another Prisma's schema needn't satisfy and which needs the optional
-// peer. A schema that can't be read has none.
+// Read without Prisma's parser, which another Prisma's schema needn't satisfy and which needs the optional peer.
 function generatorBlocks(host, path) {
   let files
   try { files = schemaTexts(host, path) } catch { return [] }
@@ -468,17 +417,10 @@ function generatorBlocks(host, path) {
   }))
 }
 
-// Those of `projects` (directories relative to `root`) that may have a schema: a Prisma config, schema.prisma or
-// prisma/schema.prisma there. Looked for before any `prisma` is read, which a lazy tree fetches once read.
+// Looked for before any `prisma` is read, which a lazy tree fetches once read.
 const hasSchema = (host) => holding(host, ...configFiles(CONFIG_BASES), ...DEFAULT_SCHEMAS)
 export const schemaProjects = (host, root, projects) => new Set([...projects].filter((project) => hasSchema(host)(posix.join(root, project))))
 
-// An error's message as a reason: without the `prisma: ` a warning has already.
-const reasonOf = (error) => error.message.replace(/^prisma: /u, '')
-
-// The outputs (`{ dir, files, schema, generator, prisma }`) of the projects' `prisma-client` generators; `reasons`, by
-// schema, why one isn't generated; `schemas`, by project, the schema path taken (null for none). `strict` warns of what
-// isn't generated and refuses a schema it can't take; two generators writing one output are refused unless `shared`.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
 export async function generatePrismaClients({ host, root, projects, strict = true, shared = false }) {
   const outputs = []
@@ -503,7 +445,7 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
       outputs.push(...await generateSchema({ host, path, prisma, say, skip }))
     } catch (error) {
       if (strict) throw error
-      reasons.set(path, reasonOf(error))
+      reasons.set(path, error.message.replace(/^prisma: /u, ''))
     }
   }
   const dirs = outputs.map(({ dir }) => dir)
@@ -513,8 +455,6 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
 }
 /* eslint-enable no-await-in-loop */
 
-// The outputs of the `prisma-client` generators of the schema at `path`, as `prisma` writes them, what isn't
-// generated said through `say` and `skip` (generatePrismaClients').
 async function generateSchema({ host, path, prisma, say, skip }) {
   const files = await readingSchema(path, () => schemaFilesAt(host, path))
   const engine = loadGenerator().schemaEngine()
@@ -541,9 +481,7 @@ async function generateSchema({ host, path, prisma, say, skip }) {
   return outputs
 }
 
-// What each generator of the projects' schemas would write and isn't (`{ path }` or a default output's `{ specifier }`,
-// `writer`, `why`), read from the schemas alone: `off` says why none is generated. A project's schema is the one
-// generation took (`schemas`), else each a supported Prisma would take (7.10.0's prisma7.config.* is another's).
+// Read from the schemas alone: a project's is the one generation took, else each a supported Prisma would take.
 export function expectedOutputs({ host, root, projects, outputs = [], reasons = new Map(), schemas, off }) {
   const generated = new Set(outputs.map(({ dir }) => dir))
   const taken = (dir, version) => {
@@ -570,15 +508,13 @@ export function expectedOutputs({ host, root, projects, outputs = [], reasons = 
   })
 }
 
-// A path without the code extension a TypeScript import may leave out, or write as `.js` for a `.ts` file.
+// A TypeScript import may leave the extension out, or write `.js` for a `.ts` file.
 function withoutExtension(path) {
   const stripped = path.replace(/\.d\.[mc]?ts$/iu, '')
   const ext = pathExt(stripped)
   return CODE_EXTENSIONS.has(ext) ? stripped.slice(0, -ext.length - 1) : stripped
 }
 
-// Why the scan's unresolved import `u` is missing, where it is of a file a generator would write (`expected`,
-// expectedOutputs'): its resolution (`targets`) landed in such an output, or its specifier names a default output.
 export function generatedMiss(expected) {
   const outputs = expected.filter(({ path }) => path !== undefined).map((each) => ({ ...each, bare: withoutExtension(each.path) }))
   const defaults = expected.filter(({ specifier }) => specifier !== undefined)
@@ -589,11 +525,8 @@ export function generatedMiss(expected) {
   }
 }
 
-// The warnings, detected, for what `bundle` (rooted at `root`) carries of the output of a generator stasis doesn't
-// run (`expected`'s, skipped): it takes it as committed.
 export function committedWarnings(expected, bundle, root) {
   const skipped = expected.filter(({ path, why }) => path !== undefined && why === SKIPPED && !hasNodeModulesSegment(path))
-  if (skipped.length === 0) return []
   const files = [...bundle.sources.keys()]
   return skipped.filter(({ path }) => {
     const rel = posix.relative(root, path)
@@ -601,8 +534,6 @@ export function committedWarnings(expected, bundle, root) {
   }).map(({ writer, path }) => `[stasis] prisma: ${notGenerating(writer, SKIPPED, path)}`)
 }
 
-// The projects (`projects`, directories relative to `root`) a build of `paths` (absolute) may import the generated
-// outputs of: those the paths are in, and the workspace packages they depend on by name, theirs in turn.
 export function reachedProjects(host, root, projects, paths) {
   const manifests = new Map([...projects].map((dir) => {
     const json = readJson(posix.join(root, dir, 'package.json'), host)
@@ -613,19 +544,16 @@ export function reachedProjects(host, root, projects, paths) {
   const reached = new Set(paths.map((path) => nearest(path, (dir) => manifests.has(projectOf(dir)))).filter((dir) => dir !== null).map(projectOf))
   for (const dir of reached) {
     const json = manifests.get(dir)
-    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-      for (const name of isPlainObject(json[field]) ? Object.keys(json[field]) : []) if (byName.has(name)) reached.add(byName.get(name))
-    }
+    const names = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap((field) => (isPlainObject(json[field]) ? Object.keys(json[field]) : []))
+    for (const name of names) if (byName.has(name)) reached.add(byName.get(name))
   }
   return reached
 }
 
-// What deleteOutputDir clears before writing (its globs skip dot paths), in an output that must
-// already look like a client.
+// What deleteOutputDir clears before writing (its globs skip dot paths).
 const isStale = (path) => /(?:\.(?:js|ts|mts|cts|wasm|prisma)$|^package\.json$|^[^/]*\.node$|^(?:query|schema)-engine-[^/]*$)/u.test(path) && !path.split('/').some((name) => name.startsWith('.'))
 const CLIENT_FILES = ['client.ts', 'client.mts', 'client.cts', 'client.d.ts']
 
-// A copy of `vfs` with the outputs written over any earlier client, as `prisma generate` does.
 export function withPrismaClients(vfs, outputs) {
   const out = createVfs()
   out.mount(vfs, '/')

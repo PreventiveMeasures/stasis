@@ -2,30 +2,21 @@ import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createRequire } from 'node:module'
 
-// Stands in for the project's Babel transformer (`babelTransformerPath`) under ./metro-transformer.js,
-// which swaps it in for each worker transform, to keep each import as WRITTEN in the source. Metro
-// names a dependency by the specifier Babel leaves in its output, so a plugin rewriting it (e.g.
-// babel-plugin-module-resolver mapping `#local/abc` to `./src/abc`) leaves the serializer only the
-// rewrite. This adds one plugin that records every specifier in its `pre` -- Babel runs every
-// plugin's `pre` before any plugin's visitor, so nothing has rewritten one yet -- and reads each
-// again once Babel is done, before Metro's own passes replace them in the AST, but one importing
-// types alone that Babel erased. One a plugin consumed, gone from Babel's output with nothing left
-// naming its module (`require('./messages.po')`, which @exodus/i18n's plugin-inline-po reads and
-// inlines), it keeps apart. The real transformer runs as it would; its output is untouched.
+// Stands in for the project's Babel transformer under ./metro-transformer.js, to keep each import as WRITTEN: Metro
+// names a dependency by the specifier Babel leaves, so a rewrite (babel-plugin-module-resolver's) would leave it only
+// that. An added plugin records each specifier in its `pre` (Babel runs every `pre` before any visitor) and reads it
+// again once Babel is done; one a plugin consumed, with nothing left naming its module, is kept apart.
 
 const require = createRequire(import.meta.url)
 
-// One per worker transform, run by ./metro-transformer.js: `babelTransformerPath` is the project's
-// (absolute), `asWritten` maps each specifier Babel left to the ones written there, and `consumed`
-// holds each one a plugin consumed, as Babel last left it.
+// Per worker transform: `babelTransformerPath` the project's, `asWritten` each specifier Babel left -> the ones
+// written, and `consumed` each one a plugin consumed, as Babel last left it.
 export const transformContext = new AsyncLocalStorage()
 
-// The nodes Metro's collectDependencies takes a specifier from: these declarations, and the calls
-// below (`import()`, `require()`, `__prefetchImport()`, `require.<member>()`).
+// The nodes Metro's collectDependencies takes a specifier from.
 const DECLARATIONS = new Set(['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'])
 const REQUIRE_MEMBERS = new Set(['context', 'resolveWeak', 'unstable_importMaybeSync'])
 
-// Whether `node` is one of them.
 function isDependency(node) {
   if (node.type !== 'CallExpression') return DECLARATIONS.has(node.type)
   const { callee } = node
@@ -36,8 +27,7 @@ function isDependency(node) {
     callee.property.type === 'Identifier' && REQUIRE_MEMBERS.has(callee.property.name)
 }
 
-// The string `node` holds as a constant: a literal, a template with no substitutions, or a `+` of
-// such, which Metro's collectDependencies evaluates to the specifier as it does a literal.
+// A literal, a template with no substitutions, or a `+` of such, which collectDependencies evaluates as a literal.
 function constantString(node) {
   if (node?.type === 'StringLiteral') return node.value
   if (node?.type === 'TemplateLiteral' && node.expressions.length === 0) return node.quasis[0].value.cooked ?? undefined
@@ -47,25 +37,19 @@ function constantString(node) {
   return right === undefined ? undefined : left + right
 }
 
-// The specifier a dependency node holds as a constant: an import/export's source, a call's first
-// argument. A plugin rewriting it replaces the literal, never the node holding it.
-function specifierOf(node) {
-  return constantString(node.type === 'CallExpression' ? node.arguments[0] : node.source)
-}
+// A plugin rewriting a specifier replaces the literal, never the node holding it.
+const specifierOf = (node) => constantString(node.type === 'CallExpression' ? node.arguments[0] : node.source)
 
 const TYPE_KINDS = new Set(['type', 'typeof'])
 
-// A declaration of types alone, which Babel may erase, and then it names no module Metro depends on:
-// Flow's `import type`/`import typeof`, TypeScript's `import type`, `export type ... from`, and one
-// whose every specifier is a type (`import { type A }`, which TypeScript's `onlyRemoveTypeImports`
-// keeps as `import {} from`).
+// A declaration of types alone, which Babel may erase: Flow's or TypeScript's `import type`, `export type ... from`,
+// or one whose every specifier is a type (which TypeScript's `onlyRemoveTypeImports` keeps as `import {} from`).
 function typesOnly(node) {
   if (TYPE_KINDS.has(node.importKind ?? node.exportKind)) return true
   const specifiers = node.specifiers ?? []
   return specifiers.length > 0 && specifiers.every((specifier) => TYPE_KINDS.has(specifier.importKind ?? specifier.exportKind))
 }
 
-// The dependency nodes in Babel's output, and the specifiers they hold as constants.
 function dependenciesLeft(t, ast) {
   const nodes = new Set()
   const specifiers = new Set()
@@ -92,8 +76,8 @@ function asWrittenPlugin({ types: t }) {
         if (written !== undefined) slots.push({ node, written, types: node.type !== 'CallExpression' && typesOnly(node) })
         else if (node.type === 'CallExpression' && node.arguments.length > 0) evaluate = true
       })
-      // Metro takes any argument Babel evaluates to a string with confidence, one bound to a constant
-      // too (`const name = './x'; require(name)`), which only a path, and its scope, can evaluate.
+      // Metro also takes an argument Babel evaluates to a string with confidence (`const name = './x'; require(name)`),
+      // which only a path, with its scope, can evaluate.
       if (!evaluate) return
       file.path.traverse({
         CallExpression(path) {
@@ -104,10 +88,8 @@ function asWrittenPlugin({ types: t }) {
       })
     },
     visitor: {
-      // Babel exits a node only if no plugin removed it on the way in, so a declaration of types
-      // alone that Babel erased never exits: flow-strip-types removes it as it enters it, the TS
-      // plugin before the traversal gets there. One it kept (`import {} from` under
-      // `onlyRemoveTypeImports`) exits, still naming its module.
+      // Babel exits a node only if no plugin removed it on the way in, so a types-only declaration it erased never
+      // exits; one it kept (`import {} from`) does, still naming its module.
       'ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration': {
         exit(path) {
           transformContext.getStore().kept.add(path.node)
@@ -123,12 +105,9 @@ export function transform(args) {
   const slots = []
   const kept = new Set()
   Object.assign(context, { slots, kept })
-  // Once Babel is done: each specifier as it left it, from the node that held it as written, but a
-  // declaration of types alone Babel erased. One a plugin replaced keeps it too: lowered to a require
-  // (the commonjs transform), or split in two (`export * as ns from` into an import and an export,
-  // the export-namespace-from transform), it names the same module, its specifier as rewritten
-  // before (module-resolver rewrites every one as the program enters). One gone from the output,
-  // with no node there naming its module, a plugin consumed in its stead.
+  // Each specifier as Babel left it in the node that held it as written, but an erased types-only declaration's. A
+  // node a plugin replaced (lowered to a require, or split in two) names the same module, its specifier as rewritten
+  // before; one gone from the output with no node there naming its module was consumed.
   const collect = (result) => {
     const left = result?.ast && context.types ? dependenciesLeft(context.types, result.ast) : null
     for (const { node, written, types } of slots) {
@@ -144,7 +123,7 @@ export function transform(args) {
     }
     return result
   }
-  // Sync or async, as the project's transformer is (the RN one is sync).
+  // Sync or async, as the project's transformer is.
   const result = require(context.babelTransformerPath).transform({ ...args, plugins: [...(args.plugins ?? []), asWrittenPlugin] })
   return typeof result?.then === 'function' ? result.then(collect) : collect(result)
 }

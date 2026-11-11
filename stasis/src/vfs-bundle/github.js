@@ -13,23 +13,17 @@ import { YARNCLEAN } from './yarnclean.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
-// What a git tree holds (upstream's verification refuses anything else from GitHub).
+// Upstream's verification refuses anything else from GitHub.
 const TREE_TYPES = new Set(['file', 'directory', 'symlink'])
-// Lockfile references to a path above the lockfile's directory (conservatively: any importer's):
-// pnpm's and yarn's specs, and package-lock.json's package keys and `resolved` paths, `..` itself
-// (`link:..`, npm's `".."`) or under it.
+// A lockfile's reference to `..` or under it (conservatively: any importer's).
 const LOCKFILE_ESCAPE = /(?:link:|file:|directory: |["'])\.\.(?![^/"'\s])/u
 const TSCONFIG = /(?:^|\/)[jt]sconfig[^/]*\.json$/u
 
-// Whether `target`, a path relative to the file `from`, resolves outside the tree.
 const resolvesOutside = (from, target) => target.startsWith('/') || posixPathEscapes(posix.join(posix.dirname(from), target))
 
-// The mode a checkout gives an entry under the usual umask 022. Git keeps only a file's executable
-// bit (upstream verifies that much), and GitHub's tarballs are written with git archive's tar.umask
-// 0002, which makes them 664 and 775 besides.
+// As a checkout under umask 022 makes them: git keeps only the executable bit, and GitHub's tar.umask is 0002.
 const checkoutMode = ({ type, mode }) => (type === 'symlink' ? mode : type === 'directory' || mode & 0o100 ? 0o755 : 0o644)
 
-// A GitHub tarball's entries, its one top directory dropped, with the modes a checkout has.
 async function treeEntries(tarball, where) {
   const entries = []
   for (const entry of unpack(await decompress(tarball, 'gzip', { limit: MAX_TAR_BYTES }))) {
@@ -40,10 +34,8 @@ async function treeEntries(tarball, where) {
   return entries
 }
 
-// The first symlink pointing outside the tree, which would otherwise resolve within it.
 const escapingLink = (entries) => entries.find((entry) => entry.type === 'symlink' && resolvesOutside(entry.name, entry.linkname))
 
-// Whether a subtree's files refer to a path above it: a lockfile link or a [jt]sconfig path.
 function refersAbove(entries, lockfile) {
   const text = (entry) => new TextDecoder().decode(entry.data)
   return entries.some((entry) => entry.type === 'file' && (entry.name === lockfile
@@ -51,25 +43,22 @@ function refersAbove(entries, lockfile) {
     : TSCONFIG.test(entry.name) && [...text(entry).matchAll(/"(\.\.?\/[^"]*)"/gu)].some(([, path]) => resolvesOutside(entry.name, path))))
 }
 
-// The directories above `directory`, the repo's root (undefined) last.
+// The repo's root (undefined) last.
 function ancestorsOf(directory) {
   const out = []
   for (let dir = posix.dirname(directory); dir !== '.'; dir = posix.dirname(dir)) out.push(dir)
   return [...out, undefined]
 }
 
-// The files of the subtree `tree` at `directory`, or null where one is a symlink out of it. Upstream
-// refuses a tarball whose symlinks climb above its root, unless told how far they may: as far as the
-// repo's root, as many levels as `directory` is deep, less one (its tarball's top directory).
+// Upstream refuses symlinks above the tarball's root (its top directory) unless told how far they may climb: to the repo's.
 async function treeFiles(client, { github, tree, directory, where }) {
-  let files
   try {
-    files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where)
+    const files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where)
+    return escapingLink(files) ? null : files
   } catch (error) {
     if (error instanceof ArchiveError) return null // e.g. a symlink out of the subtree
     throw error
   }
-  return escapingLink(files) ? null : files
 }
 
 async function repoFiles(client, { github, sha, where }) {
@@ -79,8 +68,7 @@ async function repoFiles(client, { github, sha, where }) {
   return files
 }
 
-// Checked as the Bundle checks them, before anything is fetched; a tag's name is upstream's to check,
-// and a `path` is checked as a `directory`, which it may be, but for a pattern's `*`.
+// Checked as the Bundle checks them, before anything is fetched; a `path` as a `directory`, but for a pattern's `*`.
 function checkRepo(name, { github, sha, tag, directory, path }) {
   if (github === undefined) throw new Error(`${name}: github is required`)
   if (tag !== undefined && (typeof tag !== 'string' || tag === '')) throw new TypeError(`${name}: tag must be a non-empty string`)
@@ -92,14 +80,9 @@ function checkRepo(name, { github, sha, tag, directory, path }) {
   if (path && !isValidRepoField('directory', entryPattern(name, path) ? path.replace('*', '_') : path)) throw new Error(`${name}: invalid path: ${JSON.stringify(path)}`)
 }
 
-// The files that make a directory a project's root, for an entry of each kind: a JS project's
-// package.json, and the foundry.toml or soldeer.toml Soldeer installs from.
-const PROJECT_FILES = { js: ['package.json'], sol: ['foundry.toml', 'soldeer.toml'] }
-// A symlink's mode in a git tree.
 const SYMLINK = '120000'
 
-// `list`'s listings of `dirs`, or null where one is no plain directory in git (a symlink, or under
-// one); the root's failure is GitHub's.
+// Null where one is no plain directory in git (a symlink, or under one); the root's failure is GitHub's.
 async function listingsOf(list, dirs) {
   try {
     return await Promise.all(dirs.map(list))
@@ -109,9 +92,6 @@ async function listingsOf(list, dirs) {
   }
 }
 
-// `path` in the repo, by `list`'s listings, as `{ directory, entries }`: a file (no symlink), or those
-// a pattern matches, are entries of the nearest directory at or above them holding one of
-// PROJECT_FILES of their kind, else of the repo's root (undefined); anything else is the directory.
 async function splitPath(list, path, where) {
   const pattern = entryPattern(where, path)
   const matches = pattern?.matches ?? ((file) => file === posix.basename(path))
@@ -120,19 +100,13 @@ async function splitPath(list, path, where) {
   const names = (listings?.[0] ?? []).filter((entry) => entry.type === 'blob' && entry.mode !== SYMLINK && matches(entry.path)).map((entry) => entry.path).toSorted()
   if (names.length === 0 && pattern) throw new Error(`${where}: ${JSON.stringify(path)} matches no file`)
   if (names.length === 0) return { directory: path }
-  const files = PROJECT_FILES[names.every((file) => file.endsWith('.sol')) ? 'sol' : 'js']
+  const files = names.every((file) => file.endsWith('.sol')) ? ['foundry.toml', 'soldeer.toml'] : ['package.json']
   const at = listings.findIndex((listing) => listing.some((entry) => files.includes(entry.path) && entry.type === 'blob'))
   const directory = at === -1 ? undefined : above[at]
   const paths = names.map((file) => posix.join(posix.dirname(path), file))
   return { directory, entries: directory === undefined ? paths : paths.map((file) => posix.relative(directory, file)) }
 }
 
-// listRepoDir's listing of a directory of the repo at `sha`, each listed once.
-const lister = (client, { github, sha }) => memoized((directory) => client.listRepoDir({ repo: github, sha, directory }))
-
-// -> { listed, configured }: the package manager whose lockfile alone `directory` (or the root) and those above it
-// list, undefined where more than one does or the listings can't tell; and whether `directory` lists a
-// stasis.config.json, whose `lockfiles` may stand in for it. Refused where neither is listed.
 async function listedPackageManager(list, { directory, where }) {
   const listings = await listingsOf(list, directory ? [directory, ...ancestorsOf(directory)] : [undefined])
   if (listings === null) return { listed: undefined, configured: false }
@@ -142,8 +116,6 @@ async function listedPackageManager(list, { directory, where }) {
   return { listed: listed.length === 1 ? listed[0] : undefined, configured }
 }
 
-// The files of `directory` alone, when it holds the lockfile, is installed from itself and stands
-// alone, nor does a .yarnclean above it clean the node_modules it installs; else null.
 async function subtreeEntries(client, list, { github, directory, packageManager, where }) {
   const names = async (path) => (await list(path)).map((entry) => entry.path)
   let listing
@@ -155,7 +127,6 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   if (!lockfilesListed([listing]).includes(packageManager)) return null
   const above = ancestorsOf(directory)
   const aboveNames = () => Promise.all(above.map(names))
-  // Installed from a root above it (a workspace's), it is built from there.
   if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), aboveNames))) return null
   if (packageManagerOf('buildGitHubBundle', packageManager).kind === 'js' && (await aboveNames()).some((dir) => dir.includes(YARNCLEAN))) return null
   // Its tree id, as the listing above it holds it, held to that directory's own.
@@ -164,16 +135,13 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
 }
 
-// The repo as buildGitHubBundle downloads it, at `sha`, `tag`'s commit or the default branch's head: `directory` alone
-// where it stands alone for its package manager (given, else told by the listings, else by the tree), else the whole
-// repo. -> { vfs, host, cwd, subtree, sha, where, packageManager, packageManagers, directory, entries }
 async function repoTree(name, { github, sha, tag, directory, path, client, packageManager }, options) {
   checkAhead(name, packageManager, options)
   checkRepo(name, { github, sha, tag, directory, path })
   client ??= createClient({ token: null })
   sha ??= tag === undefined ? (await client.getRepoHead({ repo: github })).oid : (await client.getRepoTag({ repo: github, tag })).oid
   const where = `${name}: ${github}@${sha}`
-  const list = lister(client, { github, sha })
+  const list = memoized((dir) => client.listRepoDir({ repo: github, sha, directory: dir }))
   if (path) {
     const split = await splitPath(list, path, where)
     directory = split.directory
@@ -182,18 +150,11 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
       checkAhead(name, packageManager, options)
     }
   }
-  let found = packageManager
-  // The one `options` were checked for: none told by the listings of a directory whose
-  // stasis.config.json may name the lockfiles in its place, which the tree tells.
-  let checked = packageManager
-  if (found === undefined) {
-    const told = await listedPackageManager(list, { directory, where })
-    found = told.listed
-    if (found !== undefined && !told.configured) {
-      checkAhead(name, found, options)
-      checked = found
-    }
-  }
+  const told = packageManager === undefined ? await listedPackageManager(list, { directory, where }) : { listed: packageManager }
+  let found = told.listed
+  // Unchecked where stasis.config.json may name the lockfiles in place of the one listed.
+  const checked = packageManager ?? (told.configured ? undefined : found)
+  if (checked !== packageManager) checkAhead(name, checked, options)
   const open = (files, at) => {
     const vfs = vfsFromEntries(files)
     return { vfs, host: vfsHost(vfs), cwd: posix.resolve('/', at) }
@@ -213,27 +174,22 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
   }
   // With lockfiles, none detected: a package manager given is the build's to refuse.
   const packageManagers = lockfiles === undefined || packageManager !== undefined ? [found] : lockfilesManagers(where, lockfiles)
-  return { ...opened, subtree, sha, where, packageManager: lockfiles === undefined ? found : packageManager, packageManagers, directory, entries: options.entries }
+  return { ...opened, client, subtree, sha, where, packageManager: lockfiles === undefined ? found : packageManager, packageManagers, directory, entries: options.entries }
 }
 
-// buildVfsBundle of a GitHub repo (repoTree's), without `entries` those suggestedEntries suggests. Nothing is read
-// from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id. The bundle's `repo` names the
-// commit and the directory its paths are from (buildJsBundle's innermostRoot). -> buildVfsBundle's, and `directory`
+// Nothing is read from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id.
 export async function buildGitHubBundle({ github, sha, tag, directory, path, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   checkCache('buildGitHubBundle', options.cache)
-  // Its own, for a Soldeer git dependency too.
-  client ??= createClient({ token: null })
   const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, directory, path, client, packageManager }, options))
   let { entries } = tree
   if (entries === undefined) {
-    // As suggestedEntries suggests them, from the tree at hand.
     const suggested = defaultEntries('buildGitHubBundle', tree.host, tree.cwd, tree.packageManagers, options)
     entries = suggested.entries
     if (entries.length === 0) throw new Error(`${tree.where}: no entries given, and ${tree.directory || 'the repo root'} ${suggested.none}`)
   }
   const repo = { github, commit: tree.sha }
-  const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo, client })
+  const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo, client: tree.client })
   // The Vfs is the repo's tree, or the subtree at `directory`: a layout known, so its root is `''`.
   const at = posix.join(tree.subtree ? tree.directory : '.', posix.relative('/', built.root)).replace(/^\.$/u, '')
   built.bundle.repo = { ...repo, ...(isValidRepoField('directory', at) && { directory: at }) }
@@ -242,8 +198,6 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
   return built
 }
 
-// The Prisma Clients (prismaClientsOf) of the GitHub repo `github` at `sha`, laid out as buildGitHubBundle lays it
-// out for a bundle whose `repo` names `directory`: `dir` and `schema` from `directory`, none of an output outside it.
 export async function repoPrismaClients({ github, sha, directory, client }) {
   const tree = await repoTree('repoPrismaClients', { github, sha, directory: directory || undefined, client }, {})
   const outputs = await prismaClientsOf({ vfs: tree.vfs, cwd: tree.cwd, packageManager: tree.packageManager, client })
@@ -251,8 +205,6 @@ export async function repoPrismaClients({ github, sha, directory, client }) {
   return outputs.map((output) => ({ ...output, dir: from(output.dir), schema: from(output.schema) })).filter(({ dir }) => !posixPathEscapes(dir))
 }
 
-// suggestedEntries of a GitHub repo, `{ github, sha, tag, directory | path, client, packageManager }`,
-// as buildGitHubBundle downloads it: of a `path` to a file or a pattern, its files.
 export async function suggestedRepoEntries(repo, resolution) {
   const tree = await repoTree('suggestedEntries', repo, resolution)
   return tree.entries ?? defaultEntries('suggestedEntries', tree.host, tree.cwd, tree.packageManagers, resolution).entries

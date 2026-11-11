@@ -1,24 +1,15 @@
 import { isPlainObject, memoized } from '@exodus/stasis-core/util'
 
-// --define: the values a build gives globals (`__DEV__`, `process.env.NODE_ENV`), which the static scan
-// takes as constants to leave out the imports of code they keep from running (`if (__DEV__) require(...)`
-// under `__DEV__=false`). Only a branch whose test folds is left out (`if`/`else`, `?:`, the right of `&&`
-// and `||`), as Metro's release build drops it, and no test folds that Metro wouldn't fold, so a --metro
-// bundle never lacks a file Metro's graph holds.
+// --define: globals' values (`__DEV__`, `process.env.NODE_ENV`) the scan takes as constants, leaving out the imports in
+// branches they keep from running. No test folds that Metro wouldn't fold, so a --metro bundle lacks no file Metro holds.
 
-// The values Metro's release build (`dev: false`, `react-native bundle --dev false`) inlines, and its
-// prelude gives the globals: what `stasis bundle --metro` and `stasis build --metro` define by
-// default, for each name no define given (a flag or the entry's `define`) gives a value of its own.
+// What Metro's release build (`dev: false`) inlines and its prelude gives the globals: --metro's default defines.
 export const METRO_RELEASE_DEFINE = Object.freeze({ __DEV__: false, 'process.env.NODE_ENV': 'production' })
 
-// A defined name: an identifier, or a dotted path of them (`process.env.NODE_ENV`).
 const NAME = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u
 
-// A usage error, prefixed with `name` where there is one.
 const usageError = (name, message, ErrorType = Error) => new ErrorType(name ? `${name}: ${message}` : message)
 
-// `define` (each name -> its value: a string, number, boolean or null) checked, `name` (if any)
-// prefixing errors. -> Map, empty where it is undefined.
 export function parseDefine(name, define) {
   if (define === undefined) return new Map()
   if (!isPlainObject(define)) throw usageError(name, "define must be an object of each name's value", TypeError)
@@ -31,9 +22,7 @@ export function parseDefine(name, define) {
   return new Map(Object.entries(define))
 }
 
-// `--define=KEY=VALUE` texts (`texts`, as given) -> parseDefine's object, `name` (if any) prefixing
-// errors. VALUE is JSON, as esbuild's --define takes it: `__DEV__=false`,
-// `process.env.NODE_ENV="production"`.
+// `--define=KEY=VALUE` texts -> parseDefine's object. VALUE is JSON, as esbuild's --define takes it.
 export function parseDefineFlags(name, texts) {
   if (texts.length === 0) throw usageError(name, '--define must give at least one KEY=VALUE (e.g. --define=__DEV__=false)')
   const define = {}
@@ -53,14 +42,21 @@ export function parseDefineFlags(name, texts) {
 }
 
 const UNKNOWN = Symbol('unknown')
-// The wrappers that are gone by the time Metro folds (Babel keeps no parentheses, and TypeScript's
-// are stripped first), so leave the value as it is.
+// Gone by the time Metro folds (Babel keeps no parentheses, and TypeScript's are stripped first).
 const WRAPPERS = new Set(['ParenthesizedExpression', 'TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression', 'TSTypeAssertion'])
 const EQUALITY = new Set(['===', '!==', '==', '!='])
 const SKIP_KEYS = new Set(['type', 'loc', 'range', 'start', 'end', 'typeAnnotation', 'returnType', 'typeParameters', 'typeArguments'])
+// The child a node of each type binds or writes; functions, `delete` and for-in/of are ownPaths' own.
+const BINDS = {
+  __proto__: null,
+  VariableDeclarator: 'id', ClassDeclaration: 'id', ClassExpression: 'id',
+  TSImportEqualsDeclaration: 'id', TSEnumDeclaration: 'id', TSModuleDeclaration: 'id',
+  ImportSpecifier: 'local', ImportDefaultSpecifier: 'local', ImportNamespaceSpecifier: 'local',
+  CatchClause: 'param', AssignmentExpression: 'left', UpdateExpression: 'argument',
+}
+const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'])
 
-// The dotted path `node` names (`process.env.NODE_ENV`), or null: plain property accesses alone, as
-// Metro inlines them, not `process.env['NODE_ENV']` or `process.env?.NODE_ENV`.
+// Plain property accesses alone, as Metro inlines them: not `process.env['NODE_ENV']` or `process.env?.NODE_ENV`.
 function dottedPath(node) {
   const parts = []
   for (;;) {
@@ -75,8 +71,7 @@ function dottedPath(node) {
   return parts.join('.')
 }
 
-// The path a write to `node` (an assignment target) reaches, as far as it is static from its root
-// identifier (`process.env[name]` writes `process.env`), or null where it has no root identifier.
+// As far as it is static from its root identifier (`process.env[name]` writes `process.env`).
 function writtenPath(node) {
   const parts = []
   while (WRAPPERS.has(node.type) || node.type === 'MemberExpression') {
@@ -97,8 +92,7 @@ function writtenPath(node) {
   return parts.join('.')
 }
 
-// The paths `program` binds or writes itself, each as far as it is static: a declaration of
-// `process` or an assignment to `process.env.NODE_ENV` makes it the file's own, not the define's.
+// A declaration of `process` or an assignment to `process.env.NODE_ENV` makes it the file's own, not the define's.
 // What is only declared for the type checker (`declare const __DEV__: boolean`) binds nothing.
 function ownPaths(program) {
   const paths = new Set()
@@ -122,53 +116,16 @@ function ownPaths(program) {
       return
     }
     if (typeof node.type !== 'string' || node.declare === true) return
-    switch (node.type) {
-      case 'VariableDeclarator':
-        target(node.id)
-        break
-      case 'FunctionDeclaration':
-      case 'FunctionExpression':
-      case 'ArrowFunctionExpression':
-        target(node.id)
-        for (const p of node.params) target(p)
-        break
-      case 'ClassDeclaration':
-      case 'ClassExpression':
-      case 'TSImportEqualsDeclaration':
-      case 'TSEnumDeclaration':
-      case 'TSModuleDeclaration':
-        target(node.id)
-        break
-      case 'CatchClause':
-        target(node.param)
-        break
-      case 'ImportSpecifier':
-      case 'ImportDefaultSpecifier':
-      case 'ImportNamespaceSpecifier':
-        target(node.local)
-        break
-      case 'AssignmentExpression':
-        target(node.left)
-        break
-      case 'UpdateExpression':
-        target(node.argument)
-        break
-      case 'UnaryExpression':
-        if (node.operator === 'delete') target(node.argument)
-        break
-      case 'ForInStatement':
-      case 'ForOfStatement':
-        if (node.left.type !== 'VariableDeclaration') target(node.left)
-        break
-      default:
-    }
+    if (node.type in BINDS) target(node[BINDS[node.type]])
+    else if (FUNCTIONS.has(node.type)) for (const p of [node.id, ...node.params]) target(p)
+    else if (node.type === 'UnaryExpression' && node.operator === 'delete') target(node.argument)
+    else if ((node.type === 'ForInStatement' || node.type === 'ForOfStatement') && node.left.type !== 'VariableDeclaration') target(node.left)
     for (const key of Object.keys(node)) if (!SKIP_KEYS.has(key)) visit(node[key])
   }
   visit(program)
   return paths
 }
 
-// Whether `own` (ownPaths') holds `key` or a path above it.
 function owned(own, key) {
   for (let i = key.length; i > 0; i = key.lastIndexOf('.', i - 1)) {
     if (own.has(key.slice(0, i))) return true
@@ -176,22 +133,18 @@ function owned(own, key) {
   return false
 }
 
-// The branch folder of `program` under `defines` (parseDefine's): for a node, the children the scan
-// is to walk where it is a branch whose test folds (the test itself, and the side that runs), else
-// undefined. null where no define applies to the file: none given, or every one bound or written by
-// the file itself.
+// For a branch whose test folds, the children to walk: the test and the side that runs. null where no define applies
+// to the file (each one given is the file's own).
 export function branchFolder(defines, program) {
   if (defines.size === 0) return null
   const own = ownPaths(program)
   const values = new Map([...defines].filter(([key]) => !owned(own, key)))
   if (values.size === 0) return null
 
-  // The value `node` folds to, or UNKNOWN.
   const folded = memoized((node) => evaluate(node))
   const fold = (node) => (node ? folded(node) : UNKNOWN)
-  // What Metro's constant folding evaluates, once it has inlined the defines (Babel's
-  // path.evaluate()), and less: a value it can't be sure Metro folds is UNKNOWN, as the bundle may
-  // never leave out a file Metro's graph holds.
+  // What Metro's constant folding evaluates once it has inlined the defines (Babel's path.evaluate()), and less: a
+  // value it can't be sure Metro folds is UNKNOWN, as the bundle may never leave out a file Metro's graph holds.
   const evaluate = (node) => {
     if (WRAPPERS.has(node.type)) return fold(node.expression)
     switch (node.type) {
@@ -216,14 +169,9 @@ export function branchFolder(defines, program) {
         const left = operand(node.left, node.right)
         const right = left === UNKNOWN ? UNKNOWN : operand(node.right, node.left)
         if (right === UNKNOWN) return UNKNOWN
-        switch (node.operator) {
-          case '===': return left === right
-          case '!==': return left !== right
-          // eslint-disable-next-line eqeqeq -- the source's own loose comparison, of primitives
-          case '==': return left == right
-          // eslint-disable-next-line eqeqeq
-          default: return left != right
-        }
+        // eslint-disable-next-line eqeqeq -- the source's own loose comparison, of primitives
+        const equal = node.operator.length === 3 ? left === right : left == right
+        return node.operator.startsWith('=') ? equal : !equal
       }
       case 'LogicalExpression': {
         const left = node.operator === '??' ? UNKNOWN : fold(node.left)
@@ -240,8 +188,8 @@ export function branchFolder(defines, program) {
     }
   }
 
-  // The value of `node`, compared with `other`: a `typeof` only beside a string other than 'symbol'
-  // and 'object', the one Babel's typeof-symbol transform leaves as it is (it makes any other a call).
+  // A `typeof` only beside a string other than 'symbol' and 'object', the one Babel's typeof-symbol transform leaves
+  // as it is (it makes any other a call).
   const operand = (node, other) => {
     while (WRAPPERS.has(node.type)) node = node.expression
     if (node.type !== 'UnaryExpression' || node.operator !== 'typeof') return fold(node)
@@ -257,8 +205,7 @@ export function branchFolder(defines, program) {
       if (test === UNKNOWN) return undefined
       return [node.test, test ? node.consequent : node.alternate]
     }
-    // `??` never folds: Babel's nullish-coalescing transform makes it an assignment, which Metro
-    // doesn't fold.
+    // `??` never folds: Babel's nullish-coalescing transform makes it an assignment, which Metro doesn't fold.
     if (node.type === 'LogicalExpression' && node.operator !== '??') {
       const left = fold(node.left)
       if (left === UNKNOWN || rightRuns(node.operator, left)) return undefined
@@ -268,5 +215,4 @@ export function branchFolder(defines, program) {
   }
 }
 
-// Whether the right of `left <operator> right` (`&&` or `||`) runs, `left` its left's value.
 const rightRuns = (operator, left) => (operator === '&&' ? Boolean(left) : !left)

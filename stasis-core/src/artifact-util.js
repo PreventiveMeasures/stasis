@@ -1,8 +1,5 @@
-// The pure half of the util split: the artifact data model of bundle.js, lockfile.js and shard.js. It
-// imports no Node builtin, so `./bundle` and `./lockfile` load in any JS runtime; util.js re-exports it,
-// so `@exodus/stasis-core/util` serves the full set.
+// Imports no Node builtin, so `./bundle` and `./lockfile` load in any JS runtime; util.js re-exports it all.
 
-// KNOWN_FORMATS is the closed universe of `format` strings; parsers reject anything outside it.
 export const NODE_FORMATS = new Set(['module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript'])
 export const SOURCE_LANGUAGE_FORMATS = new Set(['solidity', 'php', 'shell', 'rust', 'teal'])
 export const NATIVE_BUILD_FORMATS = new Set([
@@ -21,61 +18,40 @@ export const KNOWN_FORMATS = new Set([
   ...STAT_FORMATS,
 ])
 
-// Payload-free stat records: attest a path's KIND, no content, and yield to a real format.
 export const isStatFormat = (format) => STAT_FORMATS.has(format)
 
-// Reserved synthetic file a disabled import (a `browser`/`react-native` field mapping it to `false`)
-// points at: never on disk, carried as empty CommonJS so the edge resolves to attested bytes.
+// A disabled import's target (a `browser` field mapping it to `false`): never on disk, carried as empty CommonJS.
 export const EMPTY_MODULE_PATH = '.stasis/empty-module.js'
 
-// The post-erasure family of a '-typescript' loader format ('module-typescript' -> 'module'): a
-// transforming preload (`stasis run --import tsx`) resolves/serves a TypeScript file as the JS
-// family it transpiles to, while the attestation keeps the on-disk format. undefined otherwise.
 export const erasedTypeScriptFormat = (format) =>
   format === 'module-typescript' ? 'module' : format === 'commonjs-typescript' ? 'commonjs' : undefined
 
 const formatKind = (format) => (format === 'directory' || format === 'stat:directory' ? 'directory' : 'file')
 
-// A weak 'stat:*' yields to a real format of the SAME kind and never displaces one; anything else throws.
 export function reconcileFormat(format, currentFormat, name) {
   if (format === currentFormat) return format
   const stat = isStatFormat(format)
-  if (stat !== isStatFormat(currentFormat) && formatKind(format) === formatKind(currentFormat)) {
-    return stat ? currentFormat : format
-  }
+  if (stat !== isStatFormat(currentFormat) && formatKind(format) === formatKind(currentFormat)) return stat ? currentFormat : format
   throw new Error(`format conflict for '${name}' ('${currentFormat}' vs '${format}')`)
 }
 
-// Flat project-relative key. `rel === ''` (a `directory` capture whose path IS a module root) keys the
-// bare dir, never `${dir}/` -- a trailing slash breaks the round-trip.
-export function moduleFileKey(dir, rel) {
-  if (rel === '') return dir
-  return dir === '.' ? rel : `${dir}/${rel}`
-}
+// `rel === ''` (a `directory` capture whose path IS a module root) keys the bare dir: `${dir}/` breaks the round-trip.
+export const moduleFileKey = (dir, rel) => (rel === '' ? dir : dir === '.' ? rel : `${dir}/${rel}`)
 
-// A file's key inside its bucket `dir`, of its flat project-relative `path` below it: the inverse of moduleFileKey.
 export const fileInBucket = (dir, path) => (dir === '.' ? path : path.slice(dir.length + 1))
 
-// GitHub `owner/name` (owner 1-39, name 1-100 chars).
 const GITHUB_REPO = /^(?=[A-Za-z0-9-]{1,39}\/)[A-Za-z0-9](?:-?[A-Za-z0-9])*\/(?!\.\.?$)[\w.-]{1,100}$/u
-// Non-empty normalized repo-relative path of URL-safe segments.
 const REPO_DIRECTORY = /^(?!\.\.?(?:\/|$))[\w.~@+-]+(?:\/(?!\.\.?(?:\/|$))[\w.~@+-]+)*$/u
-// Full lowercase SHA-1 or SHA-256.
 const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
-// The fields of a `repo`, the bundle's own or a dependency's, and their checks.
 export const REPO_FIELDS = {
   github: (v) => typeof v === 'string' && GITHUB_REPO.test(v),
-  // `''` is the repository's root.
   directory: (v) => typeof v === 'string' && v.length <= 1024 && (v === '' || REPO_DIRECTORY.test(v)),
   commit: (v) => typeof v === 'string' && GIT_SHA.test(v),
 }
 
-// Whether two GitHub `owner/name`s are one: GitHub's names are case-insensitive.
 export const sameGithub = (a, b) => a?.toLowerCase() === b?.toLowerCase()
 
-// Validate a block against its `fields` (each optional: a check, or a nested block's fields), `what`
-// naming it in errors; canonical, frozen, undefined if empty. Messages are built on failure alone: a
-// dependency's `repo` is checked on every parse and write.
+// Messages are built on failure alone: a dependency's `repo` is checked on every parse and write.
 export const normalizeBlock = (block, fields, what) => {
   if (block === undefined) return undefined
   if (!isPlainObject(block)) assert(false, `${what} must be an object`)
@@ -88,47 +64,40 @@ export const normalizeBlock = (block, fields, what) => {
   return entries.length === 0 ? undefined : Object.freeze(fromEntries(entries))
 }
 
-// Validate a `repo` (all fields optional); canonical key order, undefined if empty.
 export const normalizeRepo = (repo, what = 'bundle repo') => normalizeBlock(repo, REPO_FIELDS, what)
 
-// A bucket's ecosystem as a dependency's: its `ecosystem` tag, or npm for an untagged one under
-// node_modules (an artifact from before the tag); undefined for first-party code.
+// An untagged node_modules bucket is npm's: an artifact from before the `ecosystem` tag records none.
 export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
-// A dependency's `repo`, the one its own manifest names, with the bundle's own fields, `github`
-// required: a `directory` or `commit` places nothing without the repository it is in. First-party
-// code carries none.
-const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
-  if (repo === undefined) return undefined
-  if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
-  const normalized = normalizeRepo(repo, `${what} module '${dir}' repo`)
-  if (normalized?.github === undefined) assert(false, `${what} module '${dir}' repo has no github`)
+// The normalizer of a record's `field` block: only a bucket `carries` takes (a `kind` one) holds it, `required` set.
+const blockMetadata = (field, fields, required, carries, kind) => (dir, { ecosystem, [field]: block }, what) => {
+  if (block === undefined) return undefined
+  if (!carries(dir, ecosystem)) assert(false, `${what}: '${dir}' is no ${kind} bucket, and carries no ${field}`)
+  const normalized = normalizeBlock(block, fields, `${what} module '${dir}' ${field}`)
+  if (normalized?.[required] === undefined) assert(false, `${what} module '${dir}' ${field} has no ${required}`)
   return normalized
 }
 
+// `github` is required: a `directory` or `commit` places nothing without the repository it is in.
+const normalizeModuleRepo = blockMetadata('repo', REPO_FIELDS, 'github',
+  (dir, ecosystem) => dependencyEcosystem(dir, ecosystem) !== undefined, "dependency's")
+
 const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{43}=$/u, sha512: /^sha512-[A-Za-z\d+/]{86}==$/u }
-// A patch's, as pnpm hashes it.
 const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v) }
 
-// The one sha512 an SRI holds, as upstream takes one; undefined where it holds none, or two.
 export function sha512Of(integrity) {
   const found = new Set((integrity ?? '').split(/\s+/u).filter((token) => token.startsWith('sha512-')).map((token) => token.split('?')[0]))
   return found.size === 1 ? [...found][0] : undefined
 }
-// That, where it is of a sha512's form: a tarball's integrity as a record holds it.
 export const tarballIntegrityOf = (integrity) => {
   const one = sha512Of(integrity)
   return SRI.sha512.test(one ?? '') ? one : undefined
 }
 
-// An npm dependency's bucket alone, not a workspace package's, whatever ecosystem it records.
 export const isNpmDependency = (dir, ecosystem) => hasNodeModulesSegment(dir) && dependencyEcosystem(dir, ecosystem) === 'npm'
 
-// The algorithm of a dependency's archive `integrity`, as its lockfile locks it: an npm tarball's,
-// a crate's (Cargo.lock's `checksum`), a Composer dist's (`shasum`), a Soldeer zip's (`checksum`).
 export const ARCHIVE_ALGORITHM = { npm: 'sha512', cargo: 'sha256', composer: 'sha1', soldeer: 'sha256' }
 
-// A dependency's `integrity` (ARCHIVE_ALGORITHM's); an npm one's of a node_modules bucket alone.
 const normalizeModuleIntegrity = (dir, { ecosystem, integrity }, what) => {
   if (integrity === undefined) return undefined
   const of = dependencyEcosystem(dir, ecosystem)
@@ -137,40 +106,23 @@ const normalizeModuleIntegrity = (dir, { ecosystem, integrity }, what) => {
   return integrity
 }
 
-// An npm dependency's `patch`: the one pnpm installed it with (patchedDependencies), by its integrity.
-const normalizeModulePatch = (dir, { ecosystem, patch }, what) => {
-  if (patch === undefined) return undefined
-  if (!isNpmDependency(dir, ecosystem)) assert(false, `${what}: '${dir}' is no npm dependency's bucket, and carries no patch`)
-  const normalized = normalizeBlock(patch, PATCH_FIELDS, `${what} module '${dir}' patch`)
-  if (normalized?.integrity === undefined) assert(false, `${what} module '${dir}' patch has no integrity`)
-  return normalized
-}
+const normalizeModulePatch = blockMetadata('patch', PATCH_FIELDS, 'integrity', isNpmDependency, "npm dependency's")
 
-// A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not
-// space or `"#$%&,:;<=>?[\]^`{|}`.
 export const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
 export const PACKAGE_BLOCK = { name: isPackageString, version: isPackageString }
 
-// A directory key of a record's `vendored` or `subpackages`: an in-bucket path in canonical form, through
-// no `node_modules` (a package installed there is a bucket of its own).
+// Through no `node_modules`: a package installed there is a bucket of its own.
 const isBucketDir = (dir) => typeof dir === 'string' && dir !== '' && !dir.includes('\\') &&
   dir.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
 
-// Whether a package.json naming `manifestName` at `dir` (package-relative, POSIX) in package `hostName` is
-// a subpackage: a subpath entry point named for its directory (`@hookform/resolvers/zod` at zod/), as
-// microbundle lays them out. It is the package's own code; its `version`, a placeholder (1.0.0), is held to nothing.
 export const isSubpackage = (manifestName, hostName, dir) =>
   typeof manifestName === 'string' && isBucketDir(dir) && manifestName === `${hostName}/${dir}`
 
-// A record's per-directory metadata, each entry the `name` (required) and `version` of the package.json in
-// that directory: `vendored`, the packages copied into a dependency (any name), and `subpackages`, its own
-// subpath entry points (isSubpackage).
 const DIR_METADATA = {
   vendored: () => true,
   subpackages: (entry, name, sub) => isSubpackage(entry.name, name, sub),
 }
 
-// The directory of `entries` a bucket file `rel` is in: the deepest one listed that holds it.
 export const entryDirOf = (entries, rel) => {
   for (let slash = rel.lastIndexOf('/'); slash > 0; slash = rel.lastIndexOf('/', slash - 1)) {
     if (Object.hasOwn(entries, rel.slice(0, slash))) return rel.slice(0, slash)
@@ -178,20 +130,12 @@ export const entryDirOf = (entries, rel) => {
   return undefined
 }
 
-// The entries of a `vendored` or `subpackages` that hold one of `files`, each file counted for the deepest
-// entry holding it; path-sorted and frozen, undefined if none. An artifact lists those it carries a file of.
 function carriedEntries(entries, files) {
   if (entries === undefined) return undefined
-  const carried = new Set()
-  for (const rel of Object.keys(files)) {
-    const dir = entryDirOf(entries, rel)
-    if (dir !== undefined) carried.add(dir)
-  }
+  const carried = new Set(Object.keys(files).map((rel) => entryDirOf(entries, rel)).filter((dir) => dir !== undefined))
   return carried.size === 0 ? undefined : Object.freeze(fromEntries(sortedByPath(carried).map((dir) => [dir, entries[dir]])))
 }
 
-// A dependency's `field` of DIR_METADATA, validated: each entry holds one of the record's `files`. First-party
-// code carries none.
 const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: entries }, what) => {
   if (entries === undefined) return undefined
   if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no ${field}`)
@@ -204,20 +148,17 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
     return [sub, entry]
   }))
   const carried = carriedEntries(normalized, files)
-  for (const sub of Object.keys(normalized)) {
-    if (!Object.hasOwn(carried ?? {}, sub)) assert(false, `${what} module '${dir}' ${field} '${sub}' holds none of its files`)
-  }
+  const idle = Object.keys(normalized).find((sub) => !Object.hasOwn(carried ?? {}, sub))
+  if (idle !== undefined) assert(false, `${what} module '${dir}' ${field} '${idle}' holds none of its files`)
   return carried
 }
 
-// The metadata a record holds whole (DIR_METADATA's is by directory), each field's normalizer.
 const RECORD_METADATA = { integrity: normalizeModuleIntegrity, repo: normalizeModuleRepo, patch: normalizeModulePatch }
 const DIR_FIELDS = Object.keys(DIR_METADATA)
-// Every metadata field, in canonical order.
 const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
 const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]
 
-// A module bucket record in canonical key order; `ecosystem` and the metadata are omitted (not undefined) when absent.
+// Canonical key order; `ecosystem` and the metadata are omitted (not undefined) when absent.
 export const moduleInfo = (info) => {
   const record = { name: info.name, version: info.version }
   for (const key of OPTIONAL_KEYS) if (info[key] !== undefined) record[key] = info[key]
@@ -225,16 +166,13 @@ export const moduleInfo = (info) => {
   return record
 }
 
-// What a record attests of how its package was installed, which two records of one bucket must agree
-// on: its tarball's integrity, and the patch pnpm applied.
+// How a record's package was installed: two records of one bucket must agree on it.
 export const ATTESTED_METADATA = ['integrity', 'patch']
 
-// Whether `record` attests any of it; and `record` attesting what `from` does, in place of its own.
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
 
-// What `record` attests of `field`: its value; of the patch of one recording an integrity and none,
-// null (installed unpatched: the two are recorded of one install); undefined where it tells nothing.
+// A record of an integrity and no patch attests the patch null (installed unpatched); undefined: it tells nothing.
 export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
 
 const agree = (field, record, other, what) => {
@@ -242,13 +180,11 @@ const agree = (field, record, other, what) => {
   if (ours !== theirs) assert(false, `${what} ${field} mismatch (${ours} vs ${theirs})`)
 }
 
-// That each ATTESTED_METADATA `record` attests (attestedOf) is `other`'s, `other` recording none of it too.
+// What `record` attests must be `other`'s: `other` recording none of it is a mismatch too.
 export function assertAttested(record, other, what) {
   for (const field of ATTESTED_METADATA) if (attestedOf(record, field) !== undefined) agree(field, record, other, what)
 }
 
-// `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none;
-// ATTESTED_METADATA both attest (attestedOf) must agree.
 export function withMetadataOf(record, other, what = 'module') {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
@@ -262,16 +198,12 @@ export function withMetadataOf(record, other, what = 'module') {
   return added === undefined ? record : moduleInfo({ ...record, ...added })
 }
 
-// Each record of `modules` held to the account of how its package was installed (`accounts`, by dir:
-// an install record's, or, `locked`, a lockfile's alone), `prefix` naming where the records are from.
 export function heldToAccounts(modules, accounts, prefix = '') {
   for (const [dir, account] of accounts) {
     if (modules.has(dir)) assertAttested(modules.get(dir), account, `${prefix}module '${dir}' (recorded vs ${account.locked ? 'locked' : 'installed'})`)
   }
 }
 
-// A record's metadata as `what` holds it, validated, the fields not in `fields` left out: RECORD_METADATA's,
-// and DIR_METADATA's of the entries `entriesOf(field)`.
 function metadataOf(dir, info, what, fields, entriesOf) {
   const metadata = {}
   for (const [field, normalize] of Object.entries(RECORD_METADATA)) metadata[field] = fields.includes(field) ? normalize(dir, info, what) : undefined
@@ -279,9 +211,7 @@ function metadataOf(dir, info, what, fields, entriesOf) {
   return metadata
 }
 
-// A parsed bucket `dir` of a `what` artifact: an absent version has one spelling (a literal null folds
-// into undefined so identity comparisons and JSON round-trips can't split on it), the metadata of
-// `fields` is validated and the rest left out, and `files` is null-prototype.
+// A literal null version folds into undefined, so identity comparisons and JSON round-trips can't split on it.
 export function normalizeModule(info, dir, what, fields = MODULE_METADATA) {
   const { name, version, ecosystem } = info
   assert(ecosystem === undefined || typeof ecosystem === 'string')
@@ -295,8 +225,7 @@ export function normalizeModule(info, dir, what, fields = MODULE_METADATA) {
   })
 }
 
-// The keys a module map records -- the set an artifact's `executable` must be a subset of. `scope` MUST
-// be the artifact's own: a non-full-scope artifact records only its node_modules buckets.
+// `scope` MUST be the artifact's own: a non-full-scope artifact records only its node_modules buckets.
 export function moduleFileKeys(modules, { scope = 'full' } = {}) {
   const keys = new Set()
   for (const [dir, { files }] of modules) {
@@ -306,14 +235,10 @@ export function moduleFileKeys(modules, { scope = 'full' } = {}) {
   return keys
 }
 
-// THE rule an artifact's `executable` entry must satisfy; returns the problem, or null when legal.
-// parseExecutable (read), assertExecutable (write) and narrowExecutable share it so they cannot drift.
 function executableEntryProblem(file, { what, files, formats, scope }) {
   if (file.includes('\\')) return "holds a '\\'"
   if (posixPathEscapes(file)) return 'escapes the root'
-  if (scope !== 'full' && !hasNodeModulesSegment(file)) {
-    return `is outside node_modules, which a '${scope}'-scope ${what} does not record`
-  }
+  if (scope !== 'full' && !hasNodeModulesSegment(file)) return `is outside node_modules, which a '${scope}'-scope ${what} does not record`
   if (!files.has(file)) return `names no file the ${what} records`
   const format = formats.get(file)
   if (format === 'directory') return 'is a directory capture, not a file'
@@ -321,7 +246,6 @@ function executableEntryProblem(file, { what, files, formats, scope }) {
   return null
 }
 
-// Applied at every write site, so the in-memory artifact is honest before it is ever serialized.
 export function narrowExecutable(executable, { modules, formats, scope }) {
   if (executable.size === 0) return new Set()
   const files = moduleFileKeys(modules, { scope })
@@ -335,23 +259,28 @@ function assertExecutable(executable, { what, files, formats, scope }) {
   }
 }
 
-export function parseExecutable(list, { what, files, formats, scope = 'full' }) {
-  if (list === undefined) return new Set()
-  const at = `${what}: executable`
+function parsePathList(list, at, entry, check) {
   assert(Array.isArray(list), `${at} must be an array of file paths`)
   const out = new Set()
-  for (const file of list) {
-    assert(typeof file === 'string' && file !== '', `${at} entry must be a non-empty string`)
-    // A dupe would silently collapse in out.add() and round-trip to different bytes.
-    assert(!out.has(file), `${at} entry '${file}' is listed twice`)
-    out.add(file)
+  for (const path of list) {
+    check(path)
+    // A dupe would silently collapse in the Set and round-trip to different bytes.
+    assert(!out.has(path), `${entry} '${path}' is listed twice`)
+    out.add(path)
   }
+  return out
+}
+
+export function parseExecutable(list, { what, files, formats, scope = 'full' }) {
+  if (list === undefined) return new Set()
+  const entry = `${what}: executable entry`
+  const out = parsePathList(list, `${what}: executable`, entry, (file) =>
+    assert(typeof file === 'string' && file !== '', `${entry} must be a non-empty string`))
   assertExecutable(out, { what, files, formats, scope })
   return out
 }
 
-// The one choke point every producer goes through, so a write site that forgot to narrow fails HERE, not
-// on the next read. Omitted when empty: keeps every pre-`executable` artifact byte-identical when rewritten.
+// Omitted when empty, so every pre-`executable` artifact rewrites byte-identical.
 export function serializeExecutable(executable, { what, modules, formats, scope }) {
   if (executable.size === 0) return undefined
   assertExecutable(executable, { what, files: moduleFileKeys(modules, { scope }), formats, scope })
@@ -366,24 +295,19 @@ export const LOCK_FILE = 'stasis.lock.json'
 export const CONFIG_FILE = 'stasis.config.json'
 export const BUNDLE_FILE = 'stasis.code.br'
 
-// An artifact's `scope`: what of the project it records.
 export const SCOPES = new Set(['node_modules', 'full'])
 export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} scope must be node_modules or full, got ${JSON.stringify(scope)}`)
 
-// stasis's lockfile, by name at any depth and in any case: a case-insensitive disk resolves
-// `STASIS.LOCK.JSON` to it too.
+// In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
 export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
 
-// sortPaths' order, of two paths as split at '/' (read, not changed).
 function compareSegments(al, bl) {
-  // The segments from `i` on are where the two differ.
   let i = 0
   while (i < al.length && al[i] === bl[i]) i++
   const ar = al.length - i
   const br = bl.length - i
   if (ar === 0 && br === 0) return 0
 
-  // First process each file in dir, then subdirs
   if (ar < 2) return br < 2 && (al[i] ?? '') > (bl[i] ?? '') ? 1 : -1
   if (br < 2) return 1
 
@@ -401,11 +325,9 @@ function compareSegments(al, bl) {
   throw new Error('Unreachable')
 }
 
-export function sortPaths(a, b) {
-  return compareSegments(a.split('/'), b.split('/'))
-}
+export const sortPaths = (a, b) => compareSegments(a.split('/'), b.split('/'))
 
-// `items` in sortPaths' order of `keyOf(item)`, each key split once, not at each of the sort's comparisons.
+// Each key split once, not at each of the sort's comparisons.
 export const sortedByPath = (items, keyOf = (item) => item) => Array.from(items, (item) => ({ item, segments: keyOf(item).split('/') }))
   .toSorted((a, b) => compareSegments(a.segments, b.segments))
   .map(({ item }) => item)
@@ -428,7 +350,6 @@ export const fileMapToObject = (map, { sorted = true } = {}) => {
   return fromEntries(entries.map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v, { sorted }) : v]))
 }
 
-// `map`'s value of `key`, `make()`'s set there where it has none (undefined).
 export function upsert(map, key, make) {
   let value = map.get(key)
   if (value === undefined) map.set(key, (value = make()))
@@ -441,12 +362,9 @@ export const objectToMaps = (obj) => new Map(
   Object.entries(obj).map(([k, v]) => [k, isPlainObject(v) ? objectToMaps(v) : v])
 )
 
-// True for an absolute path or any `..` hop above the root, INCLUDING a mid-path one (`a/../../x`) that
-// `startsWith('..')` would miss. A segment walk, not posix.normalize, so this module stays free of
-// node:path; its verdict matches normalize's (posix-path-escapes.test.js).
+// A segment walk, not posix.normalize, so this module stays free of node:path; a mid-path `..` (`a/../../x`) counts.
 export function posixPathEscapes(path) {
   if (path.startsWith('/')) return true
-  // The walk can only return true via a literal '..' segment, so the ordinary keys skip the split.
   if (!path.includes('..')) return false
   let depth = 0
   for (const segment of path.split('/')) {
@@ -457,50 +375,28 @@ export function posixPathEscapes(path) {
   return false
 }
 
-// THE rule every path an artifact records must satisfy (a file key's too, see canonicalFileKey): in
-// the root, and free of `\` -- part of a name off Windows, which stasis refuses everywhere rather than
-// take for another path, and on Windows a separator a `..\x` would climb out by.
+// `\` is part of a name off Windows, refused rather than taken for another path; on Windows `..\x` would climb out.
 export const isRefusedPath = (path) => path.includes('\\') || posixPathEscapes(path)
 
-// Throws unless `path`, one of `what`'s, is a path an artifact may record (see isRefusedPath).
 export const assertArtifactPath = (path, what) =>
   assert(!isRefusedPath(path), `${what}: path '${path}' escapes the root or holds a '\\'`)
 
-// A path an artifact may name: a non-empty string isRefusedPath doesn't refuse. The rule for an entry, on
-// read (parseEntries) and write (serializeEntries), and for a shard's paths.
 export const isArtifactKey = (key) => typeof key === 'string' && key !== '' && !isRefusedPath(key)
 const assertEntry = (entry, what) => assert(isArtifactKey(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
 
-// An artifact's `entries` list as a Set: each a non-empty in-root path, listed once (a dupe would
-// collapse in the Set and round-trip to different bytes).
-export function parseEntries(list, what) {
-  assert(Array.isArray(list), `${what}: entries must be an array of file paths`)
-  const out = new Set()
-  for (const entry of list) {
-    assertEntry(entry, what)
-    assert(!out.has(entry), `${what}: entry '${entry}' is listed twice`)
-    out.add(entry)
-  }
-  return out
-}
+export const parseEntries = (list, what) => parsePathList(list, `${what}: entries`, `${what}: entry`, (entry) => assertEntry(entry, what))
 
-// The `entries` list an artifact writes: the same rule as on read, so an in-memory construct can't
-// serialize what parse would reject; path-sorted.
 export function serializeEntries(entries, what) {
   for (const entry of entries) assertEntry(entry, what)
   return fileSetToObject(entries)
 }
 
-// THE rule an artifact's `formats` entry must satisfy, on read (parseFormats) and on write
-// (serializeFormats): a path an artifact may record, and a known format.
 function assertFormat(file, format) {
   assertArtifactPath(file, 'formats')
   assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
 }
 
-// An artifact's `formats` object as a validated Map. '' and '.' alias to the same key (older
-// artifacts keyed the root listing ''); normalized, failing closed on dupes, and an unknown format
-// is rejected at the schema boundary so a tampered artifact fails closed.
+// '' and '.' alias to one key: older artifacts keyed the root listing ''.
 export function parseFormats(json) {
   assert(isPlainObject(json))
   const formats = new Map()
@@ -513,25 +409,19 @@ export function parseFormats(json) {
   return formats
 }
 
-// A payload-free `stat:*` record attests a path's kind alone: an artifact that also carries content
-// for its path is malformed, rejected on read and never written, as nothing would hold those bytes
-// (a reader taking the record as content-free skips them, another would serve or write them).
+// A `stat:*` record attests a path's kind alone: one reader would skip content carried for its path, another serve it.
 export function assertPayloadFree(formats, files, what) {
   for (const [file, format] of formats) {
     if (isStatFormat(format) && files.has(file)) assert(false, `${what}: '${file}' is a payload-free '${format}' record, yet carries content`)
   }
 }
 
-// The `formats` an artifact writes: the same rule as on read, so an in-memory construct can't serialize
-// what parse would reject; path-sorted.
 export function serializeFormats(formats) {
   for (const [file, format] of formats) assertFormat(file, format)
   return fileMapToObject(formats)
 }
 
-// THE rules an artifact's `imports` (conditions -> parent -> specifier -> target) must satisfy, on read
-// and on write. Paths escaping the root (incl. mid-path `a/../../x`) or holding a `\` are rejected: getImport
-// resolves against the root at load. A target is a file, or (--metro) a non-empty { platform: file } map.
+// getImport resolves each path against the root at load. A target is a file, or (--metro) a { platform: file } map.
 function assertImports(imports) {
   for (const [, byParent] of imports) {
     assert(byParent instanceof Map)
@@ -554,7 +444,6 @@ function assertImports(imports) {
   }
 }
 
-// An artifact's `imports` object as nested Maps (see assertImports).
 export function parseImports(json) {
   assert(isPlainObject(json))
   const imports = objectToMaps(json)
@@ -562,15 +451,11 @@ export function parseImports(json) {
   return imports
 }
 
-// The `imports` an artifact writes: the same rules as on read (see assertImports); path-sorted.
 export function serializeImports(imports) {
   assertImports(imports)
   return fileMapToObject(imports)
 }
 
-// A module map as a `what` artifact's `modules` (node_modules buckets) and `sources` (the rest), path-sorted
-// so the bytes are canonical. `metadata` names the metadata fields written, `true` for all, `false` for none
-// (a lockfile writes LOCK_METADATA's).
 export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
   const metadata = written === true ? MODULE_METADATA : written === false ? [] : written
   const grouped = { modules: [], sources: [] }
@@ -588,10 +473,36 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
   return { modules: fromEntries(sortedByPath(grouped.modules, entryKey)), sources: fromEntries(sortedByPath(grouped.sources, entryKey)) }
 }
 
-// The files an import target names: itself, or (--metro) each platform's.
-export const targetFiles = (target) => (target instanceof Map ? target.values() : [target])
+export function parseBuckets(json, what, fields) {
+  const modules = new Map()
+  for (const key of json.config.scope === 'full' ? ['modules', 'sources'] : ['modules']) {
+    if (key === 'modules' && json.modules === undefined) continue
+    assert(isPlainObject(json[key]), `${what}: ${key} must be an object`)
+    const inNodeModules = key === 'modules'
+    for (const [dir, info] of Object.entries(json[key])) {
+      assert(hasNodeModulesSegment(dir) === inNodeModules)
+      assertArtifactPath(dir, what)
+      assert(info?.name && (info.version || !inNodeModules) && info.files)
+      modules.set(dir, normalizeModule(info, dir, what, fields))
+    }
+  }
+  return modules
+}
 
-// Whether two import targets are one: a resolved file, or (--metro) a { platform: file } Map, compared structurally.
+// Each part is undefined where it is none, which JSON.stringify drops. An in-memory lockfile's formats may be null.
+export function serializedParts({ config: { scope }, entries, modules, formats, imports, executable }, what, group) {
+  const full = scope === 'full'
+  const grouped = groupModules(modules, { ...group, what })
+  return {
+    entries: full ? serializeEntries(entries, what) : undefined,
+    sources: full ? grouped.sources : undefined,
+    modules: grouped.modules,
+    formats: formats === null ? undefined : serializeFormats(formats),
+    imports: imports === null ? undefined : serializeImports(imports),
+    executable: serializeExecutable(executable, { what, modules, formats: formats ?? new Map(), scope }),
+  }
+}
+
 export function importTargetsEqual(a, b) {
   if (!(a instanceof Map) || !(b instanceof Map)) return a === b
   return a.size === b.size && a.entries().every(([platform, file]) => b.get(platform) === file)
@@ -599,7 +510,6 @@ export function importTargetsEqual(a, b) {
 
 const fmtTarget = (t) => (t instanceof Map ? `{${[...t].map(([p, f]) => `${p}: ${f}`).join(', ')}}` : t)
 
-// Merge two import maps (conditions -> parent -> specifier -> target); a redirect conflict throws.
 export function mergeImportMaps(a, b, label) {
   const out = new Map()
   for (const imports of [a, b]) {
@@ -621,7 +531,6 @@ export function mergeImportMaps(a, b, label) {
   return out
 }
 
-// A weak 'stat:*' yields to a real format; two real formats or a stat kind flip are fatal.
 export function upsertFormat(map, file, format) {
   const currentFormat = map.get(file)
   map.set(file, currentFormat === undefined ? format : reconcileFormat(format, currentFormat, file))
@@ -629,40 +538,28 @@ export function upsertFormat(map, file, format) {
 
 export function mergeFormatMaps(a, b, label) {
   const out = new Map()
-  for (const formats of [a, b]) {
-    for (const [file, format] of formats) {
-      try {
-        upsertFormat(out, file, format)
-      } catch (cause) {
-        throw new Error(`${label}: ${cause.message}`, { cause })
-      }
-    }
+  try {
+    for (const formats of [a, b]) for (const [file, format] of formats) upsertFormat(out, file, format)
+  } catch (cause) {
+    throw new Error(`${label}: ${cause.message}`, { cause })
   }
   return out
 }
 
-// A union, EXCEPT that `b` (the INCOMING, newer artifact -- every call site passes it on the right) is
-// authoritative for its own files: a since-lost execute bit is cleared, not resurrected by the union.
-export function mergeExecutableSets(a, b, bModules, scope) {
-  if (a.size === 0) return new Set(b)
-  return new Set(b).union(a.difference(moduleFileKeys(bModules, { scope })))
-}
+// `b`, the INCOMING newer artifact, is authoritative for its own files: a since-lost execute bit is cleared.
+export const mergeExecutableSets = (a, b, bModules, scope) =>
+  (a.size === 0 ? new Set(b) : new Set(b).union(a.difference(moduleFileKeys(bModules, { scope }))))
 
-// An empty, '.' or '..' path segment.
 const NON_CANONICAL_SEGMENT = /(?:^|\/)\.{0,2}(?:\/|$)/u
 
-// The flat key of `rel` in bucket `dir`; throws unless canonical ('.' only as the root listing, rel '')
-// and free of `\`, which no artifact path holds: off Windows it is part of a name, refused everywhere.
+// '.' is canonical only as the root listing (rel ''). Messages are built only on failure: this runs for every file.
 export function canonicalFileKey(dir, rel, what) {
   const key = moduleFileKey(dir, rel)
-  // Message built only on failure: this runs for every file.
   if ((key !== '.' || rel !== '') && NON_CANONICAL_SEGMENT.test(key)) assert(false, `${what}: non-canonical file key ${JSON.stringify(key)}`)
   if (key.includes('\\')) assert(false, `${what}: file key '${key}' holds a '\\', which no path may`)
   return key
 }
 
-// Maps each file's flat key to its bucket; rejects non-canonical keys and refused bucket dirs (an empty
-// bucket's too, which no file key would reach), reports duplicates to onDuplicate.
 export function flatFileKeys(modules, what, onDuplicate) {
   const owners = new Map()
   for (const [dir, { files }] of modules) {
@@ -678,8 +575,6 @@ export function flatFileKeys(modules, what, onDuplicate) {
   return owners
 }
 
-// The flatFileKeys duplicate handler for an artifact's parse/serialize: two bucket splits flattening
-// to one path means module bucketing changed between writes.
 export const duplicateKeyError = (what, regenerate) => (key) => assert(false,
   `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
   `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`)
@@ -688,7 +583,7 @@ export const duplicateKeyError = (what, regenerate) => (key) => assert(false,
 // `held`, `b` is held to `a`, not merged into it: what `b` alone attests stays a claim of its own files.
 export function mergeModuleMaps(a, b, label, { held = false } = {}) {
   const out = new Map()
-  const absorb = (modules) => {
+  for (const modules of [a, b]) {
     for (const [dir, info] of modules) {
       const existing = out.get(dir)
       if (existing === undefined) {
@@ -697,8 +592,6 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
       }
       assert(existing.name === info.name,
         `${label}: module '${dir}' name mismatch ('${existing.name}' vs '${info.name}')`)
-      // A one-sided absent version is usually a migration skew: older stasis fabricated '0.0.0'
-      // for a workspace package whose package.json has no version, newer stasis records none.
       assert(existing.version === info.version,
         `${label}: module '${dir}' version mismatch ('${existing.version}' vs '${info.version}')` +
         ((existing.version == null) === (info.version == null) ? '' :
@@ -706,8 +599,7 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      // Metadata: either side's, where only one records it, else `a`'s (withMetadataOf). An attested
-      // value one side alone records is of its files alone: the other may add none.
+      // An attested value one side alone records is of its files alone: the other may add none.
       out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))
       for (const field of ATTESTED_METADATA) {
         if ((existing[field] === undefined) === (info[field] === undefined) || (held && existing[field] === undefined)) continue
@@ -716,19 +608,12 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
         if (added !== undefined) assert(false, `${label}: module '${dir}' ${field} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)
       }
       for (const [rel, value] of Object.entries(info.files)) {
-        if (Object.hasOwn(existing.files, rel)) {
-          assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)
-        } else {
-          existing.files[rel] = value
-        }
+        if (!Object.hasOwn(existing.files, rel)) existing.files[rel] = value
+        else assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)
       }
     }
   }
-  absorb(a)
-  absorb(b)
-  // One project-relative path must live in exactly one bucket. Bucketing can change between releases
-  // (a versionless workspace package now owns its own), which per-dir absorption can't see: unchecked,
-  // the merge would WRITE an artifact that fails its own next parse on the duplicate-file-key guard.
+  // Bucketing can change between releases, which per-dir absorption can't see: never WRITE what the next parse rejects.
   flatFileKeys(out, label, (key, owner, dir) => assert(false,
     `${label}: file '${key}' is bucketed under both '${owner}' and '${dir}' -- module bucketing ` +
     `changed between the artifacts (a workspace package without a version now owns its own ` +
@@ -737,14 +622,12 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
 }
 
 // A full path SEGMENT, NOT a bare substring (`foo_node_modules/dep` is a source dir, not a bucket).
-export function hasNodeModulesSegment(path) {
-  return path === 'node_modules' || path.startsWith('node_modules/') || path.endsWith('/node_modules') || path.includes('/node_modules/')
-}
+export const hasNodeModulesSegment = (path) =>
+  path === 'node_modules' || path.startsWith('node_modules/') || path.endsWith('/node_modules') || path.includes('/node_modules/')
 
 const NODE_MODULES_MARKER = 'node_modules/'
 
-// Deepest segment-aligned `node_modules/` marker, or -1: `lastIndexOf` alone would also match a bare
-// substring (`foo_node_modules/`), so a candidate only counts at the start or after a `/`.
+// Segment-aligned: `lastIndexOf` alone would also match a bare substring (`foo_node_modules/`).
 function lastNodeModulesMarker(path) {
   let idx = path.length
   while ((idx = path.lastIndexOf(NODE_MODULES_MARKER, idx - 1)) !== -1) {

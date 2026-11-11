@@ -1,6 +1,5 @@
-// Who owns each file of a Solidity project -- the project or one of its dependencies -- decided by where
-// the file really is, for solidity.js, foundry.js and the bundler's --manifests. Dependencies are
-// untrusted input: a link one plants out of itself is never followed.
+// Who owns each file of a Solidity project, by where it really is. Dependencies are untrusted input: a link
+// one plants out of itself is never followed.
 
 import { realpathSync } from 'node:fs'
 import { isAbsolute, join, parse, posix, relative, resolve, sep } from 'node:path'
@@ -12,17 +11,12 @@ import { diskHost } from '@exodus/stasis-core/host'
 import { hasNodeModulesSegment, memoized, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
 
-// `/`-separated, as the loader's paths are: only Windows' separator is converted (on POSIX a `\\` is
-// part of a name, and must not read as a directory boundary).
+// Only Windows' separator: on POSIX a `\\` is part of a name, and must not read as a directory boundary.
 const toSlashes = (p) => (sep === '\\' ? p.replaceAll('\\', '/') : p)
 
-// --- Reading --------------------------------------------------------------------------------
-
-// `p`'s real path as `host` resolves it, which throws when it can't: on disk, as the OS does
-// (realpath(3): the filesystem's own spelling, which Node's realpathSync doesn't give).
+// On disk as the OS resolves it (realpath(3): the filesystem's own spelling, which Node's realpathSync doesn't give).
 const realpathIn = (host, p) => (host === diskHost ? realpathSync.native(p) : host.realpath(p))
 
-// `p`'s real path (realpathIn), or null.
 export function realpathOrNull(p, host = diskHost) {
   try {
     return realpathIn(host, p)
@@ -31,12 +25,10 @@ export function realpathOrNull(p, host = diskHost) {
   }
 }
 
-// A path relative to a dir (slashes) that stays inside it.
 const inRoot = (rel) => !relativeEscapes(rel)
 
-// `abs`, a file the resolution read, relative to the project `root` (slashes): as spelled when inside it
-// with no `..` to resolve, else by real paths (`../` when outside). One with no real path is never
-// normalized, which could name another file: it keeps its `..`s, for solidityOwnership to refuse.
+// As spelled inside `root` with no `..` to resolve, else by real paths. One with no real path is never normalized,
+// which could name another file: it keeps its `..`s, for solidityOwnership to refuse.
 export function projectRelative(root, abs, host = diskHost) {
   const rel = toSlashes(relative(root, abs))
   if (inRoot(rel) && !toSlashes(abs).split('/').includes('..')) return rel
@@ -46,8 +38,6 @@ export function projectRelative(root, abs, host = diskHost) {
   return below(resolve(root), abs) ?? (realRoot === null ? null : below(realRoot, abs)) ?? toSlashes(abs)
 }
 
-// `abs` from `dir`, component by component as spelled (empty and `.` ones dropped, `..` kept), or
-// null when it doesn't start with `dir`'s components.
 function below(dir, abs) {
   const parts = (p) => toSlashes(p).split('/').filter((c) => c !== '' && c !== '.')
   const d = parts(dir)
@@ -55,9 +45,8 @@ function below(dir, abs) {
   return d.length < a.length && d.every((c, i) => a[i] === c) ? a.slice(d.length).join('/') : null
 }
 
-// realpathIn `host` of `p`: `{ real }`, or `{ real: null, missing }`, `missing` only when nothing is there
-// at all: the OS may fail to resolve what is there (past PATH_MAX, a loop, `/proc/self/fd/0` on a pipe, a
-// dir it may not search), and a read may still get through.
+// `missing` only when nothing is there at all: the OS may fail to resolve what is there (past PATH_MAX, a loop,
+// `/proc/self/fd/0` on a pipe, a dir it may not search), and a read may still get through.
 function osRealpath(p, host) {
   try {
     return { real: realpathIn(host, p), missing: false }
@@ -66,9 +55,8 @@ function osRealpath(p, host) {
   }
 }
 
-// `bytes` as UTF-8 text, a byte-order mark kept. Bytes that aren't UTF-8 throw, naming them
-// `label`, rather than read with U+FFFD in their place: forge, solc and git refuse such a file, and
-// the text bundled or read must be the file's own.
+// A BOM kept. Bytes that aren't UTF-8 throw rather than read with U+FFFD in their place: forge, solc and git
+// refuse such a file, and the text bundled or read must be the file's own.
 export function decodeUtf8(bytes, label) {
   try {
     return utf8toString(bytes)
@@ -77,18 +65,12 @@ export function decodeUtf8(bytes, label) {
   }
 }
 
-// A config file's text (decodeUtf8), or null when there's no file (readRegularFileOrNull: a regular
-// file only, read through `host`). Errors name it `label`.
 export function readUtf8OrNull(file, label, host = diskHost) {
   const buf = readRegularFileOrNull(file, label, host)
   return buf === null ? null : decodeUtf8(buf, label)
 }
 
-// --- .gitmodules ------------------------------------------------------------------------------
-
-// The submodules of the project at `baseDir`, `{ path, url, branch }`, from its `.gitmodules` as
-// @preventive/lockfile reads it, urls as written. One the library refuses is warned about and read
-// submodule by submodule (gitmodulesLeniently); one git itself refuses is an error.
+// One the library refuses is warned about and read submodule by submodule; one git itself refuses is an error.
 export function readGitmodules(baseDir, host = diskHost) {
   const text = readUtf8OrNull(join(baseDir, '.gitmodules'), '.gitmodules', host)
   if (text === null) return []
@@ -103,13 +85,12 @@ export function readGitmodules(baseDir, host = diskHost) {
   }
 }
 
-// The keys a submodule is read for; past `path`, they're dropped in this order to read the rest.
+// Past `path`, they're dropped in this order to read the rest.
 const SUBMODULE_KEYS = new Set(['path', 'url', 'branch'])
 const DROPPABLE = ['branch', 'url']
 
-// `.gitmodules` text the library refused, read as git reads it (readGitConfig), each submodule's last
-// `path`, `url` and `branch` then read by the library alone, dropping its branch, then url, until it reads;
-// fails closed: every path given it a dependency, if unnamed. `notes` say what was dropped.
+// Each submodule's last `path`, `url` and `branch` read by the library alone, dropping its branch, then url,
+// until it reads; failing closed: every path given it a dependency, if unnamed.
 function gitmodulesLeniently(text) {
   const sections = new Map() // a submodule's name -> Map<key, its entry>
   const paths = new Map() // a submodule's name -> every `path` given it
@@ -170,24 +151,20 @@ function gitmodulesLeniently(text) {
   return { submodules, notes }
 }
 
-// A `path`'s value -> the directory it names, normalized, when that lies inside the repository (else
-// null): `./lib/x` and `lib/x/` are lib/x.
 function normalSubmodulePath(value) {
   if (typeof value !== 'string') return null
   const path = posix.normalize(value).replace(/\/+$/u, '')
   return path !== '' && path !== '.' && inRoot(path) ? path : null
 }
 
-// git's ctype, ASCII alone: only these are space, and a key is letters, digits and `-`, starting with
-// a letter.
+// git's ctype, ASCII alone.
 const GIT_SPACE = new Set([' ', '\t', '\n', '\r'])
 const isGitAlpha = (char) => /^[A-Za-z]$/u.test(char)
 const isGitKeyChar = (char) => /^[\dA-Za-z-]$/u.test(char)
 const GIT_ESCAPES = { __proto__: null, t: '\t', b: '\b', n: '\n', '\\': '\\', '"': '"' }
 
-// `.gitmodules` text as git's config.c reads it, refusing what git refuses and nothing more: its sections
-// in order, `{ section, subsection, header, keys }` (keys before any header in a first, unnamed one), each
-// key `{ key, value, text }`, `value` null for a key alone and `text` from the key to its value's end.
+// As git's config.c reads it, refusing what git refuses and nothing more; keys before any header in a first,
+// unnamed section, a key's `text` from the key to its value's end.
 function readGitConfig(text) {
   const src = text.startsWith('\uFEFF') ? text.slice(1) : text // a byte-order mark git skips
   let pos = 0
@@ -211,7 +188,7 @@ function readGitConfig(text) {
   }
   const refuse = (what) => new Error(`.gitmodules: ${what} at line ${at}; git refuses such a file`)
 
-  // git's get_base_var and get_extended_base_var: `[name]` or `[name "subsection"]`.
+  // git's get_base_var and get_extended_base_var.
   const readHeader = () => {
     let section = ''
     for (;;) {
@@ -241,8 +218,7 @@ function readGitConfig(text) {
     if (next() !== ']') throw refuse('a subsection with no "]" right after it')
     return subsection
   }
-  // git's parse_value: quotes, escapes, a `\` that runs the value on, a comment outside quotes, and
-  // space outside quotes trimmed at both ends.
+  // git's parse_value.
   const readValue = () => {
     let value = ''
     let quoted = false
@@ -279,7 +255,7 @@ function readGitConfig(text) {
       }
     }
   }
-  // git's get_value: a key, and `=` and its value or nothing.
+  // git's get_value.
   const readKey = (first, start) => {
     let key = first.toLowerCase()
     let char = next()
@@ -316,8 +292,6 @@ function readGitConfig(text) {
   }
 }
 
-// --- Ownership --------------------------------------------------------------------------------
-
 const readdirOrEmpty = (dir, host) => {
   try {
     return host.readdir(dir)
@@ -330,9 +304,8 @@ const NOTHING = { abs: null, escape: null }
 // A link target's separators, as the OS reads them (a `\\` is part of a name on POSIX).
 const TARGET_SEPARATORS = sep === '\\' ? /[\\/]/u : /\//u
 
-// Who owns each project-relative path, by its real path: `of(path)`'s `{ real, outside, dependency, escape,
-// reason }`, the dependencies every `node_modules/<pkg>`, each entry of `dirs` and the `packages`. An `escape`
-// is a link a dependency planted out of itself, one from outside back in, or one the walk can't vouch for.
+// The dependencies are every `node_modules/<pkg>`, each entry of `dirs` and the `packages`. An `escape` is a link
+// a dependency planted out of itself, one from outside back in, or one the walk can't vouch for.
 export function solidityOwnership(baseDir, { dirs = [], packages = [], host = diskHost } = {}) {
   const realBase = realpathIn(host, baseDir)
   const realOf = (p) => realpathOrNull(p, host)
@@ -343,14 +316,13 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
   const under = (rel, dir) => rel === dir || rel.startsWith(`${dir}/`)
   const clean = (d) => posix.normalize(toSlashes(d)).replace(/\/+$/u, '')
 
-  // Dirs whose entries are dependencies, and dependency dirs themselves; each by its real path too.
+  // Dirs whose entries are dependencies, and dependency dirs themselves, each by its real path too.
   const holders = new Set()
   const roots = new Set()
   const addReal = (set, rel) => {
     const real = realOf(join(baseDir, rel))
     if (real !== null && inside(toRel(real))) set.add(toRel(real))
   }
-  // A dir as the project names it: relative to the root, or (an absolute lib) by its real path.
   const projectDir = (d) => {
     if (!isAbsolute(d)) return clean(d)
     const real = realOf(d)
@@ -368,7 +340,6 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
   }
   const dependencyDirs = [...holders, ...roots]
   const inDependency = (rel) => inside(rel) && (hasNodeModulesSegment(rel) || dependencyDirs.some((d) => under(rel, d)))
-  // The innermost dependency holding `rel`, a real path.
   const rootOf = (rel) => {
     if (!inside(rel)) return null
     const parts = rel.split('/')
@@ -385,9 +356,8 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
     return best
   }
 
-  // Resolve `parts` from the real dir `start` as realpath does, checking each symlink crossed (and those
-  // its target crosses): `{ abs, escape }`, `abs` null when nothing is there. A link's dir and target take
-  // the filesystem's spelling (a case-insensitive one finds `lib` for `LIB`) before their owners are judged.
+  // As realpath resolves `parts`, checking each symlink crossed. A link's dir and target take the filesystem's
+  // spelling (a case-insensitive one finds `lib` for `LIB`) before their owners are judged.
   const walk = (start, parts, depth) => {
     let cur = start
     for (const part of parts) {
@@ -433,9 +403,8 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
     const path = rel === '' ? realBase : `${realBase}${sep}${rel}`
     let { abs, escape } = walk(realBase, rel.split('/'), 0)
     if (escape === null) {
-      // The OS's answer is the one a read gets: the walk must agree with it, or the path is refused, as
-      // it is when the OS can't resolve it at all. (Past its last link the walk's path is spelled as
-      // given; with none, it's `path` itself.)
+      // The OS's answer is the one a read gets: the walk must agree with it, or the path is refused, as it is
+      // when the OS can't resolve it at all.
       const { real: os, missing } = osRealpath(path, host)
       const walked = abs === null ? null : abs === path ? os : realOf(abs)
       if (walked !== os || (os === null && !missing)) escape = { link: rel, root: null, why: 'unresolved' }
@@ -450,7 +419,6 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
       reason: escape && escapeReason(rel, escape),
     }
   })
-  // Throws, saying why, for a path `of` refuses; `what` names it (`'entry '`).
   const assert = (rel, what = '') => {
     const { reason } = of(rel)
     if (reason) throw new Error(`Refusing ${what}${rel}: ${reason}`)
@@ -458,16 +426,13 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
   return { of, assert }
 }
 
-// The ownership of the project at `baseDir` given its lib dirs (`soldeer`: forge's `dependencies/`
-// holds dependencies too), with its git submodules, which it keeps as `submodules` (readGitmodules),
-// read through `host`.
+// `soldeer`: forge's `dependencies/` holds dependencies too.
 export function projectOwnership(baseDir, libs, { soldeer = false, host = diskHost } = {}) {
   const submodules = readGitmodules(baseDir, host)
   const dirs = [...libs, ...(soldeer ? ['dependencies'] : [])]
   return { ...solidityOwnership(baseDir, { dirs, packages: submodules.map((s) => s.path), host }), submodules }
 }
 
-// Why a path is refused (see solidityOwnership).
 function escapeReason(path, { link, root, why }) {
   if (why === 'unresolved') return `${path} crosses a link stasis can't follow the way the filesystem does`
   const what = root === null ? 'a link from outside the project root back into it' : `a link out of the dependency ${root}`

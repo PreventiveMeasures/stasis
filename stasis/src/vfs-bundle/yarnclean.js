@@ -2,17 +2,14 @@ import { posix } from 'node:path'
 
 import { loadMinimatch } from './glob.js'
 
-// Yarn 1.22.22's .yarnclean (autoclean's sortFilter and matchesFilter, src/util/filter.js), on minimatch: every one
-// in the directory installed or above it cleans whichever package manager's tree, each path matched from the
-// node_modules holding its package, as Yarn hoists it (pnpm's .pnpm/x@1/node_modules/x/README.md as x/README.md).
+// Yarn 1.22.22's .yarnclean (autoclean's sortFilter and matchesFilter), on minimatch, for any package manager's tree:
+// each path matched from the node_modules holding its package, as Yarn hoists it (.pnpm/x@1/node_modules/x/a as x/a).
 
 export const YARNCLEAN = '.yarnclean'
 
-// The lines ignoreLinesToRegex takes for patterns: no comment, blank line or bare `!`.
 const patternLines = (lines) => lines.filter((line) => !(line === '!' || line[0] === '#' || /^\s*$/u.test(line)))
 
-// ignoreLinesToRegex's filter of a line: `regex` as micromatch's makeRe makes it for Yarn (trimmed, dotfiles and
-// all, case aside), `plain` as its isMatch takes it by default; NONE where the pattern makes no expression.
+// `regex` as micromatch's makeRe makes it for Yarn (trimmed, dot, nocase), `plain` as its isMatch does by default.
 const NONE = /(?!)/u
 function filterOf(line, { makeRe }) {
   const negation = line[0] === '!'
@@ -20,21 +17,16 @@ function filterOf(line, { makeRe }) {
   return { negation, regex: makeRe(pattern.trim(), { dot: true, nocase: true }) || NONE, plain: makeRe(pattern) || NONE }
 }
 
-// matchesFilter: a path from the node_modules directory holding its package, by its whole spelling,
-// from `/`, or by its name.
 const matches = ({ regex, plain }, loc) => regex.test(loc) || regex.test(`/${loc}`) || regex.test(posix.basename(loc)) || plain.test(loc)
 
-// The path of `path` from the innermost node_modules directory below `dir` holding it, or `dir`;
-// null for the package manager's own: a dot-named entry of one, or that directory itself.
+// Null for a node_modules itself or a dot-named entry of one: the package manager's own.
 function packagePath(dir, path) {
   const segments = path.slice(dir.length + 1).split('/')
   const tail = segments.slice(segments.lastIndexOf('node_modules') + 1)
   return tail.length === 0 || tail[0].startsWith('.') ? null : tail.join('/')
 }
 
-// Of every .yarnclean in `cwd` and above it: a function cleaning a Vfs's node_modules at a path as sortFilter does,
-// or null where none holds a pattern. Its `keeps`: whether a `!` pattern keeps paths, so that what is cleaned of one
-// package turns on what the others hold. minimatch is loaded here, before anything is installed.
+// Its `keeps`: whether a `!` pattern keeps paths, so that what is cleaned of one package turns on what the others hold.
 export function yarnclean(host, cwd) {
   const lines = []
   for (let dir = cwd; ; dir = posix.dirname(dir)) {
@@ -58,21 +50,17 @@ export function yarnclean(host, cwd) {
       for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) holdingKept.add(up)
     }
     for (const { path, loc } of negations.length === 0 ? [] : entries) if (negations.some((filter) => matches(filter, loc))) keep(path)
-    // So is a link to a path kept, or to a directory holding one, as that is, wherever it is: pnpm
-    // links each package (under its scope's directory) into its store, where Yarn's hoisted layout
-    // holds the package itself.
+    // So is a link to either: pnpm links each package into its store, where Yarn's hoisted layout holds the package.
     const leadsToKept = (path) => {
-      let real
       try {
-        real = vfs.realpath(path)
+        const real = vfs.realpath(path)
+        return kept.has(real) || holdingKept.has(real)
       } catch {
         return false // a link to nothing, or a loop
       }
-      return kept.has(real) || holdingKept.has(real)
     }
     for (const { path, type } of kept.size === 0 ? [] : entries) if (type === 'symlink' && leadsToKept(path)) keep(path)
-    // Any other a filter matches goes, or below a directory one matches, everything below it with
-    // it, but a directory holding a kept path: it stays with that, and what else is below it goes.
+    // Any other a filter matches goes, with everything below it, but a directory holding a kept path stays with that.
     const matched = new Set()
     const matchedAbove = (path) => {
       for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) if (matched.has(up)) return true

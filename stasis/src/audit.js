@@ -10,14 +10,11 @@ import { collectWhy, invertReason, packageRecords } from './why.js'
 
 export { formatTable }
 
-// Where advisories() asks for each ecosystem's advisories. OSV takes a vendored crate for crates.io's, and has
-// a GitHub repo's (Foundry's lib/ submodules) as a GitHub Action's; Packagist's is what `composer audit` reads;
-// a Soldeer package's and a GitHub repo's are also its own repository's.
+// Where advisories() asks for each ecosystem's advisories (OSV has a GitHub repo's as a GitHub Action's).
 const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV', 'Packagist'], soldeer: ['Soldeer', 'GitHub'], github: ['OSV', 'GitHub'] }
 
-// Why a vendored crate that may not be crates.io's is asked nowhere: by its name, crates.io's
-// advisories would be another crate's, and a private git dependency's name must not reach a public
-// database at all.
+// Asked nowhere: by its name, crates.io's advisories would be another crate's, and a private git dependency's name
+// must not reach a public database at all.
 const UNREGISTERED_CRATES = {
   'cargo-git': 'a crate vendored from a git repository, not crates.io',
   'cargo-unknown': 'a vendored crate with no .cargo-checksum.json, which may be a git checkout, not crates.io\'s',
@@ -27,23 +24,21 @@ const UNREGISTERED_CRATES = {
 // know) is audited as 0.0.0, the version stasis gives a repo with none; every advisory range covers both.
 const versionOf = (ecosystem, version) => (ecosystem === 'github' && version === '.' ? '0.0.0' : version)
 
-// A package's key across the audit: `name@version` for npm, as collectWhy keys its chains, and
-// prefixed by the ecosystem for the others, whose names may be npm's too.
+// `name@version` for npm, as collectWhy keys its chains; the others' prefixed, as their names may be npm's too.
 const keyOf = ({ ecosystem, name }, version) => `${ecosystem === 'npm' ? '' : `${ecosystem}:`}${name}@${version}`
 
-// keyOf `pkg`, but a copy a dependency ships with no version, one package for each host, by its `host` too.
+// A versionless copy a dependency ships is one package per host.
 const packageKey = (pkg, host) => (pkg.version === undefined ? `${pkg.ecosystem}:${pkg.name} in ${host}` : keyOf(pkg, pkg.version))
 
-// A refused audit, as a usage error: one for the message alone, never a stack.
+// A usage error: its message alone, never a stack.
 export class AuditError extends Error {
   name = 'AuditError'
 }
 
-// Composer's dev versions (`dev-main`, `1.x-dev`), as Composer tells them, a `#ref` dropped: no
-// advisory database lists those, and advisories() takes releases alone.
+// `dev-main`, `1.x-dev` (a `#ref` dropped), which no advisory database lists.
 const isComposerDev = (version) => /^dev-|-dev$/iu.test(version.replace(/#.*$/su, ''))
 
-// Why `pkg` cannot be audited, or undefined where it can.
+// Why `pkg` cannot be audited, or undefined.
 function unaudited({ ecosystem, version, vendoredIn }) {
   if (version === undefined) return `a copy vendored in ${vendoredIn.join(', ')} whose package.json gives no version, so no advisory can be matched to it`
   if (Object.hasOwn(UNREGISTERED_CRATES, ecosystem)) return UNREGISTERED_CRATES[ecosystem]
@@ -52,9 +47,8 @@ function unaudited({ ecosystem, version, vendoredIn }) {
   return undefined
 }
 
-// The dependencies `file` records whose real code it carries (a recorded file is evidence, audit-corrections.js),
-// `{ ecosystem, name, version, github }`: `github` the repository the artifact records, else the one a bundled
-// package.json names. A copy a dependency ships is `{ ecosystem, name, version, vendoredIn }`, its host's `name@version`.
+// The dependencies whose real code `file` carries, `{ ecosystem, name, version, github }` (the repository recorded,
+// else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`.
 export function collectPackagesFromFile(file) {
   const out = []
   const { kind, artifact } = parseFileWithKind(file)
@@ -71,8 +65,7 @@ export function collectPackagesFromFile(file) {
   return out
 }
 
-// Each dependency of `modules` the audit may count (never first-party code, never sent to a public registry),
-// with its `version` as audited, its `host`'s `name@version` where a dependency ships it, and `isEvidence(rel)`.
+// Each dependency of `modules` the audit may count: first-party code never reaches a public registry.
 function* auditedRecords(modules) {
   for (const [dir, { name, version, ecosystem: tagged, repo, files, vendoredIn }] of packageRecords(modules)) {
     const ecosystem = dependencyEcosystem(dir, tagged)
@@ -87,9 +80,7 @@ function* auditedRecords(modules) {
   }
 }
 
-// The GitHub repository a bundled package.json's text names (packageRepo), or undefined where it
-// names none or doesn't parse. Read as Node reads one, past a byte order mark (packageJSONText),
-// which a bundle keeps in the text. A lockfile holds the file's digest alone, never asked here.
+// Past a byte order mark, as Node reads one, which a bundle keeps in the text.
 function manifestRepo(text) {
   if (typeof text !== 'string') return undefined
   try {
@@ -99,13 +90,11 @@ function manifestRepo(text) {
   }
 }
 
-// Versions in semver's order where both are semver's, else as numbers in text compare.
 const byNumbers = new Intl.Collator('en', { numeric: true }).compare
 const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNumbers(a, b))
 
-// Each package once, with the GitHub repository its artifacts record for its name, which advisories() asks
-// instead of looking one up (none where two are recorded). One a dependency ships a copy of carries
-// `vendoredIn`, the hosts' sorted `name@version`s, and `vendoredOnly`, whether that copy is all there is of it.
+// Each package once, with the GitHub repository recorded for its name (none where two are), which advisories() asks
+// rather than look one up; a vendored one with `vendoredIn`, its hosts, and `vendoredOnly`, whether that's all of it.
 export function collectPackages(files) {
   const byKey = new Map() // packageKey -> { pkg, hosts, only }
   const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
@@ -130,15 +119,13 @@ export function collectPackages(files) {
     .toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
 
-// Each audited package (packageKey) -> the bundle consumers that recorded an evidence file of it: webpack
-// shipping only ws's noop browser.js stub is no reason for ws (audit-corrections.js). A file of a copy a
-// dependency ships attributes to the copy and its host. A lockfile carries no reason map.
+// Each audited package (packageKey) -> the bundle consumers that recorded an evidence file of it: webpack shipping
+// only ws's noop browser.js stub is no reason for ws.
 export function collectReasons(files) {
   return reasonIndex(files).byPkg
 }
 
-// collectReasons' map (`byPkg`), and every consumer the files' reason maps record (`consumers`), one that
-// recorded first-party code alone too: what --reason may name.
+// `consumers`, what --reason may name, holds one that recorded first-party code alone too.
 function reasonIndex(files) {
   const byPkg = new Map()
   const consumers = new Set()
@@ -164,13 +151,10 @@ function reasonIndex(files) {
   return { byPkg, consumers }
 }
 
-// The consumer `stasis bundle --metro` records a Metro build's files under, and the one Metro's own
-// plugin records a build Metro ran under.
 const BUNDLE_METRO = 'bundle:metro'
 const METRO = 'metro'
 
-// reasonIndex's `byPkg` and `consumers`, each consumer as audit names it (`name`): as it is, but
-// `bundle:metro` as `metro` where none records `metro`, which it then can't be taken for.
+// `bundle:metro` named `metro` where none records `metro`, so it can't be taken for one.
 function namedIndex({ byPkg, consumers }) {
   const name = consumers.has(BUNDLE_METRO) && !consumers.has(METRO)
     ? (consumer) => (consumer === BUNDLE_METRO ? METRO : consumer)
@@ -182,19 +166,16 @@ function namedIndex({ byPkg, consumers }) {
   }
 }
 
-// `malware` first: a package that is malware is worse than any vulnerability in one. An advisory
-// advisories() flags as malware (`malware: true`) is rated so, whatever its source rates it.
+// A package that is malware is worse than any vulnerability in one.
 const SEVERITY_ORDER = { malware: 0, critical: 1, high: 2, moderate: 3, low: 4, info: 5, none: 6 }
 
-// Consumer display order: bundler plugins (metro, webpack, esbuild, ...) first,
-// then `run`, then `add`, then `extra` (stasis.config.json's). Ties broken alphabetically.
+// Bundler plugins first, ties alphabetically.
 const CONSUMER_RANK = { run: 1, add: 2, extra: 3 }
 const consumerRank = (c) => CONSUMER_RANK[c] ?? 0
 const byConsumerOrder = (a, b) => consumerRank(a) - consumerRank(b) || a.localeCompare(b)
 
-// A row's `reason` cell, over the versions it covers: the `, `-joined consumers (only `reasonFilter`, where
-// set), or under --why the `consumer: a -> b -> c` lines, grouped by consumer. collectWhy follows npm's import
-// graph alone (and filters by `reasonFilter` itself), so another ecosystem's advisory keeps its consumers.
+// The `, `-joined consumers, or under --why the `consumer: a -> b -> c` lines by consumer. collectWhy follows npm's
+// import graph alone (filtering by `reasonFilter` itself), so another ecosystem's advisory keeps its consumers.
 function reasonCell(adv, reasonsByPkg, whyByPkg, reasonFilter) {
   const chains = whyByPkg !== null && adv.ecosystem === 'npm'
   const source = chains ? whyByPkg : reasonsByPkg
@@ -210,8 +191,6 @@ function reasonCell(adv, reasonsByPkg, whyByPkg, reasonFilter) {
   return [...parts].filter((c) => !reasonFilter || c === reasonFilter).toSorted(byConsumerOrder).join(', ')
 }
 
-// An installed version as the table shows it: with the dependencies that ship a copy of it, where one does
-// (`vendoredByKey`, collectPackages' packages by keyOf).
 function installedCell(adv, version, vendoredByKey) {
   const pkg = vendoredByKey.get(keyOf(adv, version))
   if (pkg?.vendoredIn === undefined) return version
@@ -221,9 +200,7 @@ function installedCell(adv, version, vendoredByKey) {
 const severityRank = (row) => SEVERITY_ORDER[row.severity] ?? 99
 const byText = (a, b) => (a === b ? 0 : a < b ? -1 : 1)
 
-// `found` is what @preventive/upstream's advisories() answers: one row per advisory range, whose
-// `versions` are the audited versions it covers (never empty -- a range covering none is dropped
-// there, so the table and exit code reflect only real hits).
+// `found` is advisories()' answer: one row per advisory range, its `versions` the audited ones it covers.
 export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = null, reasonFilter = null, vendoredByKey = new Map()) {
   const rows = []
   for (const adv of found) {
@@ -245,9 +222,8 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
   return rows.toSorted((a, b) => severityRank(a) - severityRank(b) || byText(a.package, b.package) || byText(a.ecosystem, b.ecosystem) || (a.title < b.title ? -1 : 1))
 }
 
-// The advisories of `files`' packages (lockfile/bundle paths, or a Bundle or Lockfile built in memory); `reason`
-// (--reason) audits only what that consumer recorded, refusing one none records (AuditError). `npmMalware` is npm's
-// malware advisories of every npm dependency whatever `reason`, those `lockfile` (lockedNpmPackages') locks alone too.
+// The advisories of `files`' packages (paths, or artifacts in memory); `reason` audits only what that consumer
+// recorded. `npmMalware`: npm's malware advisories of every npm dependency, whatever `reason`, and `lockfile`'s too.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false, lockfile = null } = {}) {
   // --why-deep (keep every chain, see dropSuffixed) and --why-full (no `...` collapse) imply --why.
   why = why || whyDeep || whyFull
@@ -270,8 +246,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
     return because === undefined ? [] : [{ ...pkg, because }]
   })
   const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
-  // Under --reason, the npm packages its consumer didn't record, and those `lockfile` locks alone, each
-  // once, by keyOf: none asked about already.
+  // The npm packages --reason's consumer didn't record, and those `lockfile` locks alone, each once.
   const keyOfPkg = (pkg) => keyOf(pkg, pkg.version)
   const own = new Set(packages)
   const byKey = new Map(all.filter((pkg) => !own.has(pkg) && pkg.ecosystem === 'npm' && unaudited(pkg) === undefined).map((pkg) => [keyOfPkg(pkg), pkg]))
@@ -292,26 +267,23 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
     return { packages, skipped, advisories: [], rows: [], npmMalware: [], why, whyDeep, whyFull, reason }
   }
   const query = (list) => list.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] }))
-  let result
-  let elsewhere
+  let result, elsewhere
   try {
     ;[result, elsewhere] = await Promise.all([
       asked.length > 0 ? advisories(query(asked), { repoAdvisories, github, osv }) : [],
       others.length > 0 ? advisories(query(others)) : [],
     ])
   } catch (cause) {
-    // Refused input or a malformed answer is an assertion that says so itself; a transport or
-    // HTTP failure gets the context of which request it was.
+    // Refused input or a malformed answer is an assertion that says so itself.
     if (cause?.code === 'ERR_ASSERTION') throw cause
     const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(others.length > 0 ? ['npm'] : []), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
     throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
   const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOfPkg(pkg), pkg]))
-  // npm's registry's malware advisories (`registry` rows, not OSV's records), of every npm dependency, by
-  // their consumers, or the names of the lockfiles alone locking them.
+  // The registry's, not OSV's records, by their consumers, or the names of the lockfiles alone locking them.
   const malware = [...result, ...elsewhere].filter((adv) => adv.malware && adv.source === 'registry')
   const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, new Map([...indexed().byPkg, ...lockedOnly]), null, null, vendoredOf([...asked, ...others]))
-  // --why's chains REPLACE the consumers of npm's advisories, searched for only the packages that carry one.
+  // --why's chains REPLACE the consumers of npm's advisories.
   let whyByPkg = null
   if (why) {
     const targetKeys = new Set(result.filter((adv) => adv.ecosystem === 'npm').flatMap((adv) => adv.versions.map((v) => keyOf(adv, v))))
@@ -321,16 +293,13 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   return { packages, skipped, advisories: result, rows, npmMalware, why, whyDeep, whyFull, reason }
 }
 
-// Each severity's colour, the worst the loudest (malware white on red); an advisory without one (RustSec's)
-// `unrated`, dimmed.
+// An advisory without a severity (RustSec's) is `unrated`.
 const SEVERITY_TONES = { malware: ['bold', 'white', 'bgRed'], critical: ['bold', 'magenta'], high: ['bold', 'red'], moderate: 'yellow', low: 'cyan', info: DIM, none: DIM, unrated: DIM }
 const severityOf = (row) => row.severity || 'unrated'
 
-// The columns whose text wraps where the table is wider than the terminal: the long ones, free text first.
 const WRAPPED = ['title', 'reason', 'vulnerable', 'installed']
 
-// `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`: the rows, then each severity present, in the rows'
-// own order (most severe first), so the parts add up; each in its colour, and none in green.
+// `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`, in the rows' own order, so the parts add up.
 function alertStats(rows, paint, colored) {
   const count = `${rows.length} alert${rows.length === 1 ? '' : 's'}`
   if (rows.length === 0) return paint(['bold', 'green'], count)
@@ -338,14 +307,12 @@ function alertStats(rows, paint, colored) {
   return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], badge(severity, `${list.length} ${severity}`, colored))).join(', ')})`
 }
 
-// Malware as a badge: its colour a space wider on either side, where there is colour.
+// Malware's colour a space wider on either side, where there is colour.
 const badge = (severity, text, colored) => (severity === 'malware' && colored ? ` ${text} ` : text)
 
-// Where an advisory comes from (upstream's `source`), as sixel.js draws it: npm's registry, a GitHub
-// repository's advisories, or OSV. Packagist's, which stands for an advisory only where OSV has no
-// record of it, has no icon.
+// Packagist's, standing for an advisory only where OSV has no record of it, has no icon.
 const SOURCE_LOGOS = { registry: 'npm', repository: 'github', osv: 'osv' }
-// The cells an icon covers: two, as sixel.js logos() picks icons no wider than two of the terminal's cells.
+// As sixel.js logos() picks icons no wider than two of the terminal's cells.
 const ICON_CELLS = 2
 // An icon, drawn with the cursor saved and put back, as a terminal may leave it below the image, then
 // moved past the cells it covers, as text written over them would erase it.
@@ -354,9 +321,8 @@ const drawIcon = (icon) => `\x1b7${icon}\x1b8\x1b[${ICON_CELLS}C`
 // below the image then never scrolls, which would put the cursor back a line off.
 const ROOM_BELOW = '\n\n\x1b[2A'
 
-// The advisories as a table on `out`, fitted to `width` (the terminal's) by wrapping its long columns, after
-// `notes` on `err`; on `err`, the packages not audited, then the summary, last. In colour where each stream
-// takes colours (`colors`, else takesColors). With `icons` (sixel.js logos()'s, true for its 16-pixel ones), each id has its source's.
+// The advisories as a table on `out`, fitted to `width`; on `err`, `notes` before it, then the packages not audited
+// and the summary. With `icons` (sixel.js logos()'s, true for its 16-pixel ones), each id has its source's.
 export function printAuditReport({ packages, skipped = [], rows, npmMalware = [], why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false, notes = [] } = {}) {
   const icons = given === true ? logos() : given || null
   const paintOut = painter(out, colors)
@@ -371,10 +337,9 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
     return
   }
   if (rows.length > 0) {
-    // The ecosystem column only where one is not npm's, which the others were all once.
+    // The ecosystem column only where one is not npm's.
     const columns = ['severity', ...(rows.some((r) => r.ecosystem !== 'npm') ? ['ecosystem'] : []), 'package', 'installed', 'vulnerable', 'title', 'id']
-    // The reason column where some advisory has one, but not under --reason without --why, where every
-    // cell is that consumer.
+    // Not under --reason without --why, where every cell is that consumer.
     if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(columns.indexOf('installed') + 1, 0, 'reason')
     // A chain's arrows and `...` dimmed, so the packages in it stand out. An id's blank cells its icon.
     const iconOf = (row) => icons?.[SOURCE_LOGOS[row.source]]
@@ -405,8 +370,6 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
   printMalware(npmMalware, err, paintErr, coloredErr)
 }
 
-// audit()'s `npmMalware`, after the summary, apart from the table: each advisory a line, its package and
-// version, id and title, and the consumers that recorded it.
 function printMalware(rows, err, paint, colored) {
   if (rows.length === 0) return
   const packages = new Set(rows.map((row) => `${row.package}@${row.installed}`)).size

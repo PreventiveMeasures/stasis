@@ -1,7 +1,3 @@
-// PHP include-graph + Composer-autoload loader. Statically scans PHP (never runs it) into
-// `{ sources, resolutions, missing }`. Literal includes are strict (unresolved -> `missing`);
-// Composer-autoloaded class refs are best-effort (unresolved -> silently skipped).
-
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -10,18 +6,17 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
-import { archiveIntegrity, assertRealPathWithinBase, fileInBucket, isPlainObject, moduleInfo, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { archiveIntegrity, assertRealPathWithinBase, fileInBucket, isPlainObject, moduleInfo, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 import { applyToDir, isDotRelative } from './paths.js'
 import { readUtf8OrNull } from './solidity-ownership.js'
 import { nameErrors } from './toml.js'
 
-// Cap concurrent reads per wave to avoid EMFILE on large directory globs.
+// Reads at once: a wave can be huge (a dynamic include's directory), and opening every file at once EMFILE.
 const READ_CONCURRENCY = 64
 
-// End index (exclusive) of the heredoc/nowdoc opener at `start`, or `start` if
-// not a valid opener. Consumes to EOF when unterminated.
+// The end of the heredoc/nowdoc opening at `start`, or `start` where none does; an unterminated one runs to the end.
 function heredocEnd(code, start) {
   const n = code.length
   let j = start + 3
@@ -31,122 +26,91 @@ function heredocEnd(code, start) {
   while (j < n && /\w/u.test(code[j])) label += code[j++]
   if (label === '') return start
   if (quote && code[j] === quote) j++
-  let p = code.indexOf('\n', j)
-  if (p === -1) return n
-  p += 1
-  while (p <= n) {
-    let q = p
+  for (let nl = code.indexOf('\n', j); nl !== -1; nl = code.indexOf('\n', nl + 1)) {
+    let q = nl + 1
     while (q < n && (code[q] === ' ' || code[q] === '\t')) q++
-    if (code.startsWith(label, q)) {
-      const after = code[q + label.length]
-      if (after === undefined || !/\w/u.test(after)) {
-        const nl = code.indexOf('\n', q)
-        return nl === -1 ? n : nl
-      }
+    if (code.startsWith(label, q) && !/\w/u.test(code[q + label.length] ?? '')) {
+      const end = code.indexOf('\n', q)
+      return end === -1 ? n : end
     }
-    const nl = code.indexOf('\n', p)
-    if (nl === -1) return n
-    p = nl + 1
   }
   return n
 }
 
-// Blank everything that isn't executable PHP (comments, heredocs/nowdocs, and
-// unless `keepStrings` string literals) to spaces, preserving newlines so byte
-// offsets stay aligned with the input. `#[` (a PHP 8 attribute) is left intact.
+// Comments, heredocs/nowdocs and (unless `keepStrings`) string literals blanked, newlines kept so offsets stay
+// the input's. `#[` (a PHP 8 attribute) is code.
 function maskNonCode(code, keepStrings) {
   const n = code.length
-  const blank = (s) => s.replace(/[^\n]/gu, ' ')
   let out = ''
   let i = 0
   while (i < n) {
     const c = code[i]
+    let end = i + 1
+    let masked = true
     if ((c === '/' && code[i + 1] === '/') || (c === '#' && code[i + 1] !== '[')) {
-      let end = code.indexOf('\n', i)
+      end = code.indexOf('\n', i)
       if (end === -1) end = n
-      out += blank(code.slice(i, end))
-      i = end
     } else if (c === '/' && code[i + 1] === '*') {
       const close = code.indexOf('*/', i + 2)
-      const end = close === -1 ? n : close + 2
-      out += blank(code.slice(i, end))
-      i = end
+      end = close === -1 ? n : close + 2
     } else if (c === '<' && code[i + 1] === '<' && code[i + 2] === '<') {
-      const end = heredocEnd(code, i)
-      if (end === i) { out += c; i++ } else { out += blank(code.slice(i, end)); i = end }
+      end = Math.max(heredocEnd(code, i), i + 1)
+      masked = end > i + 1
     } else if (c === "'" || c === '"') {
-      let j = i + 1
-      while (j < n) {
-        if (code[j] === '\\') { j += 2; continue }
-        if (code[j] === c) { j++; break }
-        j++
+      while (end < n) {
+        if (code[end] === '\\') { end += 2; continue }
+        if (code[end++] === c) break
       }
-      out += keepStrings ? code.slice(i, j) : blank(code.slice(i, j))
-      i = j
-    } else {
-      out += c
-      i++
-    }
+      masked = !keepStrings
+    } else masked = false
+    out += masked ? code.slice(i, end).replace(/[^\n]/gu, ' ') : code.slice(i, end)
+    i = end
   }
   return out
 }
 
-// A file's code with comments/heredocs blanked and string literals kept (include paths live in
-// strings), and those literals: what the include and path-literal scans read.
+// String literals kept, as include paths live in them.
 function maskedPhp(content) {
   const code = maskNonCode(content, true)
   return { code, strings: stringLiterals(code) }
 }
 
-// Scan string literals -> { start, end, value, quote } with PHP single-quote
-// unescaping (only `\\` and the closing quote are escapes; other backslashes
-// literal -- good enough for path values).
+// Only `\\` and the closing quote unescaped, as PHP's single quotes do: good enough for path values.
 function stringLiterals(code) {
   const out = []
   let i = 0
   while (i < code.length) {
     const q = code[i]
-    if (q === "'" || q === '"') {
-      let j = i + 1
-      let value = ''
-      while (j < code.length) {
-        const c = code[j]
-        if (c === '\\') {
-          const next = code[j + 1]
-          value += next === '\\' || next === q ? next : c + (next ?? '')
-          j += next === undefined ? 1 : 2
-          continue
-        }
-        if (c === q) { j++; break }
-        value += c
-        j++
+    if (q !== "'" && q !== '"') { i++; continue }
+    let j = i + 1
+    let value = ''
+    while (j < code.length) {
+      const c = code[j]
+      if (c === '\\') {
+        const next = code[j + 1]
+        value += next === '\\' || next === q ? next : c + (next ?? '')
+        j += next === undefined ? 1 : 2
+        continue
       }
-      out.push({ start: i, end: j, value, quote: q })
-      i = j
-    } else {
-      i++
+      if (c === q) { j++; break }
+      value += c
+      j++
     }
+    out.push({ start: i, end: j, value, quote: q })
+    i = j
   }
   return out
 }
 
-// Whether `pos` is inside one of `strings` (stringLiterals), and the literal starting at `pos`.
 const inString = (strings, pos) => strings.some(({ start, end }) => pos > start && pos < end)
 const stringAt = (strings, pos) => strings.find(({ start }) => start === pos)
 
-// Include keyword. The lookbehind rejects method/scope-resolution calls
-// (`$x->require`, `Foo::include`); the trailing `\b` stops matching inside
-// `requireConfig`. String-literal matches are filtered out by the caller.
+// The lookbehind rejects `$x->require` and `Foo::include`, the `\b` `requireConfig`.
 const PHP_INCLUDE_KEYWORD_RE = /(?<![\w$>:])(?:require_once|require|include_once|include)\b/gidu
-
-// Directory anchor (sticky): `__DIR__`/`dirname(__FILE__)` (file's own dir) or
-// `dirname(__DIR__[, N])` (N parent levels up).
 const PHP_DIR_ANCHOR_RE = /__DIR__\b|dirname\s*\(\s*(__FILE__|__DIR__)\s*(?:,\s*(\d+)\s*)?\)/y
-// Anchor starts, for scanning path literals anywhere (not just after `require`).
 const PHP_DIR_ANCHOR_FIND_RE = /(?<![\w$>])(?:__DIR__\b|dirname\s*\(\s*(?:__FILE__|__DIR__))/gu
 
-// Laravel path helpers resolving a string arg relative to the project root (or a
-// fixed subdirectory); they name real PHP files the framework require()s.
+// Laravel's helpers taking a path from the project root (or a directory of it): they name PHP files it require()s.
 const PHP_PATH_HELPERS = new Map([
   ['base_path', ''],
   ['app_path', 'app'],
@@ -159,8 +123,7 @@ const PHP_PATH_HELPERS = new Map([
 ])
 const PHP_PATH_HELPER_FIND_RE = new RegExp(String.raw`(?<![\w$>:])(${[...PHP_PATH_HELPERS.keys()].join('|')})\s*\(`, 'giu')
 
-// Interpolation markers inside a double-quoted string (`$var`, `${...}`,
-// `{$...}`). Single-quoted strings never interpolate, so a `$` there is literal.
+// A double-quoted string's interpolation; a single-quoted one's `$` is literal.
 const PHP_INTERPOLATION_RE = /\$[A-Za-z_{]|\{\$/u
 
 function skipWs(code, pos) {
@@ -168,28 +131,20 @@ function skipWs(code, pos) {
   return pos
 }
 
-// If a directory anchor starts at `pos`, return { end, up } (up = parent levels
-// above the file's dir; 0 for `__DIR__`/`dirname(__FILE__)`); else null.
 function matchDirAnchor(code, pos) {
   PHP_DIR_ANCHOR_RE.lastIndex = pos
   const m = PHP_DIR_ANCHOR_RE.exec(code)
   if (!m) return null
-  const up = m[1] === '__DIR__' ? (m[2] ? Number(m[2]) : 1) : 0
-  return { end: PHP_DIR_ANCHOR_RE.lastIndex, up }
+  return { end: PHP_DIR_ANCHOR_RE.lastIndex, up: m[1] === '__DIR__' ? (m[2] ? Number(m[2]) : 1) : 0 }
 }
 
-// Normalise an include path to a specifier. Dir-relative paths get a `./` prefix
-// with the leading separator stripped; empty means the file's own dir (`.`).
 function normalizeIncludePath(raw, dirRelative) {
   if (!dirRelative) return raw
   const rel = raw.replace(/^\/+/u, '')
-  if (rel === '') return '.'
-  return isDotRelative(rel) ? rel : `./${rel}`
+  return rel === '' ? '.' : isDotRelative(rel) ? rel : `./${rel}`
 }
 
-// Parse an include/path argument at `start`: an optional directory anchor then a concatenation chain of
-// string literals, folded into `prefix` up to the first variable/function/constant/interpolation, where
-// it goes `dynamic`. Null with neither anchor nor static string.
+// Null with neither a directory anchor nor a literal; `dynamic` from the first variable, call or interpolation.
 function parseArgPath(code, start, strings) {
   let i = start
   let dirRelative = false
@@ -202,28 +157,21 @@ function parseArgPath(code, start, strings) {
     if (code[i] !== '.') return null
     i = skipWs(code, i + 1)
   }
-
+  if (!dirRelative && !stringAt(strings, i)) return null
   let prefix = '/..'.repeat(up)
-  let dynamic = false
-  let sawStatic = false
   for (;;) {
     const lit = stringAt(strings, i)
-    if (!lit) { dynamic = true; break }
+    if (!lit) return { dirRelative, up, prefix, dynamic: true }
     const interp = lit.quote === '"' ? lit.value.search(PHP_INTERPOLATION_RE) : -1
-    if (interp >= 0) { prefix += lit.value.slice(0, interp); sawStatic = true; dynamic = true; break }
+    if (interp >= 0) return { dirRelative, up, prefix: prefix + lit.value.slice(0, interp), dynamic: true }
     prefix += lit.value
-    sawStatic = true
     i = skipWs(code, lit.end)
-    if (code[i] === '.') { i = skipWs(code, i + 1); continue }
-    break
+    if (code[i] !== '.') return { dirRelative, up, prefix, dynamic: false }
+    i = skipWs(code, i + 1)
   }
-  if (!dirRelative && !sawStatic) return null
-  return { dirRelative, up, prefix, dynamic, sawStatic }
 }
 
-// Scan `require`/`include` statements, classifying each as a concrete `file` or
-// -- when the path is dynamic but has a static directory prefix -- a `dir` whose
-// `.php` files are all bundled (any could be the runtime target).
+// A dynamic include's static directory prefix (`dir`): any `.php` file in it may be its target at runtime.
 function scanIncludes({ code, strings }) {
   const out = []
   for (const m of code.matchAll(PHP_INCLUDE_KEYWORD_RE)) {
@@ -232,36 +180,27 @@ function scanIncludes({ code, strings }) {
     if (code[i] === '(') i = skipWs(code, i + 1)
     const arg = parseArgPath(code, i, strings)
     if (!arg) continue
-    const { dirRelative, up, prefix, dynamic, sawStatic } = arg
-
-    if (!dynamic) {
-      if (sawStatic) out.push({ kind: 'file', spec: normalizeIncludePath(prefix, dirRelative) })
-      continue
+    const { dirRelative, up, prefix, dynamic } = arg
+    if (!dynamic) out.push({ kind: 'file', spec: normalizeIncludePath(prefix, dirRelative) })
+    else if (dirRelative || prefix.includes('/')) {
+      let dir = prefix.includes('/') ? prefix.slice(0, prefix.lastIndexOf('/')) : ''
+      if (dir === '' && up > 0) dir = '/..'.repeat(up)
+      out.push({ kind: 'dir', spec: normalizeIncludePath(dir, dirRelative) })
     }
-    // Dynamic path: fall back to the static dir prefix; a bare path with no separator has none.
-    if (!dirRelative && !prefix.includes('/')) continue
-    const lastSlash = prefix.lastIndexOf('/')
-    let dir = lastSlash >= 0 ? prefix.slice(0, lastSlash) : ''
-    if (dir === '' && up > 0) dir = '/..'.repeat(up)
-    out.push({ kind: 'dir', spec: normalizeIncludePath(dir, dirRelative) })
   }
   return out
 }
 
-// Dir-anchored static `.php` path literals anywhere in the file (not just after
-// `require`) -- frameworks pass these to code that require()s them internally.
-// Best-effort: bundled only if they resolve to an existing file.
+// `.php` path literals outside a `require`, which frameworks require() themselves.
 function scanPathLiterals({ code, strings }) {
   const out = []
-  // Dir-anchored literals: `__DIR__ . '/x.php'` (resolve against the file).
   for (const m of code.matchAll(PHP_DIR_ANCHOR_FIND_RE)) {
     if (inString(strings, m.index)) continue
     const arg = parseArgPath(code, m.index, strings)
-    if (!arg || arg.dynamic || !arg.sawStatic || !arg.dirRelative) continue
+    if (!arg || arg.dynamic || !arg.dirRelative) continue
     const spec = normalizeIncludePath(arg.prefix, true)
     if (spec.endsWith('.php')) out.push({ spec, anchor: 'file' })
   }
-  // Laravel path helpers: `base_path('routes/web.php')` (resolve against project root).
   for (const m of code.matchAll(PHP_PATH_HELPER_FIND_RE)) {
     if (inString(strings, m.index)) continue
     const lit = stringAt(strings, skipWs(code, m.index + m[0].length))
@@ -276,41 +215,26 @@ function scanPathLiterals({ code, strings }) {
 
 const includeSpecs = (includes, kind) => includes.filter((e) => e.kind === kind).map((e) => e.spec)
 
-// Statically-resolvable include specifiers (concrete files). See scanIncludes.
-export function extractPhpImports(content) {
-  return includeSpecs(scanIncludes(maskedPhp(content)), 'file')
-}
-
-// Directory specifiers for dynamic includes; every `.php` file directly inside is
-// a candidate target.
-export function extractPhpImportDirs(content) {
-  return includeSpecs(scanIncludes(maskedPhp(content)), 'dir')
-}
-
-// `.php` path literals used outside a `require` -- dir-anchored (`anchor: 'file'`)
-// or via a Laravel path helper (`anchor: 'root'`). De-duplicated; best-effort.
+export const extractPhpImports = (content) => includeSpecs(scanIncludes(maskedPhp(content)), 'file')
+export const extractPhpImportDirs = (content) => includeSpecs(scanIncludes(maskedPhp(content)), 'dir')
 const pathRefs = (masked) => [...new Map(scanPathLiterals(masked).map((ref) => [`${ref.anchor}:${ref.spec}`, ref])).values()]
-export function extractPhpPathRefs(content) {
-  return pathRefs(maskedPhp(content))
-}
+export const extractPhpPathRefs = (content) => pathRefs(maskedPhp(content))
 
 const isFileOnDisk = (baseDir, rel) => isFile(join(baseDir, rel))
 
-// Throws on a path holding `\`: no separator to PHP off Windows but part of a name, and stasis
-// refuses such a name rather than resolve it, or take it for another path. `from`: the includer.
+// A `\` is no separator to PHP off Windows but part of a name: stasis refuses such a name rather than resolve
+// it, or take it for another path.
 function refuseBackslash(path, from) {
   if (path.includes('\\')) throw new Error(`[loader.php] path holds a '\\', which stasis refuses: ${path}${from ? ` (from ${from})` : ''}`)
 }
 
-// `abs` as a baseDir-relative POSIX path ('' for baseDir itself), or null when it escapes the root.
 function projectRel(baseDir, abs) {
   const rel = toPosix(relative(baseDir, abs))
   return relativeEscapes(rel) ? null : rel
 }
 
-// Resolve a PHP specifier to a baseDir-relative POSIX path, or null. `./`/`../` resolve against the
-// including file (escaping the root -> null; existence unchecked); a bare one tries next to the includer,
-// then project-root-relative, the first that is `present`. Absolute ones are rejected; a `\` throws.
+// `./`/`../` resolve against the including file (null escaping the root; existence unchecked); a bare one next
+// to the includer, then from the project root, the first that is `present`. Absolute ones are refused.
 function resolvePhpSpec(spec, fromFile, baseDir, present) {
   refuseBackslash(spec, fromFile)
   if (isDotRelative(spec)) return applyToDir(fromFile, spec.split('/'))
@@ -321,16 +245,14 @@ function resolvePhpSpec(spec, fromFile, baseDir, present) {
   return projRel && present(projRel) ? projRel : null
 }
 
-// Resolve a directory specifier to an existing baseDir-relative dir, or null (resolvePhpSpec; a
-// `./`/`../` one is checked here, a bare one already was).
+// A bare specifier resolvePhpSpec found present already.
 export function resolvePhpDir(spec, fromFile, baseDir) {
   const present = (rel) => isDir(join(baseDir, rel))
   const rel = resolvePhpSpec(spec, fromFile, baseDir, present)
   return rel !== null && (!isDotRelative(spec) || present(rel)) ? rel : null
 }
 
-// The `.php` files directly in `dir` (baseDir-relative). Non-recursive: recursing
-// could pull in an unbounded subtree.
+// Not recursive, which could pull in an unbounded subtree.
 function listPhpFiles(baseDir, dir) {
   try {
     return readdirSync(join(baseDir, dir), { withFileTypes: true })
@@ -341,23 +263,17 @@ function listPhpFiles(baseDir, dir) {
   }
 }
 
-// Resolve a PHP include specifier to a baseDir-relative POSIX path (resolvePhpSpec: a bare
-// specifier must name a file on disk).
-export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
-  return resolvePhpSpec(specifier, fromFile, baseDir, (rel) => isFileOnDisk(baseDir, rel))
-}
+export const resolvePhpImport = (specifier, fromFile, { baseDir } = {}) =>
+  resolvePhpSpec(specifier, fromFile, baseDir, (rel) => isFileOnDisk(baseDir, rel))
 
-// Normalise a project-root-relative autoload path to POSIX baseDir-relative, or null when it escapes
-// root. Re-derived via resolve() so interior `..` escapes (`src/foo/../../../secret.php`) are caught,
-// which a leading-`..`/absolute check alone would let in. One holding `\` throws (refuseBackslash).
+// Re-derived via resolve() so an interior `..` escaping the root (`src/foo/../../../secret.php`) is caught,
+// which a leading-`..`/absolute check alone would let in.
 function normalizeProjectRel(baseDir, p) {
   refuseBackslash(p)
   return projectRel(baseDir, resolve(baseDir, p))
 }
 
-// Evaluate a generated-autoload path expr (`$baseDir . '/src'`, a bare quoted
-// string) given the `$baseDir`/`$vendorDir` values. Returns null on anything
-// unrecognised (function call, unknown variable) rather than guessing.
+// A generated autoload path (`$baseDir . '/src'`, a quoted string); null for anything else rather than a guess.
 function evalPathExpr(expr, vars) {
   const s = expr.trim().replace(/,+$/u, '').trim()
   let out = ''
@@ -365,8 +281,7 @@ function evalPathExpr(expr, vars) {
   const re = /\$(\w+)|'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|\.|\s+/gy
   let m
   while ((m = re.exec(s)) !== null) {
-    // A sticky regex resets lastIndex to 0 when exec() returns null, so track how
-    // far we parsed instead of reading lastIndex after the loop.
+    // A sticky regex resets lastIndex to 0 when exec() returns null: how far it parsed is kept here.
     consumed = re.lastIndex
     if (m[1] !== undefined) {
       if (vars[m[1]] === undefined) return null
@@ -381,9 +296,7 @@ function evalPathExpr(expr, vars) {
   return out
 }
 
-// Parse a Composer generated `autoload_*.php` map (one entry per line). `multi`
-// true -> psr-4/psr-0 (key -> dirs[]); false -> classmap/files (key -> file).
-// PHP single-quote escapes in keys are unfolded.
+// A Composer `autoload_*.php` map, one entry a line: `multi`, psr-4/psr-0's (key -> dirs); else a file each.
 function parseGeneratedMap(content, vars, multi) {
   const out = new Map()
   for (const line of content.split('\n')) {
@@ -392,13 +305,7 @@ function parseGeneratedMap(content, vars, multi) {
     const key = m[1].replace(/\\(['\\])/gu, '$1')
     if (multi) {
       const am = m[2].match(/^array\s*\(([\s\S]*)\)$/u)
-      if (!am) continue
-      const dirs = []
-      for (const piece of am[1].split(',')) {
-        const abs = evalPathExpr(piece, vars)
-        if (abs) dirs.push(abs)
-      }
-      out.set(key, dirs)
+      if (am) out.set(key, am[1].split(',').map((piece) => evalPathExpr(piece, vars)).filter(Boolean))
     } else {
       const abs = evalPathExpr(m[2], vars)
       if (abs) out.set(key, abs)
@@ -415,47 +322,40 @@ function readJsonIfExists(file) {
   }
 }
 
-// The root composer.json (null when absent or unparsable) and its baseDir-relative vendor dir.
 function readComposerJson(baseDir) {
   const composerJson = readJsonIfExists(join(baseDir, 'composer.json'))
   const vendorDir = normalizeProjectRel(baseDir, composerJson?.config?.['vendor-dir'] ?? 'vendor') ?? 'vendor'
   return { composerJson, vendorDir }
 }
 
-// The packages `vendor/composer/installed.json` lists, in the Composer 2 ({ packages }) or
-// Composer 1 (flat array) shape.
+// Composer 2's `{ packages }`, or Composer 1's flat array.
 function readInstalledPackages(baseDir, vendorDir) {
   const json = readJsonIfExists(join(baseDir, vendorDir, 'composer', 'installed.json'))
   return Array.isArray(json) ? json : (json?.packages ?? [])
 }
 
-// JSON `text` with each integer as PHP holds it: one past ±(2^53 − 1) a BigInt, as
-// @preventive/lockfile reads one, so two values compare equal only where PHP's do.
+// An integer past ±(2^53 − 1) a BigInt, as @preventive/lockfile reads one, so two values compare equal only
+// where PHP's do.
 const parseJsonExact = (text) => JSON.parse(text, (key, value, { source }) =>
   (typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/u.test(source) ? BigInt(source) : value))
 
-// Where installed.json says Composer installed package `p`, baseDir-relative: its install-path,
-// from vendor/composer (null for none, as of a metapackage), or <vendor-dir>/<name> where it gives
-// none (Composer 1's); null outside baseDir.
+// installed.json's install-path is from vendor/composer, null for a metapackage; Composer 1's gives none.
 function installedDir(baseDir, vendorDir, p) {
   const path = p['install-path']
   if (path === undefined) return projectRel(baseDir, resolve(baseDir, vendorDir, p.name))
   return typeof path === 'string' ? projectRel(baseDir, resolve(baseDir, vendorDir, 'composer', path)) : null
 }
 
-// Where Composer's library installer puts a package of the lockfile, baseDir-relative
-// (LibraryInstaller::getInstallPath): <vendor-dir>/<name>[/<target-dir>]; a metapackage nowhere (null).
-// One an installer plugin takes goes elsewhere, where its own composer.json's name finds it.
-function lockedDir(baseDir, vendorDir, p) {
-  return p.type === 'metapackage' ? null : projectRel(baseDir, resolve(baseDir, vendorDir, p.name, p.targetDir ?? ''))
-}
+// As LibraryInstaller::getInstallPath puts a package; one an installer plugin takes goes elsewhere, where its
+// own composer.json's name finds it.
+const lockedDir = (baseDir, vendorDir, p) =>
+  (p.type === 'metapackage' ? null : projectRel(baseDir, resolve(baseDir, vendorDir, p.name, p.targetDir ?? '')))
 
-// What Composer adds to a package of the lockfile as it installs it, in installed.json.
+// What Composer adds to a locked package in installed.json as it installs it.
 const INSTALL_FIELDS = new Set(['version_normalized', 'installation-source', 'install-path'])
 
-// Throws unless vendor/composer/installed.json (`installedText`) is, as Composer 2 writes it, the install
-// of composer.lock (`lockText`): each locked package (packages-dev too, installed with dev) there once,
-// exactly as locked but for INSTALL_FIELDS, nothing else, and dev-package-names right. Returns it.
+// Throws unless installed.json is, as Composer 2 writes it, the install of composer.lock: each locked package
+// (packages-dev too, installed with dev) there once, as locked but for INSTALL_FIELDS, and nothing else.
 function assertInstalledAsLocked(lockText, installedText, { installedFile, vendorDir }) {
   const differ = (detail) => new Error(`${installedFile} is not the install of composer.lock: ${detail}${vendorDir ? `; remove ${vendorDir} and run \`composer install\`` : ''}`)
   let installed
@@ -487,8 +387,7 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
     const spec = Object.fromEntries(Object.entries(entry).filter(([key]) => !INSTALL_FIELDS.has(key)))
     const key = [...new Set([...Object.keys(spec), ...Object.keys(want.spec)])].find((k) => !isDeepStrictEqual(spec[k], want.spec[k]))
     if (key === 'version' && typeof spec.version === 'string') throw differ(`${name} is installed at ${JSON.stringify(spec.version)}, and locked at ${want.spec.version}`)
-    // `composer install` takes a package installed at the version and reference locked as it is,
-    // whatever else of it the lockfile changes.
+    // `composer install` takes a package at the version and reference locked as it is, whatever else changed.
     if (key !== undefined) throw differ(`${name}'s ${JSON.stringify(key)} is not as locked`)
   }
   for (const [name, { dev }] of locked) {
@@ -499,9 +398,8 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
   return installed
 }
 
-// The GitHub repository and commit a Composer package `p` installed at `at` (null for nowhere) is of: its
-// git `source`'s `reference`, where a clone's checkout HEAD (installed from source) or its dist's reference
-// is that commit; `directory` '', as Packagist takes a package from its repository's root. Else undefined.
+// Its git `source`'s `reference`, where a clone's checkout HEAD (installed from source) or its dist's reference
+// is that commit; `directory` '', as Packagist takes a package from its repository's root.
 function composerRepo({ source, dist }, fromSource, at) {
   if (source?.type !== 'git') return undefined
   if (fromSource ? at === null || checkoutCommit(at) !== source.reference : dist.reference !== source.reference) return undefined
@@ -509,20 +407,15 @@ function composerRepo({ source, dist }, fromSource, at) {
   return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
 }
 
-// Whether Composer installed a package from its source, a clone: as installed.json's
-// `installation-source`, `from`, says, as it must with no dist, or as a git checkout at `at` shows.
+// As installed.json's `installation-source` says, as it must with no dist, or as a git checkout at `at` shows.
 const installedFromSource = ({ dist }, from, at) => from === 'source' || dist == null || (at !== null && existsSync(join(at, '.git')))
 
-// A package's `repo` (composerRepo) and, installed from its dist, its `integrity`: the dist's sha1
-// `shasum`, as the lockfile locks it (GitHub's dists have none).
 function composerInstall(p, from, at) {
   const fromSource = installedFromSource(p, from, at)
   return { repo: composerRepo(p, fromSource, at), integrity: fromSource ? undefined : archiveIntegrity('composer', p.dist.shasum) }
 }
 
-// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra, repo, integrity }]` (`dir`
-// baseDir-relative, null for nowhere): of its composer.lock where there is one, each where Composer installs
-// it, or where installed.json, which must be its install, says; else of installed.json alone.
+// Of composer.lock, each where Composer installs it, or where installed.json, which must be its install, says.
 export function loadComposerPackages(baseDir) {
   const { vendorDir } = readComposerJson(baseDir)
   const packageAt = (p, dir, from) => ({ name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, from, dir == null ? null : join(baseDir, dir)) })
@@ -545,9 +438,7 @@ export function loadComposerPackages(baseDir) {
     .map((p) => packageAt(p, dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), from.get(p.name)))
 }
 
-// The autoload config for `baseDir`, `{ psr4, psr0, classmap, files }`: the root composer.json's
-// `autoload`(+dev) merged with the generated `vendor/composer/autoload_*` maps, paths POSIX
-// baseDir-relative (escapers dropped); null when no Composer config is found.
+// Null where there is no Composer config.
 export function loadComposerAutoload(baseDir) {
   const { composerJson, vendorDir } = readComposerJson(baseDir)
 
@@ -558,12 +449,10 @@ export function loadComposerAutoload(baseDir) {
   let found = false
 
   const mergeDirs = (map, prefix, dirs) => map.set(prefix, [...new Set([...(map.get(prefix) ?? []), ...dirs])])
-  const addPrefixDirs = (map, prefix, paths) => {
-    const list = Array.isArray(paths) ? paths : [paths]
-    mergeDirs(map, prefix, list.map((p) => normalizeProjectRel(baseDir, String(p))).filter((rel) => rel !== null))
-  }
+  const addPrefixDirs = (map, prefix, paths) =>
+    mergeDirs(map, prefix, [paths].flat().map((p) => normalizeProjectRel(baseDir, String(p))).filter((rel) => rel !== null))
 
-  // Root composer.json autoload (+ dev). PSR-4 keys keep their trailing '\'.
+  // PSR-4 keys keep their trailing '\'.
   for (const block of [composerJson?.autoload, composerJson?.['autoload-dev']]) {
     if (!block || typeof block !== 'object') continue
     found = true
@@ -575,11 +464,9 @@ export function loadComposerAutoload(baseDir) {
     }
   }
 
-  // Generated maps. `$vendorDir` = <baseDir>/<vendorDir>, `$baseDir` = <baseDir>.
   const composerGenDir = join(baseDir, vendorDir, 'composer')
   const vars = { baseDir: resolve(baseDir), vendorDir: resolve(baseDir, vendorDir) }
   const toRel = (abs) => projectRel(baseDir, abs) || null
-  // A generated map's entries; none when the file is absent.
   const generated = (name, multi) => {
     const file = join(composerGenDir, name)
     if (!existsSync(file)) return new Map()
@@ -604,51 +491,28 @@ export function loadComposerAutoload(baseDir) {
   return { psr4, psr0, classmap, files: [...files] }
 }
 
-// Resolve a FQCN to a baseDir-relative file via the autoload config, mirroring
-// Composer's lookup order: classmap, then longest PSR-4 prefix, then PSR-0. Only
-// returns a path that exists on disk (an absent prefix match isn't bundled as a hole).
+// As Composer looks a class up: its classmap, then each matching PSR-4 prefix longest first (falling back from
+// one whose file is absent, to the `""` prefix), then PSR-0's. Only a file on disk, as an absent one is no hole.
 export function resolveClassFile(fqcn, autoload, baseDir) {
   if (!autoload || !fqcn) return null
   const name = fqcn.replace(/^\\+/u, '')
   if (!name) return null
-
-  const exact = autoload.classmap.get(name)
-  if (exact && isFileOnDisk(baseDir, exact)) return exact
-
-  // PSR-4: try every matching prefix longest-first (Composer falls back from a
-  // longer prefix whose file is absent to a shorter one, incl. the `""` prefix).
-  for (const [prefix, dirs] of matchingPrefixes(autoload.psr4, name)) {
-    const sub = name.slice(prefix.length).replace(/\\/gu, '/')
-    for (const dir of dirs) {
-      const file = dir ? `${dir}/${sub}.php` : `${sub}.php`
-      if (isFileOnDisk(baseDir, file)) return file
-    }
-  }
-
-  // PSR-0: namespace separators AND underscores in the class name map to
-  // directory separators; the namespace prefix is kept under the mapped dir.
-  for (const [, dirs] of matchingPrefixes(autoload.psr0, name)) {
-    const lastNs = name.lastIndexOf('\\')
-    const nsPart = lastNs === -1 ? '' : name.slice(0, lastNs).replace(/\\/gu, '/')
-    const clsPart = (lastNs === -1 ? name : name.slice(lastNs + 1)).replace(/_/gu, '/')
-    const sub = `${nsPart ? `${nsPart}/` : ''}${clsPart}.php`
-    for (const dir of dirs) {
-      const file = dir ? `${dir}/${sub}` : sub
-      if (isFileOnDisk(baseDir, file)) return file
-    }
-  }
-
-  return null
+  const within = (dir, sub) => (dir ? `${dir}/${sub}` : sub)
+  // PSR-0 maps the class name's underscores to directories too, its namespace kept under the prefix's.
+  const ns = name.lastIndexOf('\\') + 1
+  const psr0 = `${name.slice(0, ns).replace(/\\/gu, '/')}${name.slice(ns).replace(/_/gu, '/')}.php`
+  const psr4 = (prefix) => `${name.slice(prefix.length).replace(/\\/gu, '/')}.php`
+  const candidates = [
+    ...[autoload.classmap.get(name)].filter(Boolean),
+    ...matchingPrefixes(autoload.psr4, name).flatMap(([prefix, dirs]) => dirs.map((dir) => within(dir, psr4(prefix)))),
+    ...matchingPrefixes(autoload.psr0, name).flatMap(([, dirs]) => dirs.map((dir) => within(dir, psr0))),
+  ]
+  return candidates.find((file) => isFileOnDisk(baseDir, file)) ?? null
 }
 
-// [prefix, dirs] entries whose prefix is a prefix of `name`, longest first --
-// prefer the most specific mapping, fall back to shorter (and the `""` fallback).
-function matchingPrefixes(map, name) {
-  return [...map].filter(([prefix]) => name.startsWith(prefix)).toSorted((a, b) => b[0].length - a[0].length)
-}
+const matchingPrefixes = (map, name) => [...map].filter(([prefix]) => name.startsWith(prefix)).toSorted((a, b) => b[0].length - a[0].length)
 
-// The versions and repos of the Composer `packages` (loadComposerPackages: the authoritative source;
-// a package's own composer.json usually omits `version`), by where each is installed and by name.
+// From loadComposerPackages, as a package's own composer.json usually omits its `version`.
 function packageVersions(packages) {
   const byDir = new Map()
   const byName = new Map()
@@ -660,43 +524,30 @@ function packageVersions(packages) {
   return { byDir, byName }
 }
 
-// Walk up from a bundled file to the nearest named composer.json, returning
-// { pkgDir, name, version, repo, integrity } (pkgDir "." for the root; version, repo and integrity from composer.lock or
-// installed.json by dir/name, else composer.json `version`, else `fallbackVersion`). Null if none.
 function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
-  let dir = dirname(fileRelPath)
-  for (;;) {
+  for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
     const cj = readJsonIfExists(join(baseDir, dir, 'composer.json'))
     if (cj?.name) {
       const known = installed.byDir.get(dir) ?? installed.byName.get(cj.name)
       return { pkgDir: dir, name: cj.name, version: known?.version ?? cj.version ?? fallbackVersion, repo: known?.repo, integrity: known?.integrity }
     }
-    const parent = dirname(dir)
-    if (parent === dir) return null // `.` or `/`: no composer.json above
-    dir = parent
+    if (dirname(dir) === dir) return null
   }
 }
 
-// Group bundled PHP sources into per-package buckets keyed by the nearest composer.json's directory
-// (workspace files and orphans -> the root "." bucket with the placeholder identity): Map<dir, { name,
-// version, ecosystem?, integrity?, repo?, files }>. `packages`: loadComposerPackages(baseDir).
+// By the nearest composer.json's directory; workspace files and orphans in the root "." bucket, the placeholder's.
 export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion, packages = loadComposerPackages(baseDir)) {
   const installed = packageVersions(packages)
-
   const modules = new Map()
-  const ensureBucket = (dir, name, version, ecosystem, { repo, integrity } = {}) => {
-    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem, ...(ecosystem !== undefined && { integrity, repo }), files: Object.create(null) }))
-    return modules.get(dir)
-  }
+  const ensureBucket = (dir, name, version, ecosystem, { repo, integrity } = {}) =>
+    upsert(modules, dir, () => moduleInfo({ name, version, ecosystem, ...(ecosystem !== undefined && { integrity, repo }), files: Object.create(null) }))
 
   for (const [path, content] of sources) {
     const pkg = findComposerPackage(baseDir, path, installed, fallbackVersion)
     if (pkg) {
-      const rel = fileInBucket(pkg.pkgDir, path)
-      // Below the root package = an installed Composer dependency, tagged
-      // `composer`; the root "." bucket is workspace code and stays ecosystem-less.
+      // The root package is workspace code; one below it an installed dependency.
       const ecosystem = pkg.pkgDir === '.' ? undefined : 'composer'
-      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem, pkg).files[rel] = content
+      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem, pkg).files[fileInBucket(pkg.pkgDir, path)] = content
     } else {
       ensureBucket('.', fallbackName, fallbackVersion).files[path] = content
     }
@@ -704,9 +555,8 @@ export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVers
   return modules
 }
 
-// Laravel auto-registers service providers nothing references statically: their files (composer.json's
-// and the `packages`' `extra.laravel.providers`, autoload-resolved; unresolvable ones skipped) and
-// bootstrap/providers.php, as extra collection roots. `packages`: loadComposerPackages(baseDir).
+// Laravel registers service providers nothing references statically: composer.json's and the `packages`'
+// `extra.laravel.providers`, and bootstrap/providers.php, are roots of their own.
 export function loadLaravelProviderFiles(baseDir, autoload, packages = loadComposerPackages(baseDir)) {
   const files = new Set()
   if (existsSync(join(baseDir, 'bootstrap', 'providers.php'))) files.add('bootstrap/providers.php')
@@ -724,9 +574,7 @@ export function loadLaravelProviderFiles(baseDir, autoload, packages = loadCompo
   return [...files]
 }
 
-// Names excluded from class-reference scanning: pseudo-types, scalar/special
-// types, and keywords that can sit before `$var`/`::` or after `new` and would
-// otherwise be mistaken for a class reference (`return $x`, `new class`, …).
+// Names that can sit where a class reference does (`return $x`, `new class`, …) and are none.
 const RESERVED = new Set([
   'self', 'static', 'parent', 'this',
   'int', 'integer', 'float', 'double', 'string', 'bool', 'boolean', 'void',
@@ -737,9 +585,7 @@ const RESERVED = new Set([
   'endif', 'endswitch', 'endwhile', 'endfor',
 ])
 
-// Add the FQCN for a class reference `raw` given namespace `ns` and the `use`-alias
-// map, mirroring PHP name resolution: leading `\` = fully-qualified; a first
-// segment matching an alias expands through it; else relative to `ns`.
+// As PHP resolves a name: a leading `\` fully qualified, a first segment an alias expands, else relative to `ns`.
 function addRef(set, raw, ns, aliasMap) {
   const n = raw.trim().replace(/^\?/u, '') // drop a nullable-type marker (`?Foo`)
   if (!n || !/^\\?[A-Za-z_][\w\\]*$/u.test(n)) return
@@ -753,9 +599,6 @@ function addRef(set, raw, ns, aliasMap) {
   else set.add(ns ? `${ns}\\${n}` : n)
 }
 
-// Parse a `use` body (between `use` and `;`) into entries, handling comma lists
-// and group syntax (`Pre\{A, B as C}`). Returns `[{ name, short }]` (short = the
-// alias or last segment).
 function parseUseBody(body) {
   const grouped = body.match(/^([\w\\]+\\)\{([\s\S]*)\}$/u)
   const entries = grouped
@@ -771,28 +614,23 @@ function parseUseBody(body) {
   return out
 }
 
-// Position of the first class/interface/trait/enum declaration (`::class`/member accesses excluded),
-// the end of the import region: a `use` before it is an alias import; after it, an in-body trait use
-// that loads the trait. Infinity when there's no class-like declaration.
-function firstDeclPos(stripped) {
-  const m = stripped.match(/(?<![:\w$\\>])\b(?:class|interface|trait|enum)\b/iu)
-  return m ? m.index : Infinity
-}
+// The first class-like declaration ends the import region: a `use` before it is an alias import; after it, an
+// in-body trait use, which loads the trait.
+const firstDeclPos = (stripped) => stripped.match(/(?<![:\w$\\>])\b(?:class|interface|trait|enum)\b/iu)?.index ?? Infinity
 
-// Collect the FQCNs a PHP file actually depends on. A `use` import only aliases and loads nothing, so it
-// is NOT a dependency; only real reference sites pull a file in (new/extends/implements/instanceof/catch/
-// `Foo::bar`/attributes/type hints/FQNs, plus in-body `use Trait;`).
+// A `use` import only aliases and loads nothing, so is no dependency: only where a class is referenced is.
 export function phpClassDependencies(content) {
-  // Strings blanked too (unlike maskedPhp's) so class-reference scans don't trip over text inside them.
+  // Strings blanked too, so class-reference scans don't trip over text in them.
   const stripped = maskNonCode(content, false)
   const nsMatch = stripped.match(/\bnamespace\s+([\w\\]+)/u)
   const ns = nsMatch ? nsMatch[1].replace(/^\\+|\\+$/gu, '') : ''
   const set = new Set()
   const aliasMap = new Map()
   const add = (raw) => addRef(set, raw, ns, aliasMap)
+  const addAll = (re, separator) => {
+    for (const m of stripped.matchAll(re)) for (const nm of separator ? m[1].split(separator) : [m[1]]) add(nm)
+  }
 
-  // `use` before the first declaration builds the alias map; a `use` after it (each after every alias)
-  // is an in-body trait use, counted as a reference.
   const declAt = firstDeclPos(stripped)
   for (const m of stripped.matchAll(/\buse\s+(?!\()(function\s+|const\s+)?([\s\S]*?);/giu)) {
     if (m[1]) continue
@@ -804,12 +642,10 @@ export function phpClassDependencies(content) {
     }
   }
 
-  for (const m of stripped.matchAll(/(?<![\w$\\])new\s+(\\?[\w\\]+)/giu)) add(m[1])
-  for (const m of stripped.matchAll(/(?<![\w$\\])instanceof\s+(\\?[\w\\]+)/giu)) add(m[1])
-  for (const m of stripped.matchAll(/(?<![\w$\\])(\\?[\w\\]+)\s*::/giu)) add(m[1])
-  for (const m of stripped.matchAll(/#\[\s*(\\?[\w\\]+)/giu)) add(m[1])
-
-  // class/interface/trait/enum headers: pull names out of extends/implements.
+  addAll(/(?<![\w$\\])new\s+(\\?[\w\\]+)/giu)
+  addAll(/(?<![\w$\\])instanceof\s+(\\?[\w\\]+)/giu)
+  addAll(/(?<![\w$\\])(\\?[\w\\]+)\s*::/giu)
+  addAll(/#\[\s*(\\?[\w\\]+)/giu)
   for (const m of stripped.matchAll(/\b(?:class|interface|trait|enum)\b[^{;]*?\{/giu)) {
     const header = m[0]
     const ext = header.match(/\bextends\s+([\w\\\s,?]+?)(?:\bimplements\b|\{)/iu)
@@ -817,30 +653,16 @@ export function phpClassDependencies(content) {
     const impl = header.match(/\bimplements\s+([\w\\\s,?]+?)\{/iu)
     if (impl) for (const nm of impl[1].split(',')) add(nm)
   }
-
-  // catch (A | B $e), or PHP 8's catch (A | B) with no variable: capture the type
-  // list up to `$var` or `)`. One quantifier with nothing after it keeps matching
-  // linear on adversarial input.
-  for (const m of stripped.matchAll(/\bcatch\s*\(([^)$]*)/giu)) {
-    for (const nm of m[1].split('|')) add(nm)
-  }
-
-  // parameter/property type hints: `Type $var`, incl. `?Type`, variadic, by-ref, and union/intersection
-  // `A|B`/`A&B` (each member counts). Only one whitespace quantifier is unbounded (inner `\s*` gated
-  // behind `[&.]`) to avoid catastrophic backtracking against adversarial input.
-  for (const m of stripped.matchAll(/(?<![\w$\\])([?\w\\|&]+)\s+(?:[&.]+\s*)?\$\w+/giu)) {
-    for (const nm of m[1].split(/[|&]/u)) add(nm)
-  }
-  // return types: `): Type`, incl. nullable and union/intersection `): A|B`.
-  for (const m of stripped.matchAll(/\)\s*:\s*([?\w\\|&]+)/giu)) {
-    for (const nm of m[1].split(/[|&]/u)) add(nm)
-  }
-
+  // `catch (A | B $e)`, or PHP 8's with no variable: one quantifier with nothing after it keeps matching linear
+  // on adversarial input.
+  addAll(/\bcatch\s*\(([^)$]*)/giu, '|')
+  // Type hints, `?Type`, variadic, by-ref and `A|B`/`A&B` too, then return types: only one whitespace quantifier
+  // is unbounded (the inner `\s*` behind `[&.]`), against catastrophic backtracking.
+  addAll(/(?<![\w$\\])([?\w\\|&]+)\s+(?:[&.]+\s*)?\$\w+/giu, /[|&]/u)
+  addAll(/\)\s*:\s*([?\w\\|&]+)/giu, /[|&]/u)
   return set
 }
 
-// Resolve each autoloaded class a file references to a baseDir-relative file that
-// exists and is in `sources`. Best-effort: unresolvable refs skipped.
 function autoloadEdges(content, autoload, baseDir, sources) {
   const edges = new Map()
   if (!autoload) return edges
@@ -851,36 +673,28 @@ function autoloadEdges(content, autoload, baseDir, sources) {
   return edges
 }
 
-// Build `{ sources, resolutions, missing }` from already-loaded PHP sources. Explicit includes are strict
-// (unresolvable -> `missing`, but a specifier matching a stored key verbatim is accepted);
-// Composer-autoloaded class refs (with `autoload`) are best-effort and never added to `missing`.
+// Explicit includes are strict (unresolvable -> `missing`); Composer-autoloaded class refs (with `autoload`)
+// best-effort, never `missing`.
 export function buildPhpTree(sources, { baseDir, autoload = null } = {}) {
   const resolutions = new Map()
   const missing = []
   for (const [path, content] of sources) {
     const specMap = new Map()
     for (const spec of extractPhpImports(content)) {
-      let resolved = resolvePhpImport(spec, path, { baseDir })
-      if (resolved && !sources.has(resolved)) resolved = null
-      if (!resolved && sources.has(spec)) resolved = spec
-      if (resolved) {
-        specMap.set(spec, resolved)
-      } else {
+      // A specifier naming a stored key verbatim is taken where it resolves to none.
+      const resolved = [resolvePhpImport(spec, path, { baseDir }), spec].find((p) => p && sources.has(p))
+      if (resolved) specMap.set(spec, resolved)
+      else {
         console.warn(`[loader.php] Missing import: ${spec} from ${path}`)
         missing.push({ spec, from: path })
       }
     }
-    for (const [fqcn, file] of autoloadEdges(content, autoload, baseDir, sources)) {
-      specMap.set(fqcn, file)
-    }
+    for (const [fqcn, file] of autoloadEdges(content, autoload, baseDir, sources)) specMap.set(fqcn, file)
     resolutions.set(path, specMap)
   }
   return { sources, resolutions, missing }
 }
 
-// Walk the filesystem from `entries` (plus Composer `files` autoload entries),
-// following resolved includes and autoloaded class refs, reading each file once.
-// Same-wave files are read in parallel; the next wave depends on the previous.
 export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = null } = {}) {
   const sources = new Map()
   const realBase = realpathSync(baseDir)
@@ -893,9 +707,7 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       if (!isUtf8(bytes)) throw new Error(`PHP source is not valid UTF-8: ${relPath}`)
       return [relPath, bytes.toString('utf8')]
     } catch (err) {
-      // ENOENT (no file) / EISDIR (specifier resolved to a directory): not a
-      // loadable file -- warn and skip rather than crash (buildPhpTree surfaces
-      // the unresolved edge for real includes).
+      // No file, or a specifier resolved to a directory: buildPhpTree tells a real include's edge unresolved.
       if (err.code === 'ENOENT' || err.code === 'EISDIR') {
         console.warn(`[loader.php] Missing import: ${relPath}`)
         return null
@@ -904,57 +716,35 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
     }
   }
 
-  const processWave = async (wave) => {
+  // Composer `files` autoload entries load unconditionally, so they're roots too.
+  for (let wave = [...entries, ...(autoload?.files ?? [])]; wave.length > 0;) {
     const toLoad = [...new Set(wave)].filter((p) => !sources.has(p))
-    if (toLoad.length === 0) return
-    // Bounded batches: a wave can be huge (a dynamic include's directory glob),
-    // and an unbounded Promise.all would open every file at once and crash EMFILE.
     const reads = []
     for (let k = 0; k < toLoad.length; k += READ_CONCURRENCY) {
       // eslint-disable-next-line no-await-in-loop -- batches are intentionally sequential to cap open files
       reads.push(...(await Promise.all(toLoad.slice(k, k + READ_CONCURRENCY).map(readOne))))
     }
     const next = []
-    for (const entry of reads) {
-      if (!entry) continue
-      const [relPath, content] = entry
+    for (const [relPath, content] of reads.filter(Boolean)) {
       sources.set(relPath, content)
       const masked = maskedPhp(content)
       const includes = scanIncludes(masked)
       for (const spec of includeSpecs(includes, 'file')) {
         const resolved = resolvePhpImport(spec, relPath, { baseDir })
-        if (resolved) {
-          if (!sources.has(resolved)) next.push(resolved)
-        } else {
-          console.warn(`[loader.php] Missing import: ${spec} from ${relPath}`)
-        }
+        if (resolved) next.push(resolved)
+        else console.warn(`[loader.php] Missing import: ${spec} from ${relPath}`)
       }
-      // Dynamic includes with a static dir prefix: the exact file is known only
-      // at runtime, so bundle every `.php` file in that directory as a candidate.
       for (const dirSpec of includeSpecs(includes, 'dir')) {
         const dir = resolvePhpDir(dirSpec, relPath, baseDir)
-        if (!dir) continue
-        for (const file of listPhpFiles(baseDir, dir)) {
-          if (!sources.has(file)) next.push(file)
-        }
+        if (dir) for (const file of listPhpFiles(baseDir, dir)) next.push(file)
       }
-      // `.php` path literals outside a require (route/config files passed to a
-      // framework). Best-effort: bundle only if they resolve to an existing file.
       for (const { spec, anchor } of pathRefs(masked)) {
-        const resolved = anchor === 'root'
-          ? normalizeProjectRel(baseDir, spec)
-          : resolvePhpImport(spec, relPath, { baseDir })
-        if (resolved && isFileOnDisk(baseDir, resolved) && !sources.has(resolved)) next.push(resolved)
+        const resolved = anchor === 'root' ? normalizeProjectRel(baseDir, spec) : resolvePhpImport(spec, relPath, { baseDir })
+        if (resolved && isFileOnDisk(baseDir, resolved)) next.push(resolved)
       }
-      // Autoloaded class references (best-effort): enqueue whatever resolves.
-      for (const [, file] of autoloadEdges(content, autoload, baseDir, null)) {
-        if (!sources.has(file)) next.push(file)
-      }
+      for (const file of autoloadEdges(content, autoload, baseDir, null).values()) next.push(file)
     }
-    await processWave(next)
+    wave = next
   }
-
-  // Composer `files` autoload entries load unconditionally, so they're graph roots too.
-  await processWave([...entries, ...(autoload?.files ?? [])])
   return sources
 }
