@@ -35,9 +35,7 @@ export const diskHost = {
   },
   readlink: (p) => (lstatSync(p).isSymbolicLink() ? readlinkSync(p) : null),
   realpath: (p) => realpathSync(p),
-  // fs.globSync's matches of `pattern` from `cwd`, never walking into a path `exclude` takes (given its
-  // absolute path). With `exclude` the walk is over Dirents, which know their parent (else Node hands
-  // its callback a bare file name), each match then spelled from `cwd`.
+  // `exclude` takes an absolute path, so that walk is over Dirents: else Node hands it a bare file name.
   glob(pattern, { cwd, exclude } = {}) {
     if (exclude === undefined) return globSync(pattern, { cwd })
     const pathOf = (dirent) => join(dirent.parentPath, dirent.name)

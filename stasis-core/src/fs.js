@@ -1,5 +1,4 @@
-// `stasis run --fs=sync|async`: patch the fs readers and probes (=async: their callback and fs.promises forms
-// too) to capture a program's reads into the bundle (bundle=add|replace) or serve them from it (bundle=load).
+// `stasis run --fs`: capture a program's fs reads into the bundle, or serve them from it (bundle=load).
 // SECURITY INVARIANT: a path whose REAL path leaves the project root falls through to the real fs, never attested.
 
 import { createRequire, syncBuiltinESMExports } from 'node:module'
@@ -12,9 +11,8 @@ import { isDotEnvFile, isPathWithin, isStasisArtifactName } from './util.js'
 const require = createRequire(import.meta.url)
 const fs = require('node:fs')
 
-// Snapshot the real fns while still genuine builtins: the hooks call THESE, so there's no recursion and
-// capture/containment see real bytes. fs.promises IS node:fs/promises. Callback fs.exists is NOT patched
-// (wrapping would clobber its util.promisify.custom); it answers via the patched fs.access.
+// The hooks call these real fns, so there's no recursion and capture sees real bytes. Callback fs.exists is
+// NOT patched (wrapping would clobber its util.promisify.custom); it answers via the patched fs.access.
 const {
   readdirSync: realReaddirSync, lstatSync: realLstatSync, statSync: realStatSync, realpathSync: realRealpathSync,
   existsSync: realExistsSync, accessSync: realAccessSync,
@@ -24,12 +22,10 @@ const { readFile: realReadFileP, readdir: realReaddirP, lstat: realLstatP, stat:
 const realRealpathSyncNative = realRealpathSync.native
 const realRealpathNative = realRealpath.native
 
-// The bundle serves read-only, so only an F_OK/R_OK-only mode may be answered from it; allowlist form
-// so a W_OK/X_OK or out-of-range mode defers to the real fs.
+// The bundle serves read-only: an allowlist, so a W_OK/X_OK or out-of-range mode defers to the real fs.
 const READ_ACCESS = fs.constants.F_OK | fs.constants.R_OK
 const isReadOnlyAccessMode = (mode) => ((mode | 0) & ~READ_ACCESS) === 0
 
-// Resolve a path argument to an absolute path, or null for what we don't capture (fd, non-file URL).
 function toAbsPath(path) {
   if (typeof path === 'string') return resolve(path)
   if (Buffer.isBuffer(path)) return resolve(path.toString())
@@ -37,53 +33,40 @@ function toAbsPath(path) {
   return null
 }
 
-// At the project root, drop stasis's own artifacts from the RECORDED listing so it doesn't depend on
-// whether an earlier run left them behind; the program still receives the true on-disk `names`.
-function dirCaptureNames(root, abs, names) {
-  if (!isPathWithin(abs, root)) return names
-  return names.filter((name) => !isStasisArtifactName(name))
-}
-
 const encodingOf = (options) => (typeof options === 'string' ? options : options?.encoding)
 
-// Apply readFileSync's encoding arg to raw bytes; Buffer.toString matches fs's ERR_UNKNOWN_ENCODING.
+// Buffer.toString throws fs's ERR_UNKNOWN_ENCODING.
 function decode(buf, options) {
   const encoding = encodingOf(options)
   return encoding == null ? buf : buf.toString(encoding)
 }
 
-// Honour realpath's `encoding` arg for the synthetic answer when a bundle-served path is gone from disk.
+// The synthetic realpath of a bundle-served path gone from disk.
 const encodeRealpath = (abs, options) => (encodingOf(options) === 'buffer' ? Buffer.from(abs) : abs)
 
-// NON-EXISTENT under --fs (ENOENT from every reader, listings too): `*.map` sidecars (so a captured build
-// replays byte-identically; opt out via `map` in resources) and `.env`/`.env.*` (a capture never bakes in a
-// secret; no opt-in). Either serves at load only as a bundle member (an explicit `stasis add .env`).
+// Absent under --fs: `*.map` (a captured build replays byte-identically; `map` in resources opts out) and
+// `.env*` (a capture never bakes in a secret). Either serves at load only as an explicit bundle member.
 function isSkippedFsPath(state, abs) {
   const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
   return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)
 }
 
-// A faithful Node-shaped ENOENT, indistinguishable from a real absent file. String() spells a
-// Buffer path as its UTF-8 text and a URL as its href.
+// Indistinguishable from a real absent file's. String() spells a Buffer path as UTF-8 and a URL as its href.
 function enoent(syscall, path) {
   const p = String(path)
   return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`), { code: 'ENOENT', errno: -2, syscall, path: p })
 }
 
-// An absent path's stat answers as Node answers for a missing one, in its version (async stat honours
-// throwIfNoEntry from 24.15, async lstat doesn't): the real fn asked of '', which never exists, re-spelled.
+// An absent path's stat answers as the real fn does for '' (never exists), re-spelled: which options it honours
+// varies by Node version (async stat takes throwIfNoEntry from 24.15, async lstat doesn't).
 const asAbsent = (syscall, path) => (err) => (err?.code === 'ENOENT' ? enoent(syscall, path) : err)
 
-// File-type bits, so code reading stats.mode (not the is*() methods) still sees file-vs-dir.
-const S_IFREG = 0o100000
-const S_IFDIR = 0o040000
-
-// Neutral fs.Stats-shaped record for a bundle-served path gone from disk; never throws, so wrappers
-// reading uid/gid etc. keep working.
+// For a bundle-served path gone from disk; never throws, so wrappers reading uid/gid etc. keep working.
 function syntheticStat(isDir) {
   const epoch = new Date(0)
   return {
-    dev: 0, ino: 0, mode: isDir ? S_IFDIR : S_IFREG, nlink: 1, uid: 0, gid: 0,
+    // S_IFDIR / S_IFREG: code reading stats.mode, not is*(), still tells file from dir.
+    dev: 0, ino: 0, mode: isDir ? 0o040000 : 0o100000, nlink: 1, uid: 0, gid: 0,
     rdev: 0, size: 0, blksize: 4096, blocks: 0,
     atimeMs: 0, mtimeMs: 0, ctimeMs: 0, birthtimeMs: 0,
     atime: epoch, mtime: epoch, ctime: epoch, birthtime: epoch,
@@ -92,9 +75,7 @@ function syntheticStat(isDir) {
   }
 }
 
-// A Stats-like Proxy for a bundle-served path: isFile()/isDirectory() answer from the bundle, other
-// members from the REAL stat while on disk, else syntheticStat. `then` is short-circuited so a
-// bundle-served Stats is never an accidental (rejecting) thenable under `await`.
+// The rest from the real stat while on disk; `then` short-circuited: never an accidental thenable under `await`.
 function bundleStats(realStatFn, statPath, isDir) {
   let data
   const overrides = { isFile: () => !isDir, isDirectory: () => isDir }
@@ -117,13 +98,10 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   if (installed) return
   installed = true
 
-  // Node's glob takes fs's readers when it first loads: load it now, on the real ones, so the sweep
-  // of stasis.config.json's `extra` at write (expandExtra) is never captured as the program's reads.
+  // Node's glob takes fs's readers when first loaded: load it on the real ones, so the `extra` sweep isn't captured.
   fs.globSync([])
 
-  // Classify a path for every hook: null passes through to the real fs; else { mode, abs, url, state }
-  // with mode 'absent' (a skipped path: ENOENT), 'serve' (bundle=load; an uncaptured path still falls
-  // through to disk) or 'capture' (bundle=add|replace, outside a loader read).
+  // null passes through to the real fs; 'serve' still falls through to disk for an uncaptured path.
   const classify = (path) => {
     const state = getState()
     if (!state) return null
@@ -135,21 +113,19 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
     return null
   }
-  // A path the bundle knows (content, listing, stat record or implied dir), for the serve-only probes.
   const served = (t) => t?.mode === 'serve' && t.state.getFsStatFamily(t.url) !== undefined
 
-  // Capture-side records; a rejected capture taints the run (markAborted) rather than failing the read.
+  // A rejected capture taints the run rather than failing the read.
   const record = (fn) => { try { fn() } catch (err) { markAborted(err) } }
-  // A path whose real location escapes root (in-tree symlink) is read but NOT recorded, and neither is
-  // a read a bundler-plugin sidecar already attests.
+  // An in-tree symlink out of root is read but NOT recorded, nor is a read a bundler-plugin sidecar attests.
   const captureFile = ({ state, abs, url }, buf) => {
     if (realContained(state.root, abs) && !state.attestedBySidecar(url)) record(() => state.addFsFile(url, buf))
   }
   const captureDir = ({ state, abs, url }, names) => {
-    if (realContained(state.root, abs)) record(() => state.addFsDir(url, dirCaptureNames(state.root, abs, names)))
+    if (!realContained(state.root, abs)) return
+    // At the root, the RECORDED listing leaves out stasis's own artifacts, so an earlier run's don't matter.
+    record(() => state.addFsDir(url, isPathWithin(abs, state.root) ? names.filter((name) => !isStasisArtifactName(name)) : names))
   }
-  // A stat records the path's KIND as a payload-free record so a stat-ONLY path's type getters answer
-  // at load. Only file and dir are modelled.
   const captureStat = ({ state, abs, url }, stats) => {
     const isDir = stats.isDirectory()
     if (!isDir && !stats.isFile()) return
@@ -173,7 +149,6 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   fs.readdirSync = function readdirSync(path, options) {
     const t = classify(path)
     if (t?.mode === 'absent') throw enoent('scandir', path)
-    // Served/captured in the single-argument form only; any options pass straight through.
     if (options == null && t?.mode === 'serve') {
       const names = t.state.getFsDirFamily(t.url)
       if (names !== undefined) return names // sorted at capture time
@@ -185,8 +160,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     return realReaddirSync(path, options)
   }
 
-  // Served/captured in the single-arg form only (an absent path is missing in any: asAbsent); capture hands the
-  // caller the REAL Stats/errors. statSync follows symlinks: an in-root symlink records the TARGET's kind there.
+  // statSync follows symlinks: an in-root symlink records the TARGET's kind.
   const servedStatSync = (syscall, realFn) => ({
     [`${syscall}Sync`](path, options) {
       const t = classify(path)
@@ -207,8 +181,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   fs.lstatSync = servedStatSync('lstat', realLstatSync)
   fs.statSync = servedStatSync('stat', realStatSync)
 
-  // existsSync/accessSync/realpathSync: existence + canonical-path PROBES, serve-only (bundle=load) --
-  // a tool may probe before reading bytes (@babel/core does); capture mode and unrecorded paths defer.
+  // The probes are served (a tool may probe before reading bytes, as @babel/core does) but never captured.
   fs.existsSync = function existsSync(path) {
     const t = classify(path)
     if (t?.mode === 'absent') return false
@@ -222,27 +195,21 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     return realAccessSync(path, mode)
   }
 
-  // Try the real realpath first (true symlink resolution while on disk), fall back to the lexical abs
-  // once gone (ancestor symlinks not re-resolved then).
+  // The real realpath while on disk, else the lexical abs (ancestor symlinks not re-resolved then).
   const servedRealpathSync = (realFn) => function realpathSync(path, options) {
     const t = classify(path)
     if (t?.mode === 'absent') throw enoent('realpath', path)
-    if (served(t)) {
-      try { return realFn(path, options) } catch { return encodeRealpath(t.abs, options) }
-    }
-    return realFn(path, options)
+    if (!served(t)) return realFn(path, options)
+    try { return realFn(path, options) } catch { return encodeRealpath(t.abs, options) }
   }
   fs.realpathSync = servedRealpathSync(realRealpathSync)
   fs.realpathSync.native = servedRealpathSync(realRealpathSyncNative)
 
-  // --fs=async counterparts; a served callback is deferred (queueMicrotask) to preserve fs's
-  // always-async contract.
+  // A served callback is deferred, keeping fs's always-async contract.
   if (patchAsync) {
-    // Split a trailing callback from its optional options argument.
     const cbArgs = (options, callback) => (typeof options === 'function' ? [undefined, options] : [options, callback])
     const later = (cb, ...args) => queueMicrotask(() => cb(...args))
-    // Route a decode error to the callback (as fs.readFile does); a throw from a deferred callback
-    // would escape as an uncaught exception and crash the process.
+    // A decode error goes to the callback, as fs.readFile's does: a throw here would be uncaught.
     const decodeToCb = (cb, buf, options) => {
       let out
       try { out = decode(buf, options) } catch (err) { cb(err); return }
@@ -284,8 +251,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
       const [opts, cb] = cbArgs(options, callback)
       const t = typeof cb === 'function' ? classify(path) : null
       if (t?.mode === 'absent') return later(cb, enoent('scandir', path))
-      // Served/captured in the single-arg form only, where a null options must count as "no options"
-      // (graceful-fs normalises to that), else its reads never hit the bundle.
+      // A null options counts as none: graceful-fs normalises to that, else its reads never hit the bundle.
       if (opts == null && t?.mode === 'serve') {
         const names = t.state.getFsDirFamily(t.url)
         if (names !== undefined) return later(cb, null, names)
@@ -313,7 +279,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
       return realReaddirP(path, options)
     }
 
-    // lstat/stat mirror their sync siblings; bundleStats's field fallback stays sync.
+    // bundleStats's field fallback stays sync.
     const servedStat = (syscall, realFn, realSyncFn) => ({
       [syscall](path, options, callback) {
         const [opts, cb] = cbArgs(options, callback)
@@ -381,14 +347,11 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     fs.promises.realpath = async function realpath(path, options) {
       const t = classify(path)
       if (t?.mode === 'absent') throw enoent('realpath', path)
-      if (served(t)) {
-        try { return await realRealpathP(path, options) } catch { return encodeRealpath(t.abs, options) }
-      }
-      return realRealpathP(path, options)
+      if (!served(t)) return realRealpathP(path, options)
+      try { return await realRealpathP(path, options) } catch { return encodeRealpath(t.abs, options) }
     }
   }
 
-  // Refresh the node:fs (+ node:fs/promises) ESM wrappers so user-code live imports see the patched fns.
   // INVARIANT: a stasis module needing the real fs must snapshot it (`const { ... } = fs`), never live-import.
   syncBuiltinESMExports()
 }
