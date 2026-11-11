@@ -1,4 +1,4 @@
-import { assert, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
+import { assert, assertScope, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -25,7 +25,7 @@ export class Lockfile {
   executable
 
   constructor({ config = { scope: 'full' }, entries, modules, imports, formats, executable } = {}) {
-    assert(['node_modules', 'full'].includes(config.scope))
+    assertScope(config.scope, 'lockfile')
     this.config = config
     this.entries = entries ?? new Set()
     this.modules = modules ?? new Map()
@@ -50,7 +50,7 @@ export class Lockfile {
   static parse(text) {
     const json = JSON.parse(text)
     assert(json.version === VERSION)
-    assert(['node_modules', 'full'].includes(json.config?.scope))
+    assertScope(json.config?.scope, 'lockfile')
     assert(json.imports !== undefined && json.formats !== undefined, 'lockfile must attest imports and formats')
 
     const full = json.config.scope === 'full'

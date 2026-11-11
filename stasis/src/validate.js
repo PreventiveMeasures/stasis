@@ -21,7 +21,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { STORE_HASH, resolutionCommit } from './installed.js'
+import { nameAt, STORE_HASH, resolutionCommit } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -924,7 +924,7 @@ function readLockfile(name, read) {
     links = new Set(Object.keys(lockfile.links))
     // npm links a directory it installs, by its location, to the directory: the package there.
     for (const [location, target] of Object.entries(lockfile.links)) {
-      if (Object.hasOwn(lockfile.importers, target)) local(location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length), target)
+      if (Object.hasOwn(lockfile.importers, target)) local(nameAt(location), target)
     }
     packages = Object.values(lockfile.packages)
   }

@@ -1,4 +1,4 @@
-import { ATTESTED_METADATA, REPO_FIELDS, moduleFileKey, sameGithub, sortPaths } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, REPO_FIELDS, moduleFileKey, sameGithub, setsEqual, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and file
 // level, never reading disk. Every file is reduced to an SRI digest: a lockfile holds them, and a bundle's
@@ -128,7 +128,6 @@ function resolutionsOf(imports) {
 const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const cmpPair = (a, b) => sortPaths(a.parent, b.parent) || cmpStr(a.specifier, b.specifier)
 const sortedTargets = (set) => [...set].toSorted(sortPaths)
-const sameTargets = (a, b) => a.size === b.size && a.isSubsetOf(b)
 
 // Diff resolution graphs by (parent, specifier) (see resolutionsOf): added, removed, and changed -- a
 // redirect a byte diff can't see. A side attesting no imports (a lockfile predating attestation) skips the
@@ -149,7 +148,7 @@ export function diffImports({ artifact: left }, { artifact: right }) {
     const r = R.get(key)
     if (l && !r) removed.push({ parent: l.parent, specifier: l.specifier, from: sortedTargets(l.targets) })
     else if (!l && r) added.push({ parent: r.parent, specifier: r.specifier, to: sortedTargets(r.targets) })
-    else if (!sameTargets(l.targets, r.targets)) {
+    else if (!setsEqual(l.targets, r.targets)) {
       changed.push({ parent: l.parent, specifier: l.specifier, from: sortedTargets(l.targets), to: sortedTargets(r.targets) })
     }
   }

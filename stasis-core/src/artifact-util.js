@@ -366,6 +366,10 @@ export const LOCK_FILE = 'stasis.lock.json'
 export const CONFIG_FILE = 'stasis.config.json'
 export const BUNDLE_FILE = 'stasis.code.br'
 
+// An artifact's `scope`: what of the project it records.
+export const SCOPES = new Set(['node_modules', 'full'])
+export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} scope must be node_modules or full, got ${JSON.stringify(scope)}`)
+
 // stasis's lockfile, by name at any depth and in any case: a case-insensitive disk resolves
 // `STASIS.LOCK.JSON` to it too.
 export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
@@ -462,9 +466,10 @@ export const isRefusedPath = (path) => path.includes('\\') || posixPathEscapes(p
 export const assertArtifactPath = (path, what) =>
   assert(!isRefusedPath(path), `${what}: path '${path}' escapes the root or holds a '\\'`)
 
-// THE rule an artifact's entry must satisfy, on read (parseEntries) and on write (serializeEntries).
-const assertEntry = (entry, what) =>
-  assert(typeof entry === 'string' && entry !== '' && !isRefusedPath(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
+// A path an artifact may name: a non-empty string isRefusedPath doesn't refuse. The rule for an entry, on
+// read (parseEntries) and write (serializeEntries), and for a shard's paths.
+export const isArtifactKey = (key) => typeof key === 'string' && key !== '' && !isRefusedPath(key)
+const assertEntry = (entry, what) => assert(isArtifactKey(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
 
 // An artifact's `entries` list as a Set: each a non-empty in-root path, listed once (a dupe would
 // collapse in the Set and round-trip to different bytes).
@@ -582,6 +587,9 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
   }
   return { modules: fromEntries(sortedByPath(grouped.modules, entryKey)), sources: fromEntries(sortedByPath(grouped.sources, entryKey)) }
 }
+
+// The files an import target names: itself, or (--metro) each platform's.
+export const targetFiles = (target) => (target instanceof Map ? target.values() : [target])
 
 // Whether two import targets are one: a resolved file, or (--metro) a { platform: file } Map, compared structurally.
 export function importTargetsEqual(a, b) {

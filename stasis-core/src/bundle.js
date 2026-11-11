@@ -2,6 +2,7 @@ import {
   assert,
   assertArtifactPath,
   assertPayloadFree,
+  assertScope,
   canonicalFileKey,
   duplicateKeyError,
   fileSetToObject,
@@ -141,7 +142,7 @@ export class Bundle {
 
   constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, package: pkg, version = VERSION } = {}) {
     assert([LEGACY_VERSION, VERSION].includes(version))
-    assert(['node_modules', 'full'].includes(config.scope))
+    assertScope(config.scope, 'bundle')
     this.version = version
     this.config = config
     this.entries = entries ?? new Set()
@@ -197,7 +198,7 @@ export class Bundle {
   // parse() on an already-parsed value; `contents: false` takes a symbol placeholder per file and locks contents out.
   static fromJSON(json, { contents = true } = {}) {
     assert(json.version === VERSION || json.version === LEGACY_VERSION)
-    assert(['node_modules', 'full'].includes(json.config?.scope))
+    assertScope(json.config?.scope, 'bundle')
     // Validated into a typed Map early: a raw-object lookup like `__proto__` would hit the prototype.
     const formats = parseFormats(json.formats)
 

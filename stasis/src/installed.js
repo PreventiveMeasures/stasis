@@ -65,7 +65,7 @@ function lockText(file, host, strict) {
 }
 
 // The name a package is installed as at `location`, the last of it.
-const nameAt = (location) => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length)
+export const nameAt = (location) => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length)
 
 // A lockfile's record of each package by its name and version, or `name@` (a directory's): of two that
 // differ, either may be the one installed, so its version alone, `ambiguous`. Of `location`'s package

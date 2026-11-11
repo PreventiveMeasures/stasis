@@ -12,7 +12,7 @@ import {
   isSourceFile,
   locatePackage,
   nearestPackage,
-  readJson,
+  readManifest,
   resolveTypescriptFallback,
   tsconfigOutputsOf,
   typescriptSiblings,
@@ -101,11 +101,11 @@ function matchRedirect(map, relPath) {
   return undefined
 }
 
-// readJson of each manifest a resolver reads, once, as a lazy tree allows (untouchedMemo). Each resolver
+// readManifest of each manifest a resolver reads, once, as a lazy tree allows (untouchedMemo). Each resolver
 // reads its own, so a build on the disk reads each manifest as it is then.
 function manifestReader(host) {
   const manifests = hostMemo(host)
-  return (path) => manifests(path, () => readJson(path, host))
+  return (path) => manifests(path, () => readManifest(path, host))
 }
 
 // React Native's Metro config defaults: the extensions its resolver probes, in order, those it
