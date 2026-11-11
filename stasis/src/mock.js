@@ -7,12 +7,9 @@ import { createRequire, syncBuiltinESMExports } from 'node:module'
 
 const require = createRequire(import.meta.url)
 
-// Force lazy init of process.std{in,out,err} before mocking net/tls: they're lazy getters that
-// build a net.Socket/tty.WriteStream on first read, which syncBuiltinESMExports() below would
-// otherwise trigger through our mock mid-setup. Reading once here caches the real Socket/TTY.
-void process.stdin
-void process.stdout
-void process.stderr
+// process.std{in,out,err} build a net.Socket/tty.WriteStream on first read, which syncBuiltinESMExports() below would
+// otherwise trigger through our mock mid-setup: read once here, they cache the real ones.
+for (const name of ['stdin', 'stdout', 'stderr']) void process[name]
 
 const MARKER = '[stasis --mock]'
 
@@ -24,16 +21,14 @@ const blocked = (label) => {
   return err
 }
 
-// A *regular* (constructable) function so both `mod.factory()` and `new mod.Constructor()` throw
-// our error; an arrow would make `new` fail with a confusing "is not a constructor".
+// Not an arrow, so `new mod.Constructor()` throws our error too rather than "is not a constructor".
 const denyFn = (label) => function () { throw blocked(label) }
 
-// Promise-shaped version: rejects instead of sync-throwing, so fire-and-forget callers surface via
-// the unhandledRejection trap below rather than crashing the script synchronously.
+// Rejecting, so a fire-and-forget caller meets the unhandledRejection trap below rather than a sync crash.
 const denyFnAsync = (label) => function () { return Promise.reject(blocked(label)) }
 
-// Replace every own function on `mod` (and one level down on `mod.promises`) with a thrower, a rejecting one
-// on a promise surface but for a class (PascalCase), which `new` would make the Promise of.
+// Every own function on `mod` and `mod.promises` a thrower, a rejecting one on a promise surface but for a class
+// (PascalCase), which `new` would make the Promise of.
 const isClassName = (key) => /^[A-Z]/.test(key)
 const denyModuleSurface = (prefix, mod, isAsync = prefix.endsWith('/promises')) => {
   for (const key of Object.getOwnPropertyNames(mod)) {
@@ -52,14 +47,12 @@ const denyModuleSurface = (prefix, mod, isAsync = prefix.endsWith('/promises')) 
   }
 }
 
-// Every callable on these builtins is replaced with a thrower.
 const DENY_ALL = [
   // Network surface (no --allow-net counterpart -- JS-mock is the only layer).
   'node:http', 'node:https', 'node:http2',
   'node:net', 'node:dgram', 'node:tls',
   'node:dns', 'node:dns/promises',
-  // Process/worker/debug: already --permission-denied; duplicated for attributable errors and
-  // defense in depth against a future --allow-* slip-up or a process.binding bypass.
+  // Already --permission-denied: for attributable errors, and in depth against an --allow-* slip or process.binding.
   'node:child_process',
   'node:worker_threads',
   'node:cluster',
@@ -97,13 +90,10 @@ for (const name of PROCESS_DENY) {
   if (typeof process[name] === 'function') mock.method(process, name, denyFn(`process.${name}()`))
 }
 
-// process.report.writeReport writes a diagnostic JSON file to disk; deny it too.
-if (typeof process.report?.writeReport === 'function') {
-  mock.method(process.report, 'writeReport', denyFn('process.report.writeReport()'))
-}
+// It writes a diagnostic JSON file.
+if (typeof process.report?.writeReport === 'function') mock.method(process.report, 'writeReport', denyFn('process.report.writeReport()'))
 
-// fs writers: --permission blocks these at the kernel level too, but JS-mocking gives cleaner
-// errors and stops user code mutating even cwd files (cwd is on --allow-fs-write for the bundle).
+// --permission blocks these too, but mocking gives cleaner errors and covers cwd, on --allow-fs-write for the bundle.
 // Reads stay real so node_modules resolution keeps working.
 const fs = require('node:fs')
 const fsPromises = require('node:fs/promises')
@@ -124,8 +114,7 @@ for (const name of FS_WRITERS) {
   if (typeof fsPromises[name] === 'function') mock.method(fsPromises, name, denyFnAsync(`node:fs/promises.${name}()`))
 }
 
-// Refresh the node:fs ESM wrappers so ESM imports after this point see the mocked names;
-// bindings stasis already captured (linked before this file ran) keep their real snapshot.
+// ESM imports after this see the mocks; bindings stasis linked before this ran keep their real snapshot.
 syncBuiltinESMExports()
 
 // The global fetch / WebSocket / EventSource are undici's, not node:http's. fetch never settles, so an awaiter
@@ -139,8 +128,7 @@ for (const name of ['WebSocket', 'EventSource']) {
   }
 }
 
-// Our denials become unhandledRejections for fire-and-forget callers, which would tear the process
-// down before the loader writes the bundle. Swallow *only* our own denials; rethrow everything else.
+// A fire-and-forget caller's denial would tear the process down before the loader writes the bundle.
 process.on('unhandledRejection', (reason) => {
   if (reason?.__stasisMock) return
   throw reason
@@ -163,10 +151,8 @@ const timers = require('node:timers')
 for (const name of TIMERS) mock.method(timers, name, noop)
 
 const timersPromises = require('node:timers/promises')
-mock.method(timersPromises, 'setTimeout', pending)
-mock.method(timersPromises, 'setImmediate', pending)
-// setInterval returns an async iterable; each `await iter.next()` is forever-pending, so
-// `for await (const _ of setInterval(...))` hangs at the first iteration.
+for (const name of ['setTimeout', 'setImmediate']) mock.method(timersPromises, name, pending)
+// An async iterable whose `for await` hangs at the first iteration.
 mock.method(timersPromises, 'setInterval', () => ({
   [Symbol.asyncIterator]() {
     return { next: pending }

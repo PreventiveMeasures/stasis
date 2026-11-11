@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { assertCodeUtf8, assertPersistableAttributes, attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
+import { assertCodeUtf8, assertPersistableAttributes, attestedImport, ownOrResolvedState, rebuildRefused, unsupportedExtension } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route esbuild's reads through the capture hook.
@@ -69,10 +69,7 @@ export class StasisEsbuild {
   // a code rewrite (`stasis build --platform=hermes`), `resource(source, { path })` a module for a resource no loader
   // names (`stasis build --metro`'s asset module), `platform` the one a --metro per-platform edge resolves for.
   constructor(options = {}, { loaders, transform, resource, platform } = {}) {
-    // A caller that owns a State (`stasis build`) passes it; a foreign copy's State fails the instanceof.
-    const state = options instanceof State
-      ? options
-      : resolvePluginState('StasisEsbuild', options, process.cwd()).state
+    const state = ownOrResolvedState('StasisEsbuild', options)
     this.#state = state
     this.#resources = state?.config.resources ?? new Set()
     this.#loaders = loaders ?? new Map()
@@ -154,17 +151,11 @@ export class StasisEsbuild {
     if (!this.#state) return
     const emptyModuleURL = pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
 
-    // Dedupe is by path, so a rebuild with new bytes would emit them while the artifacts keep the old ones; rebuilds
-    // re-fire onStart against the same registrations.
+    // Rebuilds re-fire onStart against the same registrations.
     if (!this.#state.config.loadBundle) {
       onStart(() => {
         this.#captureBuildCount += 1
-        if (this.#captureBuildCount === 1) return undefined
-        return {
-          errors: [{
-            text: 'StasisEsbuild: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)',
-          }],
-        }
+        return this.#captureBuildCount === 1 ? undefined : { errors: [{ text: rebuildRefused('StasisEsbuild') }] }
       })
     }
 

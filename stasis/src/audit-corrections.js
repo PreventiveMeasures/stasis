@@ -1,8 +1,7 @@
 import { satisfies, valid } from '@preventive/upstream/semver.js'
 
-// Files that are no evidence a package's real code is present: one shipped only as these is not audited. Plain data,
-// for tools reading packages without stasis too: each `range` is VERIFIED, widened only after re-checking `file`, and
-// `integrity` is the sha512 of each copy of it there, as a lockfile records a file, so a holder can tell a verified one.
+// Files that are no evidence of a package's real code: one shipped only as these is not audited. Each `range` is
+// VERIFIED, widened only after re-checking `file`; `integrity` is the sha512 of each copy of it there, as a lockfile has it.
 export const CORRECTIONS = Object.freeze([
   {
     // ws's browser build is a noop stub -- `module.exports = function () { throw
@@ -41,15 +40,12 @@ export const CORRECTIONS = Object.freeze([
   },
 ].map((correction) => Object.freeze({ ...correction, integrity: Object.freeze(correction.integrity) })))
 
-// Is `rel` (a file path relative to the module dir) audit-irrelevant for
-// `name@version` of `ecosystem`? Unknown or unparsable versions are never
-// corrected (fail closed: the package stays audited).
+// An unknown or unparsable version is never corrected: fail closed, the package stays audited.
 const isCorrectedFile = (name, version, rel, ecosystem) => CORRECTIONS.some((correction) => correction.ecosystem === ecosystem && correction.name === name
   && correction.file === rel && valid(version) && satisfies(version, correction.range))
 
-// A manifest (top-level or nested) is never code, though the graph records resolver reads of `package.json`
-// (react-native scans its siblings' for Haste): nor are those the other ecosystems' bundles carry beside a
-// dependency (--cargo-manifests, --manifests), a vendored crate's checksums among them.
+// A manifest is never code, though the graph records resolver reads of `package.json` (react-native scans its siblings'
+// for Haste), nor are those other ecosystems' bundles carry (--cargo-manifests, --manifests).
 const CARGO_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json'])
 const FOUNDRY_MANIFESTS = new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml'])
 const MANIFESTS = {
@@ -63,8 +59,7 @@ const MANIFESTS = {
 }
 const isManifest = (rel, ecosystem) => MANIFESTS[ecosystem]?.has(rel.slice(rel.lastIndexOf('/') + 1)) ?? false
 
-// Is `rel` evidence that `name@version`'s REAL code (of `ecosystem`) is present? The one rule package presence,
-// the reason column and the --why graph share: no manifest is, nor CORRECTIONS' files within their range.
+// The one rule package presence, the reason column and the --why graph share.
 export function isEvidenceFile(name, version, rel, ecosystem = 'npm') {
   return !isManifest(rel, ecosystem) && !isCorrectedFile(name, version, rel, ecosystem)
 }

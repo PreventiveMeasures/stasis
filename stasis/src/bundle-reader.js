@@ -19,9 +19,8 @@ const untilAborted = (promise, signal) => (signal === undefined ? promise : new 
 // Left in place of each streamed file; fromJSON's contents-free mode requires one per file.
 const STREAMED = Symbol('streamed')
 
-// parseBundleBytes(source), without holding the decompressed bytes or the JSON text whole.
-// onFile gets each file in stream order, wherever the bundle puts its files, and before the bundle is
-// validated: what it receives (format included) is provisional until readBundle resolves. See doc/file-formats.md.
+// parseBundleBytes(source), without holding the decompressed bytes or the JSON text whole. onFile gets each file in
+// stream order, before the bundle is validated: what it receives is provisional until readBundle resolves.
 export async function readBundle(source, { onFile, signal } = {}) {
   assert(onFile === undefined || typeof onFile === 'function', 'readBundle: onFile must be a function')
   let input = source
@@ -47,9 +46,8 @@ export async function readBundle(source, { onFile, signal } = {}) {
 
   // Big chunks let zlib's thread pool decompress ahead of the parser; zlib's 16 KiB default runs about 2x slower.
   const decompress = createBrotliDecompress({ chunkSize: 1024 * 1024, readableHighWaterMark: 4 * 1024 * 1024 })
-  // The decoder consumes nothing after the brotli stream's end, so bytes given past its bytesWritten are
-  // trailing junk. Counting them takes `input` out of pipeline's hands, so this destroys it on pipeline's
-  // signal (any failure or abort) as pipeline would: one waiting for a chunk holds it open.
+  // Bytes given past the decoder's bytesWritten are trailing junk. Counting them takes `input` out of pipeline's
+  // hands, so this destroys it on pipeline's signal as pipeline would: one waiting for a chunk holds it open.
   let given = 0
   async function* counted({ signal: stop }) {
     const destroy = () => input.destroy?.()

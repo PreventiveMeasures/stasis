@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { assertCodeUtf8, assertPersistableAttributes, attestedImport, classifyOrThrow, resolvePluginState } from './plugins.js'
+import { assertCodeUtf8, assertPersistableAttributes, attestedImport, classifyOrThrow, ownOrResolvedState, rebuildRefused } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route rollup's reads through the capture hook.
@@ -29,10 +29,7 @@ export class StasisRollup {
     // Transforms run as ordinary rollup plugins after this one: refuse a port's esbuild-style bag, not drop it.
     assert.equal(unsupported, undefined,
       'StasisRollup takes a single options argument -- there is no esbuild-style { loaders, transform } bag (run transforms as rollup plugins after this one)')
-    // A caller that owns a State (e.g. tests) passes it; a foreign copy's State fails the instanceof.
-    const state = options instanceof State
-      ? options
-      : resolvePluginState('StasisRollup', options, process.cwd()).state
+    const state = ownOrResolvedState('StasisRollup', options)
     this.#state = state
     this.#resources = state?.config.resources ?? new Set()
     if (!state) return // inert: rollup sees only `name`
@@ -59,14 +56,10 @@ export class StasisRollup {
     }
 
     if (!state.config.loadBundle) {
-      // Dedupe is by path, so a rebuild with new bytes would emit them while the artifacts keep the old ones; watch
-      // rebuilds, and a second rollup() call reusing this instance, re-fire buildStart.
+      // Watch rebuilds, and a second rollup() call reusing this instance, re-fire buildStart.
       this.buildStart = () => {
         plugin.#captureBuildCount += 1
-        if (plugin.#captureBuildCount === 1) return
-        throw new Error(
-          'StasisRollup: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)'
-        )
+        if (plugin.#captureBuildCount > 1) throw new Error(rebuildRefused('StasisRollup'))
       }
       this.buildEnd = function (error) {
         return plugin.#buildEnd(this, error)

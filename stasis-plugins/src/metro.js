@@ -170,7 +170,6 @@ export class StasisMetro {
       this.#assertEdges(graph, preModules)
       return
     }
-    // Dedupe is by path, so a rebuild with new bytes would emit them while the artifacts keep the old ones.
     if (this.#ran) {
       throw new Error(
         'StasisMetro: watch/dev-server rebuilds are not supported for capture -- use a one-shot `metro build`'

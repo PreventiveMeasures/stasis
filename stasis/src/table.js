@@ -1,28 +1,20 @@
-// A report's tables, as `stasis audit` and `stasis validate` print them, and their colours where the
-// stream they go to takes colours.
 import { styleText } from 'node:util'
 
-// Strip line breaks (LF/CR/CRLF, U+2028/U+2029) from a cell (an advisory's title, say) so they can't
-// break the box layout.
+// Line breaks (LF/CR/CRLF, U+2028/U+2029) in a cell (an advisory's title, say) would break the box layout.
 const cell = (v) => String(v ?? '').replace(/[\r\n\u2028\u2029]+/gu, ' ')
 
-// The physical lines a cell occupies: one, but a `multiline` column's (the `--why` reason column's) one
-// per `\n`-separated entry, each still flattened by `cell`.
+// The physical lines a cell occupies: one, but a `multiline` column's (`--why`'s reason) one per `\n`-separated entry.
 const cellLines = (v, multiline) => (multiline ? String(v ?? '').split('\n').map((s) => cell(s)) : [cell(v)])
 
-// The longest of `items` by `lengthOf` (a string's or an array's length), 0 for none: a fold, as a column
-// (a --why cell of 2000 chains, say) may hold more lines and words than one call takes arguments.
+// A fold, not Math.max(...): a column (a --why cell of 2000 chains, say) may hold more items than a call takes arguments.
 const longest = (items, lengthOf = (item) => item.length) => items.reduce((max, item) => Math.max(max, lengthOf(item)), 0)
 
-// A column that wraps narrows no further than its header, and its longest word up to this, so that only
-// a longer word is ever cut.
+// A wrapping column narrows no further than its header, and its longest word up to this: only a longer word is cut.
 const MAX_WHOLE_WORD = 20
 
-// What a `multiline` column's entry wrapped starts its further lines with.
 const INDENT = '  '
 
-// `text` cut into lines of at most `width`, at spaces where it has them, a word wider than a line cut where
-// it must be; each line after the first starts with `indent`.
+// `text` cut into lines of at most `width`, at spaces where it has them; each after the first starts with `indent`.
 function wrapLine(text, width, indent = '') {
   const lines = []
   let rest = text
@@ -39,9 +31,8 @@ function wrapLine(text, width, indent = '') {
   return lines
 }
 
-// `rows` as a boxed table of `columns`, styled by `paint(text, column, row)` (a cell's text, not its padding),
-// `paintHeader(text, column)` and `paintFrame(text)`. Wider than `width`, its `wrap` columns narrow, the widest
-// first, as far as MAX_WHOLE_WORD lets them, a `multiline` column's further lines of an entry indented.
+// `rows` as a boxed table of `columns`, `paint(text, column, row)` styling a cell's text (not its padding). Wider than
+// `width`, its `wrap` columns narrow, the widest first, as far as MAX_WHOLE_WORD lets them.
 export function formatTable(rows, columns, { multiline = [], paint, paintHeader, paintFrame, width, wrap = [] } = {}) {
   if (rows.length === 0) return ''
   const ml = new Set(multiline)
@@ -90,8 +81,7 @@ export function formatTable(rows, columns, { multiline = [], paint, paintHeader,
   ].join('\n')
 }
 
-// Whether `stream` takes colours, as @exodus/test tells it: CI's logs do, though no terminal; a
-// terminal that has them does (a TTY's hasColors); a pipe, or a file, doesn't.
+// As @exodus/test tells it: CI's logs take colours, though no terminal, as does a TTY that has them.
 export function takesColors(stream) {
   return Boolean(process.env.CI) || Boolean(stream?.hasColors?.())
 }
@@ -99,8 +89,7 @@ export function takesColors(stream) {
 // Dimmed text's format: CI's logs show gray, not faint.
 export const DIM = process.env.CI ? 'gray' : 'dim'
 
-// `paint(format, text)`: `text` in `format` (util.styleText's: a colour, `bold`, or a list of them)
-// where `colors` (else as `stream` takes them, takesColors), else as it is.
+// `paint(format, text)`: `text` in util.styleText's `format` where `colors`, else as it is.
 export function painter(stream, colors = takesColors(stream)) {
   return (format, text) => (colors && format && text !== '' ? styleText(format, text, { validateStream: false }) : text)
 }

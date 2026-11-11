@@ -2,9 +2,8 @@ import { entryDirOf, hasNodeModulesSegment, moduleFileKey, upsert } from '@exodu
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 
-// The packages a module map records: every record as it is, and after a dependency's, each `vendored` copy in it
-// as a record at its directory in the project, with its host's `ecosystem`, `vendoredIn` its host's dir, and the
-// `files` it holds (each counted for the deepest entry), relative to it. A host keeps all its files.
+// Every record of a module map, and after a dependency's, each `vendored` copy in it as a record at its directory,
+// with its host's `ecosystem`, `vendoredIn` its host's dir, and the `files` it holds. A host keeps all its files.
 export function* packageRecords(modules) {
   for (const [dir, record] of modules) {
     yield [dir, record]
@@ -27,21 +26,16 @@ export function* packageRecords(modules) {
 // reaches it, on its own file-level subgraph, climbing to a HEAD: a package src imports, or one nothing in
 // node_modules does. An edge into a file that is no evidence of real code (audit-corrections.js) is none.
 
-// Cap on paths enumerated per target to bound pathological graphs (many diamond
-// dependencies compound into a combinatorial number of simple paths). Hitting it
-// is surfaced as a marker line rather than silently dropped.
+// Diamond dependencies compound into a combinatorial number of simple paths; a cut is marked, not silently dropped.
 const PATH_CAP = 2000
 
-// Packages a chain never walks PAST: everything imports these build/runtime hubs, so a chain reaching one
-// stops there, the hub its head (`@babel/core -> a -> b -> c`).
+// Build/runtime hubs everything imports: a chain reaching one stops there, the hub its head.
 const TERMINAL_PACKAGES = new Set(['@babel/core', 'react-native', 'metro'])
-
 
 const EMPTY_GRAPH = { adjRev: new Map(), srcImporters: new Map() }
 
-// One artifact's index: each file's module dir (`fileToDir`), each dir's identity (`dirInfo`), and each dir's
-// evidence files (`dirFiles`, audit-corrections.js), as collectReasons counts them. A copy a dependency ships
-// (packageRecords) is a module of its own, so a chain can end at it, its files its host's evidence too.
+// Each dir's evidence files (`dirFiles`) as collectReasons counts them. A copy a dependency ships is a module of its
+// own, so a chain can end at it, its files its host's evidence too.
 function moduleIndex(artifact) {
   const fileToDir = new Map()
   const dirInfo = new Map()
@@ -59,9 +53,7 @@ function moduleIndex(artifact) {
   return { fileToDir, dirInfo, dirFiles }
 }
 
-// Flatten the imports graph (conditions -> parent -> specifier -> target) into
-// deduped file-level edges [parentFile, targetFile]. A `--metro` target may be a
-// { platform: file } map; each platform's file becomes its own edge.
+// Deduped [parentFile, targetFile] edges; a `--metro` target may be a { platform: file } map.
 function fileEdges(imports) {
   const edges = new Map()
   for (const [, byParent] of imports) {
@@ -74,9 +66,8 @@ function fileEdges(imports) {
   return edges.values()
 }
 
-// Per-consumer subgraphs ('' the whole graph where there is no reason map): a consumer has an edge only where
-// it recorded the importing file. `adjRev`: dep dir -> the dep dirs importing it; `srcImporters`: dep dir ->
-// the src files importing it. Intra-module edges and edges into src are dropped.
+// Per-consumer subgraphs ('' the whole graph where there is no reason map), an edge a consumer's where it recorded
+// the importing file: `adjRev` dep dir -> the dep dirs importing it, `srcImporters` dep dir -> the src files.
 function bucketGraphs(edges, fileToDir, dirInfo, fileReasons) {
   const graphs = new Map()
   for (const [pf, tf] of edges) {
@@ -98,9 +89,7 @@ function bucketGraphs(edges, fileToDir, dirInfo, fileReasons) {
   return graphs
 }
 
-// Invert the reason map to file -> Set(consumer), each consumer by `name(consumer)` (as it is, by
-// default). null when the artifact carries no reason map (single-consumer bundle / lockfile) ->
-// chains render bare.
+// file -> Set(consumer), or null without a reason map (a single-consumer bundle, a lockfile): chains render bare.
 export function invertReason(reason, name = (consumer) => consumer) {
   if (!reason) return null
   const byFile = new Map()
@@ -111,8 +100,7 @@ export function invertReason(reason, name = (consumer) => consumer) {
   return byFile
 }
 
-// dir -> the consumers that recorded any of its evidence files (moduleIndex's `dirFiles`), or null where
-// there is no reason map: whether a target belongs to a reason that never imports it.
+// dir -> the consumers that recorded any of its evidence files: whether a target belongs to one never importing it.
 function dirReasonsIndex(dirFiles, fileReasons) {
   if (fileReasons === null) return null
   const byDir = new Map()
@@ -124,9 +112,8 @@ function dirReasonsIndex(dirFiles, fileReasons) {
   return byDir
 }
 
-// Every simple path of `adjRev` ending at `targetDir`, head first, emitted where its head is a HEAD (`isHead`)
-// or a terminal package, which the walk never climbs past (a terminal target is emitted bare). `truncated`
-// where PATH_CAP cut it short.
+// Every simple path of `adjRev` ending at `targetDir`, head first, where its head is a HEAD or a terminal package,
+// which the walk never climbs past.
 function pathsTo(adjRev, isHead, isTerminal, targetDir) {
   const results = []
   let truncated = false
@@ -234,11 +221,10 @@ function dropSuffixed(chains) {
   return chains.filter((c) => !c.keys().drop(1).some((i) => keys.has(chainKey(c, i))))
 }
 
-// Each targeted package (`name@version`: `targetKeys`', else every dependency) -> its --why lines, `consumer:
-// chain`, a bare chain where there is no reason map; only `reasonFilter`'s, where given. Chains are pruned
-// (dropSuffixed) unless `deep`, and compressed (compressChains) unless `full`. Consumers by `consumerName`.
+// Each package of `targetKeys` (`name@version`, else every dependency) -> its --why lines, `consumer: chain`, or a
+// bare chain without a reason map. Pruned (dropSuffixed) unless `deep`, compressed (compressChains) unless `full`.
 export function collectWhy(files, targetKeys, reasonFilter = null, { deep = false, full = false, consumerName } = {}) {
-  // key -> reason bucket ('' = unattributed) -> Map(chainKey -> node-name array)
+  // key -> reason bucket ('' unattributed) -> Map(chainKey -> node names)
   const acc = new Map()
   const truncatedKeys = new Set()
   const addChain = (key, bucket, nodes) => upsert(upsert(acc, key, () => new Map()), bucket, () => new Map()).set(chainKey(nodes), nodes)
@@ -264,14 +250,11 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
 
     for (const [key, dirs] of dirsByKey) {
       for (const targetDir of dirs) {
-        // The consumers that recorded the package itself (collectReasons'), each with its own subgraph's
-        // maximal chains, a bare line where it never imports it. One that imports it unrecorded is no reason.
+        // The consumers that recorded the package itself, as collectReasons': one importing it unrecorded is none.
         const own = fileReasons === null ? [''] : (dirReasons.get(targetDir) ?? [])
         for (const bucket of own) {
           if (reasonFilter !== null && bucket !== reasonFilter) continue
           const { adjRev, srcImporters } = graphs.get(bucket) ?? EMPTY_GRAPH
-          // A head tops a chain: a src file imports it directly, or nothing else
-          // in this bucket's graph imports it.
           const isHead = (node) => srcImporters.has(node) || !adjRev.has(node)
           const { results, truncated } = pathsTo(adjRev, isHead, isTerminal, targetDir)
           if (truncated) truncatedKeys.add(key)
@@ -281,7 +264,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
     }
   }
 
-  // Each bucket pruned, then compressed or spelled out whole; buckets sorted, so bare '' first.
+  // Buckets sorted, so bare '' first.
   const byPkg = new Map()
   for (const [key, buckets] of acc) {
     const lines = []

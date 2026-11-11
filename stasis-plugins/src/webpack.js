@@ -197,8 +197,7 @@ export class StasisWebpack {
       })
     })
 
-    // Dedupe is by path, so a rebuild with new bytes would emit them while the artifacts keep the old ones. watchRun
-    // fires only under compiler.watch(), before the first build, so this refuses the whole session.
+    // watchRun fires only under compiler.watch(), before the first build, so this refuses the whole session.
     compiler.hooks.watchRun.tap('Stasis', () => {
       throw new Error(
         'StasisWebpack: watch mode is not supported for capture -- ' +

@@ -120,6 +120,14 @@ export function resolvePluginState(label, options, cwd) {
   return sidecar(bundle)
 }
 
+// A State the caller owns (`stasis build`'s), else resolvePluginState's; a foreign copy's State fails the instanceof.
+export const ownOrResolvedState = (label, options) =>
+  (options instanceof State ? options : resolvePluginState(label, options, process.cwd()).state)
+
+// Dedupe is by path, so a rebuild with new bytes would emit them while the bundle and lockfile keep the old ones.
+export const rebuildRefused = (label) =>
+  `${label}: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)`
+
 export const unsupportedExtension = (label, what) =>
   `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
 
