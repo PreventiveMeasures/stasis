@@ -21,9 +21,7 @@ const reposAgree = (a, b) => a === undefined || b === undefined ||
 // `{ artifact, kind }` as scope + Map<dir, { name, version, ecosystem, repo, integrity, patch, files: Map<rel, digest> }>.
 export function normalizeArtifact(input, { hash } = {}) {
   const { artifact, kind } = input ?? {}
-  if (!artifact || !KINDS.has(kind)) {
-    throw new Error("diff: each input must be { artifact, kind } with kind 'lockfile' | 'bundle'")
-  }
+  if (!artifact || !KINDS.has(kind)) throw new Error("diff: each input must be { artifact, kind } with kind 'lockfile' | 'bundle'")
   const formats = artifact.formats ?? new Map()
   const modules = new Map()
   for (const [dir, { name, version, ecosystem, repo, integrity, patch, files }] of artifact.modules) {

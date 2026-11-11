@@ -26,9 +26,7 @@ export function listing(dir, fs) {
 export const RN_CORE_INCLUDE_FILES = ['sdks/hermes-engine/utils/replace_hermes_version.js']
 
 // By name: RN scatters podspecs in subdirs `react-native config` misses.
-function isPodspec(name) {
-  return name.endsWith('.podspec') || name.endsWith('.podspec.json')
-}
+const isPodspec = (name) => name.endsWith('.podspec') || name.endsWith('.podspec.json')
 
 // The off-platform top-level dir of a native package, which no build on this host compiles.
 export function isExcludedNativeDir(name, { win32 = process.platform === 'win32' } = {}) {
@@ -37,14 +35,10 @@ export function isExcludedNativeDir(name, { win32 = process.platform === 'win32'
 
 // Nested packages (attested separately) and regenerated build output, on top of the shared set.
 const NATIVE_BUILD_OUTPUT_DIRS = new Set(['node_modules', 'build', '.gradle', '.cxx', 'Pods', 'DerivedData'])
-function isSkippedNativeWalkDir(name) {
-  return NATIVE_BUILD_OUTPUT_DIRS.has(name) || isAutoExcludedDir(name) || isNativeArtifact(name)
-}
+const isSkippedNativeWalkDir = (name) => NATIVE_BUILD_OUTPUT_DIRS.has(name) || isAutoExcludedDir(name) || isNativeArtifact(name)
 
 // A compiled tool (Hermes' `hermesc`), never source.
-function isExtensionlessBinary(name, content) {
-  return pathExt(name) === '' && Buffer.isBuffer(content) && !isUtf8(content)
-}
+const isExtensionlessBinary = (name, content) => pathExt(name) === '' && Buffer.isBuffer(content) && !isUtf8(content)
 
 // A native capture's view of a file by name: { action: 'code', format } for a native build input, 'skip' for noise
 // or a JS-family file by extension (Metro owns those), else 'resource'.
@@ -123,12 +117,9 @@ function hasPodspec(dir, fs) {
 // but a type declaration.
 const isCodegenSpec = (name) => /^(?:Native.+|.+NativeComponent)/u.test(name) && /\.(?:jsx?|tsx?)$/u.test(name) && !name.endsWith('.d.ts')
 
-// Each native build input in the package at `root`, walked whole (a podspec may compile `cpp/` beside `ios/`): every
-// file but build output, prebuilt binaries, an off-platform top-level dir, what the shared classifier skips (the JS
-// and TS Metro's graph owns, docs, secrets) and symlinks (a cycle or escape hazard); and the specs of its codegen
-// sources, as code with no format (none of the other JS there, which codegen never reads). A file `skip(file)` holds
-// is passed over unread; `resources` is the allowlist the byte-level rules consult.
-// -> yields { file, source, action: 'code' | 'resource', format }
+// Each native build input of the package at `root`, walked whole (a podspec may compile `cpp/` beside `ios/`) but
+// build output, prebuilt binaries, an off-platform top-level dir, symlinks and what the shared classifier skips; and
+// its codegen specs, as code with no format. -> yields { file, source, action: 'code' | 'resource', format }
 export function* nativeInputs(root, fs, { resources = new Set(), skip = () => false } = {}) {
   yield* walk(root, true)
   for (const dir of codegenSources(root, fs)) yield* sources(dir)

@@ -38,9 +38,7 @@ function constantString(node) {
 }
 
 // A plugin rewriting a specifier replaces the literal, never the node holding it.
-function specifierOf(node) {
-  return constantString(node.type === 'CallExpression' ? node.arguments[0] : node.source)
-}
+const specifierOf = (node) => constantString(node.type === 'CallExpression' ? node.arguments[0] : node.source)
 
 const TYPE_KINDS = new Set(['type', 'typeof'])
 

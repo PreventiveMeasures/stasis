@@ -49,15 +49,9 @@ const denyModuleSurface = (prefix, mod, isAsync = prefix.endsWith('/promises')) 
 
 const DENY_ALL = [
   // Network surface (no --allow-net counterpart -- JS-mock is the only layer).
-  'node:http', 'node:https', 'node:http2',
-  'node:net', 'node:dgram', 'node:tls',
-  'node:dns', 'node:dns/promises',
+  'node:http', 'node:https', 'node:http2', 'node:net', 'node:dgram', 'node:tls', 'node:dns', 'node:dns/promises',
   // Already --permission-denied: for attributable errors, and in depth against an --allow-* slip or process.binding.
-  'node:child_process',
-  'node:worker_threads',
-  'node:cluster',
-  'node:inspector',
-  'node:inspector/promises',
+  'node:child_process', 'node:worker_threads', 'node:cluster', 'node:inspector', 'node:inspector/promises',
   // Other side-effect surfaces nothing else covers:
   'node:repl',         // repl.start() opens an interactive stdin loop
   'node:sqlite',       // DatabaseSync can open/create SQLite files (Node 22+)

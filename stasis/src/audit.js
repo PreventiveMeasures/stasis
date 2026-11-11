@@ -90,7 +90,6 @@ function manifestRepo(text) {
   }
 }
 
-// Versions in semver's order where both are semver's, else as numbers in text compare.
 const byNumbers = new Intl.Collator('en', { numeric: true }).compare
 const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNumbers(a, b))
 
@@ -268,8 +267,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
     return { packages, skipped, advisories: [], rows: [], npmMalware: [], why, whyDeep, whyFull, reason }
   }
   const query = (list) => list.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] }))
-  let result
-  let elsewhere
+  let result, elsewhere
   try {
     ;[result, elsewhere] = await Promise.all([
       asked.length > 0 ? advisories(query(asked), { repoAdvisories, github, osv }) : [],
@@ -299,7 +297,6 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
 const SEVERITY_TONES = { malware: ['bold', 'white', 'bgRed'], critical: ['bold', 'magenta'], high: ['bold', 'red'], moderate: 'yellow', low: 'cyan', info: DIM, none: DIM, unrated: DIM }
 const severityOf = (row) => row.severity || 'unrated'
 
-// The long columns, free text first.
 const WRAPPED = ['title', 'reason', 'vulnerable', 'installed']
 
 // `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`, in the rows' own order, so the parts add up.
@@ -373,7 +370,6 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
   printMalware(npmMalware, err, paintErr, coloredErr)
 }
 
-// audit()'s `npmMalware`, after the summary, apart from the table.
 function printMalware(rows, err, paint, colored) {
   if (rows.length === 0) return
   const packages = new Set(rows.map((row) => `${row.package}@${row.installed}`)).size

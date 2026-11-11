@@ -76,8 +76,7 @@ export class StasisWebpack {
         }
       }
       // CachedInputFileSystem.readFile is (path, callback): an undefined middle arg would land in the callback slot.
-      if (options === undefined) return orig.readFile(p, callback)
-      return orig.readFile(p, options, callback)
+      return options === undefined ? orig.readFile(p, callback) : orig.readFile(p, options, callback)
     }
     const wrappedStat = (p, callback) => {
       if (served(p)) {

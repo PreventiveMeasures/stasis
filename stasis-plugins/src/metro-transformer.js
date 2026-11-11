@@ -30,9 +30,7 @@ function baseOf(config, projectRoot = process.cwd()) {
   return bases.get(key)
 }
 
-function baseConfig({ stasisBaseTransformerPath: _, ...config } = {}) {
-  return config
-}
+const baseConfig = ({ stasisBaseTransformerPath: _, ...config } = {}) => config
 
 // The worker's load State, null outside load (a pass-through, so wiring this permanently is safe). A failure is
 // cached and rethrown on every call, never passed through after the first. It never writes, so claims no write path.
@@ -53,9 +51,7 @@ function getLoadState() {
 const BABEL_TRANSFORMER = fileURLToPath(new URL('./metro-babel-transformer.js', import.meta.url))
 
 // Metro resolves a configured Babel transformer; its default stays a name, which the base requires from its own dir.
-function resolveBabelTransformer(base, path) {
-  return isAbsolute(path) ? path : createRequire(base.file).resolve(path)
-}
+const resolveBabelTransformer = (base, path) => (isAbsolute(path) ? path : createRequire(base.file).resolve(path))
 
 // Each dependency as the source wrote it: `stasisAsWritten` where Babel rewrote its specifier (several written apart
 // may be rewritten alike), `stasisInserted` where no specifier in the source names it (a Babel helper, Metro's

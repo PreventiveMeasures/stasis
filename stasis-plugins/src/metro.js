@@ -289,7 +289,9 @@ export class StasisMetro {
       if (modPath === undefined) continue
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
-      this.#assertConsumed(module, modPath)
+      for (const files of this.#consumedResources(module, modPath)) {
+        this.#assertOnDisk(files, { what: `which a Babel plugin inlines into '${modPath}'`, servedBy: ['sync', 'async'] })
+      }
       this.#assertAssetFiles(module, modPath, platform ?? null)
     }
   }
@@ -318,7 +320,7 @@ export class StasisMetro {
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
       if (!this.#captureRead(modPath, kind, entries.has(modPath))) continue
-      this.#captureConsumed(module, modPath)
+      for (const { file } of this.#consumedResources(module, modPath)) this.#captureRead(file, 'resource')
       this.#captureAssetFiles(module, modPath, platform)
     }
   }
@@ -327,7 +329,6 @@ export class StasisMetro {
     return isPathWithin(this.#state.root, path)
   }
 
-  // `path`'s real path, where it lies within the project root (not linked out of it), else null.
   #realWithin(path) {
     let real
     try {
@@ -339,10 +340,9 @@ export class StasisMetro {
     return this.#within(real) && isPathWithin(this.#realRoot, real) ? real : null
   }
 
-  // The resources a Babel plugin read and inlined in transforming `module` (`stasisConsumed`: @exodus/i18n's
-  // plugin-inline-po's `require('./messages.po')`): no module of Metro's, so no edge, but build inputs. Each named by
-  // a path from the module's dir, by its real path within the root; one naming code (babel-plugin-lodash's) is passed
-  // over, one the resources don't carry refused. -> each as { file: its real path, read: the path read }
+  // The resources a Babel plugin inlined in transforming `module` (`stasisConsumed`, `require('./messages.po')`): no
+  // module of Metro's, so no edge, but build inputs. One naming code (babel-plugin-lodash's split imports) is passed
+  // over. -> each as { file: its real path within the root, read: the path read }
   * #consumedResources(module, modPath) {
     for (const specifier of module.output?.[0]?.data?.stasisConsumed ?? []) {
       if (typeof specifier !== 'string' || !(isAbsolute(specifier) || /^\.\.?\//u.test(specifier))) continue
@@ -352,10 +352,6 @@ export class StasisMetro {
       if (classifyOrThrow('StasisMetro', file, this.#resources, `'${file}', which a Babel plugin inlines into '${modPath}'`) === 'code') continue
       yield { file, read }
     }
-  }
-
-  #captureConsumed(module, modPath) {
-    for (const { file } of this.#consumedResources(module, modPath)) this.#captureRead(file, 'resource')
   }
 
   // Capture `path` once, as the `kind` classifyExtension gives it: code with only the format its name gives
@@ -370,12 +366,6 @@ export class StasisMetro {
     const resource = kind === 'resource'
     this.#state.addFile(pathToFileURL(path).toString(), { source, format, isEntry, resource, inferFormat: false, reason: 'metro' })
     return true
-  }
-
-  #assertConsumed(module, modPath) {
-    for (const files of this.#consumedResources(module, modPath)) {
-      this.#assertOnDisk(files, { what: `which a Babel plugin inlines into '${modPath}'`, servedBy: ['sync', 'async'] })
-    }
   }
 
   // The files Metro reads to build the asset module `module` (its `scales` and `hash`) and copies out with it: it
