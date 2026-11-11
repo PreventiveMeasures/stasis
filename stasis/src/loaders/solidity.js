@@ -223,9 +223,7 @@ function resolveImport(specifier, fromFile, { remappings = [], baseDir, libs = [
 }
 
 // Relative, remapped, then in the importer's library, the project, node_modules; null too where refused.
-export function resolveSolImport(specifier, fromFile, options = {}) {
-  return resolveImport(specifier, fromFile, options).path ?? null
-}
+export const resolveSolImport = (specifier, fromFile, options = {}) => resolveImport(specifier, fromFile, options).path ?? null
 
 // Not `hardhat.config.*`, code that may hold keys.
 export const SOLIDITY_ROOT_MANIFESTS = [FOUNDRY_TOML, REMAPPINGS_TXT, 'foundry.lock', 'soldeer.lock', '.gitmodules', 'package.json']

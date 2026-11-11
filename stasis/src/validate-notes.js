@@ -1,8 +1,4 @@
-// What a validation's report (validate.js's) tells, in words: why own code, a package or a file
-// wasn't checked or is as it is, why no lockfile was held to, and a package's note beside its status.
-// Of no module, for a browser too (`@exodus/stasis/validate-notes`), as printValidationReport tells it.
-
-// Why own code wasn't checked, by `own.reason`.
+// A validation report in words, as printValidationReport tells it. Of no module, for a browser too.
 export const OWN_REASONS = {
   skipped: 'skipped (--only-deps): its dependencies alone validated',
   'no-repository': 'no repository to read it of',
@@ -45,7 +41,6 @@ export const PATCH_ERRORS = {
   'patch-mismatch': 'is not of the hash its lockfile locks',
 }
 
-// Why a file is as it is, by a problem's `reason`.
 export const FILE_REASONS = {
   symlink: 'a symlink in the repository',
   submodule: 'in a submodule',
@@ -55,10 +50,8 @@ export const FILE_REASONS = {
   listed: 'the repository\'s tree was listed, not read, and a lockfile records its integrity alone',
 }
 
-// What a report tells generated a client by, `{ schema, generator, prisma }` (a report's `generated`'s).
 export const generatedBy = (client) => `${client.schema}'s ${client.generator} (Prisma ${client.prisma})`
 
-// Why the dependencies were held to no lockfile, by a report's `lockfileError` (a ValidateError's code).
 export const LOCKFILE_ERRORS = {
   'no-lockfile': 'no lockfile of its repository locks them',
   'lockfile-ambiguous': 'more than one package manager\'s lockfile installs it',
@@ -66,18 +59,14 @@ export const LOCKFILE_ERRORS = {
   'lockfile-unsupported': 'its lockfile is of a kind validate doesn\'t read',
 }
 
-// What a report tells of a package beside its status, as parts: text, and the paths in it as `{ path }`,
-// for a caller to set apart: why it is unverified or fails its lockfile, its patch, or the directory
-// it is held to; none where nothing more.
+// The paths in it as `{ path }`, for a caller to set apart.
 export function noteOf(pkg) {
   const { patch } = pkg
   if (pkg.reason) return [PACKAGE_REASONS[pkg.reason] ?? pkg.reason, ...(pkg.at ? [': ', { path: pkg.at }] : [])]
   if (patch?.error) return ['its patch', ...(patch.path ? [' ', { path: patch.path }] : []), ` ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`]
   if (!patch) return pkg.directory ? ['held to ', { path: pkg.directory }, ' of the repository'] : []
-  // A patch the bundle holds, as checked against the repository.
   const whose = patch.from !== 'bundle' ? [] : [patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)']
   return [patch.applied === false ? 'bundled as published, not patched' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : []), ...(patch.recorded ? [', as recorded'] : [])]
 }
 
-// A package's note as text: '' where nothing more.
 export const noteText = (pkg) => noteOf(pkg).map((part) => (typeof part === 'string' ? part : part.path)).join('')

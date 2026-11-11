@@ -109,7 +109,6 @@ export async function tarballFiles(tarball) {
   return files
 }
 
-// Ecosystems upstream fetches a version of by its name and version alone (fetchPackage).
 export const FETCHED = new Set(['npm', 'cargo'])
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const tarballPath = (name, version) => `/${name}/-/${name.split('/').at(-1)}-${version}.tgz`
@@ -180,7 +179,6 @@ function sidePath(named, prefix) {
   return path.slice(prefix.length)
 }
 
-// The path a `diff --git` line names on both sides, as git writes one of a file neither renamed nor copied.
 function gitPath(named) {
   if (named.startsWith('"')) {
     const quoted = /^("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")$/u.exec(named)
@@ -287,7 +285,6 @@ function changesAt(hunk, lines, start) {
   return changes
 }
 
-// As patch-package applies hunks: each found in the text as it was, the nearer place first.
 function applied(text, hunks) {
   const lines = text.split('\n')
   const changes = hunks.flatMap((hunk) => {
@@ -583,7 +580,6 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     const status = missed > 0 ? 'invalid' : notVerified > 0 ? 'unverified' : 'valid'
     if (status === 'valid') counts.validPackages++
     if (status !== 'valid' || patch) {
-      // A patch that couldn't be read or applied is told by its error.
       let why
       if (status === 'unverified') why = aliased.length > 0 ? { reason: 'alias-unverified', at: aliased[0] } : patch?.error ? {} : { reason: lock?.from === 'git' ? 'git-built' : 'patch-unverified' }
       tellPackage(status, {
@@ -744,8 +740,7 @@ function readLockfile(name, read) {
   const directoryAliases = new Set()
   if (name === 'pnpm-lock.yaml') {
     const { lockfile } = parsePnpmLockfile(text)
-    // pnpm locks an alias's dependency by its name and version (`foo: ms@2.1.3`), one of a directory by its
-    // name and the directory (`foo: lib@file:lib`, as a `file:` override installs it).
+    // pnpm locks an alias `foo: ms@2.1.3`, and a directory's `foo: lib@file:lib`, as a `file:` override installs it.
     for (const node of [...Object.values(lockfile?.importers ?? {}), ...Object.values(lockfile?.packages ?? {})]) {
       for (const [as, ref] of Object.entries({ ...node.dependencies, ...node.devDependencies, ...node.optionalDependencies })) {
         const split = typeof ref === 'string' ? ref.indexOf('@', 1) : -1
@@ -902,8 +897,7 @@ export function lockedBy(lockfiles) {
       }
       return null
     },
-    // Null where it installs none at `dir`; undefined where it locks no location (pnpm's, yarn's) or links it
-    // to a directory, or none is read.
+    // Null where it installs none at `dir`; undefined where it locks no location, links it to a directory, or none is read.
     installed(dir) {
       const npm = innermost(npms, dir)
       if (npm === undefined) return npms.length > 0 ? null : undefined
@@ -972,17 +966,19 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
   const host = vfsHost(createVfs(files))
   const cwd = posix.resolve('/', directory || '.')
   const fromRoot = (path) => path.slice(1)
+  const rootOf = (what, find) => {
+    try {
+      return find()
+    } catch (error) {
+      throw new ValidateError('lockfile-unreadable', `${where}'s ${what}: ${error.message}`)
+    }
+  }
 
   const chosen = []
   if (ecosystems.has('npm')) {
     const found = []
     for (const pm of ['pnpm', 'npm', 'yarn1']) {
-      let root
-      try {
-        root = lockfileRoot(host, pm, cwd)
-      } catch (error) {
-        throw new ValidateError('lockfile-unreadable', `${where}'s ${pm} root: ${error.message}`)
-      }
+      const root = rootOf(`${pm} root`, () => lockfileRoot(host, pm, cwd))
       if (root === null) continue
       const names = listed[dirs.indexOf(fromRoot(root))]
       found.push(pathIn(fromRoot(root), pm === 'npm' && names.includes('npm-shrinkwrap.json') ? 'npm-shrinkwrap.json' : lockfileOf(pm)))
@@ -997,12 +993,7 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
     chosen.push(found[0])
   }
   if (ecosystems.has('cargo')) {
-    let lock
-    try {
-      lock = findCargoLock(cwd, host)
-    } catch (error) {
-      throw new ValidateError('lockfile-unreadable', `${where}'s Cargo workspace: ${error.message}`)
-    }
+    const lock = rootOf('Cargo workspace', () => findCargoLock(cwd, host))
     if (lock === null) throw new ValidateError('no-lockfile', `no Cargo.lock beside ${where}'s workspace root locks its crates: give --lockfile=path, or --no-lockfile to hold them to crates.io alone`)
     chosen.push(fromRoot(lock))
   }
@@ -1012,20 +1003,18 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
 export async function installedNpmPackages(dir) {
   const { root } = parsePath(dir)
   const at = (path) => join(root, ...path.split('/'))
-  let found
-  try {
-    found = await repositoryLockfiles({
-      directory: relative(root, dir).split(sep).join('/'),
-      ecosystems: new Set(['npm']),
-      list: (path) => readdir(at(path)).catch(() => []),
-      read: (path) => readFile(at(path), 'utf8'),
-    })
-  } catch (error) {
+  const found = await repositoryLockfiles({
+    directory: relative(root, dir).split(sep).join('/'),
+    ecosystems: new Set(['npm']),
+    list: (path) => readdir(at(path)).catch(() => []),
+    read: (path) => readFile(at(path), 'utf8'),
+  }).catch((error) => {
     if (!(error instanceof ValidateError)) throw error
     if (error.code === 'no-lockfile') return null
     // As repositoryLockfiles tells it, but the flags validate takes in its place.
     throw new ValidateError(error.code, error.message.replace(/[:;] give --lockfile=path.*$/su, '').replace("which validate doesn't read", "which isn't read"))
-  }
+  })
+  if (found === null) return null
   const [{ path, text }] = found
   return { path: at(path), packages: registryPackages(text, at(path)) }
 }
@@ -1169,24 +1158,20 @@ export async function validateRepository(plan, { repository = null, commit, dire
     if (listed && (!listed.cut || listed.dirs.has(dir || '.'))) return (listed.names.get(dir || '.') ?? []).map((path) => posix.basename(path))
     return (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
   })
-  // As upstream tells it.
-  const absent = (error) => /has no directory at/u.test(error?.message ?? '')
+  // A directory that isn't there, as upstream tells it, holds `none`.
+  const absent = (none) => (error) => {
+    if (/has no directory at/u.test(error?.message ?? '')) return none
+    throw error
+  }
   const under = (path) => reading && (directory === '' || path === directory || path.startsWith(`${directory}/`))
   const tree = memoized((dir) => (under(dir) ? reading : repositoryFiles(repository, { commit, directory: dir }))
-    .catch((error) => {
-      if (absent(error)) return new Map()
-      throw error
-    })
+    .catch(absent(new Map()))
     .then((entries) => filesUnder(entries, dir)))
   const patchEntries = async () => {
     const entries = new Map()
     const dirs = new Set([...plan.patches.keys()].map((path) => repoDir(posix.dirname(pathIn(directory, path)))))
     await Promise.all([...dirs].map(async (dir) => {
-      try {
-        for (const [path, entry] of listedEntries(await listDir(dir), dir)) entries.set(path, entry)
-      } catch (error) {
-        if (!absent(error)) throw error
-      }
+      for (const [path, entry] of listedEntries(await listDir(dir).catch(absent([])), dir)) entries.set(path, entry)
     }))
     return entries
   }

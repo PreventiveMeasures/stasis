@@ -1,4 +1,4 @@
-// Types of `@exodus/stasis/validate-notes` (validate-notes.js), whose comments tell what each does.
+// Types of `@exodus/stasis/validate-notes` (validate-notes.js).
 
 export const OWN_REASONS: Readonly<Record<string, string>>
 export const PACKAGE_REASONS: Readonly<Record<string, string>>
