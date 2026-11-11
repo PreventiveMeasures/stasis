@@ -16,8 +16,7 @@ const envBool = (name, value) => {
 
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
-// `lockFile` and `bundle` are flag/env-only; a file's `lock` is CONFIG_FILE_LOCK. File-only: `extra`, and `entries`,
-// TREE_FLAGS and `lockfiles`, which a run takes nothing from.
+// `lockFile` and `bundle` are flag/env-only; `extra`, `entries`, TREE_FLAGS and `lockfiles` are file-only.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: SCOPES },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: LOCK_MODES },
@@ -34,7 +33,6 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-// The flags of the trees `stasis github-bundle` lays out from the lockfile.
 const TREE_FLAGS = ['installDevDependencies', 'lazyDependencies', 'generatePrisma']
 const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...TREE_FLAGS, 'lockfiles', ...POLICY_KEYS]
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes explicitly.
@@ -65,8 +63,7 @@ export class Config {
   #opts
   #shardSignalFlush
 
-  // #explicit is kept so a later loadConfig can't override the options. `ownLock`: a build's, which takes no lock
-  // mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
+  // `ownLock`: a build's, which takes no lock mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
   constructor(options = {}) {
     const { env = process.env, host = diskHost, ownLock = false, ...rest } = options
     assertKnownKeys(Object.keys(rest), OPTION_KEYS, 'Config')

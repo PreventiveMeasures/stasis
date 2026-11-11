@@ -148,9 +148,8 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
     return [sub, entry]
   }))
   const carried = carriedEntries(normalized, files)
-  for (const sub of Object.keys(normalized)) {
-    if (!Object.hasOwn(carried ?? {}, sub)) assert(false, `${what} module '${dir}' ${field} '${sub}' holds none of its files`)
-  }
+  const idle = Object.keys(normalized).find((sub) => !Object.hasOwn(carried ?? {}, sub))
+  if (idle !== undefined) assert(false, `${what} module '${dir}' ${field} '${idle}' holds none of its files`)
   return carried
 }
 
@@ -173,8 +172,7 @@ export const ATTESTED_METADATA = ['integrity', 'patch']
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
 
-// What `record` attests of `field`: its value; of the patch of one recording an integrity and none,
-// null (installed unpatched: the two are recorded of one install); undefined where it tells nothing.
+// A record of an integrity and no patch attests the patch null (installed unpatched); undefined: it tells nothing.
 export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
 
 const agree = (field, record, other, what) => {
@@ -614,8 +612,7 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
       }
     }
   }
-  // Bucketing can change between releases, which per-dir absorption can't see: unchecked, the merge would WRITE an
-  // artifact that fails its own next parse.
+  // Bucketing can change between releases, which per-dir absorption can't see: never WRITE what the next parse rejects.
   flatFileKeys(out, label, (key, owner, dir) => assert(false,
     `${label}: file '${key}' is bucketed under both '${owner}' and '${dir}' -- module bucketing ` +
     `changed between the artifacts (a workspace package without a version now owns its own ` +

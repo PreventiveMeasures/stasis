@@ -11,28 +11,19 @@ export class Lockfile {
   static VERSION = VERSION
 
   version = VERSION
-  config
-  entries
-  modules
-  // conditions -> parent -> specifier -> resolved file; null only on an in-memory construct that doesn't attest it.
-  imports
-  // file -> format string. Same Map/null rule as imports.
-  formats
-  // Files only, never a `directory`.
-  executable
 
   constructor({ config = { scope: 'full' }, entries, modules, imports, formats, executable } = {}) {
     assertScope(config.scope, 'lockfile')
     this.config = config
     this.entries = entries ?? new Set()
     this.modules = modules ?? new Map()
+    // conditions -> parent -> specifier -> resolved file, and file -> format: null only on an in-memory construct.
     this.imports = imports ?? null
     this.formats = formats ?? null
-    this.executable = executable ?? new Set()
+    this.executable = executable ?? new Set() // files only, never a `directory`
   }
 
-  // Imports and formats carry across, else a frozen run would skip those cross-checks; the file set is the bundle's,
-  // so its executable list attests as-is.
+  // Imports and formats carry across, else a frozen run would skip those cross-checks.
   static fromBundle(bundle, integrityOf) {
     const modules = new Map()
     for (const [dir, m] of bundle.modules) {

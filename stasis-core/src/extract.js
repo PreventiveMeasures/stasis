@@ -40,8 +40,7 @@ function readLockfile(lockAbs) {
   }
 }
 
-// Nothing recorded changes, execute bits included, save a payload-free stat:* record, which content of the same
-// kind upgrades as a run's lock=add does.
+// Nothing recorded changes, execute bits too, but a payload-free stat:* record, which content of its kind upgrades.
 function addToLockfile(lockAbs, derived) {
   const lock = readLockfile(lockAbs)
   try {
@@ -201,8 +200,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   for (const { abs, content, exec } of writes) {
     if (!inPlace.has(abs)) {
       mkdirSync(dirname(abs), { recursive: true })
-      // Exclusive: a file that appeared since the check, or a second path a case-insensitive disk folds onto an
-      // earlier one, fails the write rather than being overwritten.
+      // Exclusive: a file that appeared since the check, or one a case-insensitive disk folds onto another, fails.
       writeFileSync(abs, content, { flag: 'wx' })
     }
     if (withModes) applyMode(abs, exec)

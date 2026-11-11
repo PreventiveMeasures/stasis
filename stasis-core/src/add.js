@@ -11,8 +11,7 @@ import { linksOn, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from './util.js'
 
-// Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with these at
-// write (outputMatcher), which must read the real disk, not be captured as the program's reads.
+// Snapshotted before `stasis run --fs` patches node:fs: outputMatcher must read the real disk, not be captured.
 const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
 
 // LIMITATION: a `.js`/`.ts` in a package with no `type` is commonjs; use `.mjs`/`.cjs` or set it.
@@ -91,8 +90,7 @@ function existingOf(what, parse) {
   }
 }
 
-// The write is a thunk, so every target's conflicts surface before a byte lands; serializing inside it keeps peak
-// memory at one target's bytes.
+// A thunk, so every target's conflicts surface before a byte lands; serializing in it keeps peak memory at one target's.
 function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, existing) {
   check?.(bundle)
   const abs = resolve(baseDir, targetPath)
@@ -110,8 +108,7 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, ex
   return { write, total, added: total - before }
 }
 
-// By name, or by dev+inode (a link to one, which a write rewrites in place). A number can round a large inode
-// (Windows file ids), so such a match is confirmed in bigint.
+// By name, or dev+inode (a link to one, which a write rewrites in place), confirmed in bigint: a number rounds big inodes.
 function outputMatcher(baseDir, outputs) {
   const exact = new Set()
   const rounded = new Set()
@@ -172,8 +169,7 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
       else files.set(file, fileStats)
     }
   }
-  // Inclusion is monotone: a path any entry kept stays kept, never counted as skipped even where another
-  // root's sweep flagged it, so `add src src/examples` keeps the subtree in either order.
+  // Inclusion is monotone: a path any entry kept stays kept, so `add src src/examples` keeps the subtree in either order.
   for (const file of files.keys()) excluded.delete(file)
   return { files, excluded }
 }
@@ -213,8 +209,7 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
   return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude, host })
 }
 
-// The WHOLE set is classified before any target is touched, every offender collected into one error. Containment
-// alone isn't collected: a symlink escaping the root fails closed on the spot. `files`: rel -> stats (undefined = not on disk).
+// The WHOLE set is classified before any target is touched; only a symlink escaping the root fails on the spot.
 export function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add', host = diskHost }) {
   const codeFiles = new Map()
   const resourceFiles = new Map()

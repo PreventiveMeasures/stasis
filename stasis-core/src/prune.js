@@ -156,14 +156,11 @@ function discoverNodeModulesDirs(root) {
       continue
     }
     for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue
+      if (entry.name.startsWith('.') || !entry.isDirectory()) continue
       const full = join(dir, entry.name)
-      if (entry.name === 'node_modules') {
-        // A symlinked node_modules is skipped; if the lockfile records files under it, prune fails closed.
-        if (entry.isDirectory()) found.push(full)
-        continue // don't descend; prune walks node_modules internals itself
-      }
-      if (entry.isDirectory()) stack.push(full)
+      // A symlinked node_modules is skipped (prune fails closed on files the lockfile records there); none is descended.
+      if (entry.name === 'node_modules') found.push(full)
+      else stack.push(full)
     }
   }
   return found

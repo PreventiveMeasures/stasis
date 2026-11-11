@@ -301,8 +301,7 @@ function declaredRepo(json, rel) {
   const github = parseGithubRepository(repositoryUrl(json))
   if (!github) return undefined
   let base = json.repository.directory
-  // Often unset; fall back to a GitHub tree `homepage`, which places a package below the root, never
-  // at it: only `repository.directory` declares the root (`/tree/main/.` declares nothing).
+  // Often unset; a GitHub tree `homepage` places a package below the root, never at it (`/tree/main/.` declares nothing).
   if (typeof base !== 'string') {
     base = githubHomepageDirectory(json.homepage, github)
     if (base !== undefined && isRootPath(base)) base = undefined

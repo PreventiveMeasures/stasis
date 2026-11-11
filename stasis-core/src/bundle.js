@@ -117,16 +117,6 @@ const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecos
 export class Bundle {
   static VERSION = VERSION
 
-  version = VERSION
-  config
-  entries
-  modules
-  formats
-  imports
-  // Files only, never a `directory`.
-  executable
-  // Informational only, NOT attested -- never consulted for verification.
-  reason
   // Informational, not attested, never in a lockfile; validated on every assignment, and frozen.
   #repo
   get repo() {
@@ -153,8 +143,8 @@ export class Bundle {
     this.modules = modules ?? new Map()
     this.formats = formats ?? new Map()
     this.imports = imports ?? new Map()
-    this.executable = executable ?? new Set()
-    this.reason = reason
+    this.executable = executable ?? new Set() // files only, never a `directory`
+    this.reason = reason // informational only, NOT attested -- never consulted for verification
     this.repo = repo
     this.package = pkg
   }
@@ -186,12 +176,10 @@ export class Bundle {
   static fileKeyAt(path) {
     const [top, dir, files, rel] = path
     if (typeof dir !== 'string') return undefined
-    // v0 `sources.<path>`
     if (path.length === 2 && top === 'sources') {
       const split = inferModuleDir(dir)
       return canonicalFileKey(split.dir, split.rel, 'bundle')
     }
-    // v1 `sources|modules.<dir>.files.<rel>`
     if (path.length === 4 && (top === 'sources' || top === 'modules') && files === 'files' && typeof rel === 'string') {
       return canonicalFileKey(dir, rel, 'bundle')
     }

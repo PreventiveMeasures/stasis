@@ -110,7 +110,6 @@ export async function extractCli(argv, { label, fail }) {
   const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (argv.length === 0) fail('Nothing to extract: no bundle file given')
   if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
-  // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
   if (values.lock !== undefined && !LOCK_MODES.has(values.lock)) fail('Error: invalid --lock value')
   const { extractCommand } = await import('./extract.js')
   extractCommand({ bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: label })

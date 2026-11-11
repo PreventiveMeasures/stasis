@@ -151,8 +151,7 @@ export function parseLeadingOptions(argv, options, { valueFlags = [], onError } 
 export function classifyExtension(filePath, resources) {
   const format = classifyFormat(filePath)
   if (format === null || NODE_FORMATS.has(format)) return 'code'
-  if (inResources(filePath, resources)) return 'resource'
-  return 'unknown'
+  return inResources(filePath, resources) ? 'resource' : 'unknown'
 }
 
 export const inResources = (path, resources) => resources.has(pathExt(path) || basename(path).toLowerCase())

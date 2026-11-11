@@ -151,7 +151,6 @@ function artifactContents({ modules, formats, config }, linkOf) {
 }
 
 class Policy {
-  label
   #rules = new Map()
   // The rules as given, each list deduped and sorted.
   #given = {}
