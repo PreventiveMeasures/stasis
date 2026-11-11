@@ -5,38 +5,30 @@ import { join } from 'node:path'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
 
-// Tokens for fetching, from the environment, and where it has none, as a fallback, from other tools'
-// files in the user's home, read for compatibility.
-
-// The variables @preventive/upstream's npm client takes its token from, the first set and not
-// empty, read from process.env on each request.
+// What @preventive/upstream's npm client takes its token from: the first set, read on each request.
 export const NPM_TOKEN_VARS = ['PREVENTIVE_MEASURES_NPM_TOKEN', 'STASIS_NPM_TOKEN', 'NPM_TOKEN']
 
-// A token as @preventive/upstream takes one, printable ASCII and no space, around which whitespace
-// is dropped; anything else is none, so that it never reaches an error message.
+// Printable ASCII and no space, as @preventive/upstream takes one; anything else is none, so that it
+// never reaches an error message.
 const asToken = (value) => (typeof value === 'string' && /^[!-~]+$/u.test(value.trim()) ? value.trim() : undefined)
 
-// The GitHub `token` and `npmToken` of `<home>/.audit/config.json` (the user's home by default),
-// each where the file has it as a token. The file is another tool's, read for compatibility: one
-// that is missing, unreadable, not JSON or of another shape gives neither, and nothing is said.
+// `<home>/.audit/config.json`'s tokens. Another tool's file, read for compatibility: one missing,
+// unreadable or of another shape gives none, silently.
 export function auditTokens(home) {
   const config = readJson(join(home ?? homedir(), '.audit', 'config.json'))
   return config === null ? {} : { token: asToken(config.token), npmToken: asToken(config.npmToken) }
 }
 
-// The GitHub token: `env`'s GITHUB_TOKEN where it is set, else, as a fallback, auditTokens(home)'s,
-// only read then. -> it, or null where there is none
+// GITHUB_TOKEN, else auditTokens' (only read then), else null.
 export function githubToken({ env = process.env, home } = {}) {
   return env.GITHUB_TOKEN || auditTokens(home).token || null
 }
 
-// A line of an .npmrc giving npm's own registry an npm token, exactly as npm writes it: no other
-// registry's, no variable for npm to expand, and nothing else on the line.
+// npm's registry's token exactly as npm writes it: no other registry's, no variable to expand.
 const NPMRC_LINE = /^\/\/registry\.npmjs\.org\/:_authToken=(npm_[\dA-Za-z]+)\r?$/u
 
-// The npm token `<home>/.npmrc` (the user's home by default) gives npm's registry: its last NPMRC_LINE's, as npm
-// takes the last of a setting given twice. A missing or unreadable file gives none, silently; one that is not
-// valid UTF-8 is refused.
+// `<home>/.npmrc`'s last NPMRC_LINE, as npm takes the last of a setting given twice. A missing or
+// unreadable file gives none, silently; one that is not UTF-8 is refused.
 export function npmrcToken(home) {
   const file = join(home ?? homedir(), '.npmrc')
   let bytes
@@ -51,9 +43,8 @@ export function npmrcToken(home) {
   return token
 }
 
-// Run `fn`, where no NPM_TOKEN_VARS is set, with STASIS_NPM_TOKEN auditTokens(home)'s `npmToken`, else
-// npmrcToken(home)'s, each file only read then; restored after, unless something else set it meanwhile.
-// -> what `fn` gives
+// `fn()` with STASIS_NPM_TOKEN auditTokens' or npmrcToken's where no NPM_TOKEN_VARS is set (each file only
+// read then), restored after unless something else set it meanwhile.
 export async function withNpmToken(home, fn) {
   const token = NPM_TOKEN_VARS.some((name) => process.env[name]) ? undefined : (auditTokens(home).npmToken ?? npmrcToken(home))
   if (token === undefined) return fn()

@@ -8,7 +8,6 @@ import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
 import { lockfileOnlyError } from './output.js'
 
-// `stasis bundle`'s flags, as parseArgs takes them.
 export const BUNDLE_FLAGS = {
   mapping: { type: 'string' },
   manifests: { type: 'boolean' },
@@ -41,29 +40,21 @@ export const BUNDLE_FLAGS = {
   deptree: { type: 'boolean' },
 }
 
-// The flags of the bundle as a whole: where and how it is written, and where its dependencies are
-// read from. Every other one says how its entries are built, which stasis.config.json's `entries`
-// sets per entry instead.
+// The flags of the bundle as a whole; every other one is an entry's, which stasis.config.json's `entries` sets.
 const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'lockfile-only', 'brotli-quality', 'add', 'deptree'])
-// The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
-// The entry flags given once per value, which a comma doesn't separate (a define's JSON value may
-// hold one): an entry's options give them as an array, or one as a string.
+// Given once per value, which a comma doesn't separate (a define's JSON value may hold one).
 const REPEATED_FLAGS = new Set(['define'])
-// The entry flags that run a program -> what they run. Set in stasis.config.json, they take effect
-// only with the same flag given too (a value one, with the same value), as consent: the config can't
-// make a bare `stasis bundle` run anything.
+// The entry flags that run a program -> what they run. Set in stasis.config.json, they take effect only with
+// the same flag (and value) given too, as consent: the config can't make a bare `stasis bundle` run anything.
 const CONSENT_FLAGS = new Map([
   ['babel', "the project's Babel config"],
   ['metro-resolver', "the project's metro-resolver"],
   ['cargo', "cargo, and what the project's .cargo/config.toml names"],
   ['cargo-target', 'rustc'],
 ])
-// A flag as given: `--name`, or `--name=value` for one taking a value.
 const flagText = (name, value) => (value === true ? `--${name}` : `--${name}=${value}`)
 
-// A list flag's value (comma-separated) as its names, trimmed: undefined where none is given, and a
-// usage error (`error`) for one naming none.
 function listFlag(value, error) {
   if (value === undefined) return undefined
   const list = value.split(',').map((s) => s.trim()).filter(Boolean)
@@ -71,14 +62,13 @@ function listFlag(value, error) {
   return list
 }
 
-// `entry` as a path relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
+// `entry` relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
 function entryKey(cwd, entry) {
   const rel = relative(resolve(cwd), resolve(cwd, entry))
   return relativeEscapes(rel) ? null : toPosix(rel) || '.'
 }
 
-// The keys (entryKey's) of `entries`, and the first of them `config` (readConfigEntries', or null) names:
-// it may name all of them or none (`first` undefined), not only some (a usage error, `prefix` before).
+// The entryKeys of `entries`, and the first of them `config` names: it may name all of them or none, not some.
 function configuredKeys(cwd, entries, config, prefix = '') {
   const keys = entries.map((entry) => entryKey(cwd, entry))
   const first = config === null ? undefined : entries.find((_, i) => config.has(keys[i]))
@@ -89,7 +79,6 @@ function configuredKeys(cwd, entries, config, prefix = '') {
   return { keys, first }
 }
 
-// `fn()`, a usage error it throws with `prefix` before its message.
 function prefixed(prefix, fn) {
   try {
     return fn()
@@ -100,11 +89,9 @@ function prefixed(prefix, fn) {
 
 const isJsEntry = (entry) => JS_EXTENSIONS.values().some((ext) => entry.endsWith(ext))
 
-// The language `entries` share, one bundle being built from one: which of them they all are in, as
-// the project in `cwd`, read through `host`, holds them; or `jsAndSol`, JS and Solidity entries
-// together, each language's built apart and their bundles merged (bundlePlan).
+// Which language `entries` all are in, or `jsAndSol` for JS and Solidity entries together, each built apart.
 function entriesLanguage(entries, cwd, host = diskHost) {
-  // Beside JS entries, a directory one is of the Solidity ones (bundlePlan builds them apart).
+  // Beside JS entries, a directory one is of the Solidity ones.
   const dirError = directoryEntryError(entries.filter((f) => !isJsEntry(f)), cwd, host)
   if (dirError !== null) throw new Error(dirError)
   const lang = {
@@ -120,60 +107,44 @@ function entriesLanguage(entries, cwd, host = diskHost) {
   throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx and .sol together')
 }
 
-// bundleCommand's options for building `entries` (in `lang`, entriesLanguage's) from the parsed
-// entry flags in `values`. A usage error throws.
+// bundleCommand's options for building entries in `lang` (entriesLanguage's) with the entry flags `values`.
 function buildOptions(values, { allSol, allJs, allRust }) {
   if (values.mapping && !allSol) throw new Error('--mapping is only valid for .sol bundles')
-  // --manifests: carry the Solidity build's description files (foundry.toml, remappings.txt, ...).
   const manifests = Boolean(values.manifests)
   if (manifests && !allSol) throw new Error('--manifests is only valid for .sol bundles')
-  // --cargo: take the Rust feature/dependency resolution from `cargo metadata` (runs cargo; opt-in).
   const cargo = Boolean(values.cargo)
   if (cargo && !allRust) throw new Error('--cargo is only valid for Rust bundles')
-  // cargo's own feature flags for the entries' packages (`pkg/feat` targets one, or a dependency);
-  // parseFeatureList is the one splitter (the resolver reuses it).
   const cargoFeatures = parseFeatureList(values['cargo-features'] ?? [])
   if (values['cargo-features'] !== undefined && cargoFeatures.length === 0) {
     throw new Error('--cargo-features must list at least one feature (e.g. --cargo-features=serde,app/tls)')
   }
   const cargoNoDefaultFeatures = Boolean(values['cargo-no-default-features'])
   const cargoAllFeatures = Boolean(values['cargo-all-features'])
-  // --cargo-target=<triple|host>: the build's target, whose cfgs (`rustc --print cfg`) decide `#[cfg(unix)]` code.
   const cargoTarget = values['cargo-target'] ?? null
   if (cargoTarget !== null && !/^[\w.-]+$/u.test(cargoTarget)) {
     throw new Error('--cargo-target must be a target triple or "host" (e.g. --cargo-target=aarch64-apple-darwin)')
   }
-  // --cargo-manifests: carry the packages' Cargo.toml and build scripts, the workspace's Cargo.toml,
-  // Cargo.lock and .cargo/config.toml (the Rust counterpart of --package-json).
   const cargoManifests = Boolean(values['cargo-manifests'])
   if (!allRust) {
     const given = { 'cargo-features': cargoFeatures.length > 0, 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget !== null, 'cargo-manifests': cargoManifests }
     for (const [flag, on] of Object.entries(given)) if (on) throw new Error(`--${flag} is only valid for Rust bundles`)
   }
   if (values.scope && !allJs) throw new Error('--scope is only valid for JS bundles')
-  if (values.scope && !SCOPES.has(values.scope)) {
-    throw new Error('--scope must be node_modules or full')
-  }
+  if (values.scope && !SCOPES.has(values.scope)) throw new Error('--scope must be node_modules or full')
   if (values.scope !== undefined && values.scope !== 'full' && (values.mainFields !== undefined || values.metro)) {
     throw new Error(`--scope=${values.scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
   }
-  // --conditions: extra exports/imports conditions, merged onto Node's defaults.
   if (values.conditions !== undefined && !allJs) throw new Error('--conditions is only valid for JS bundles')
   const conditions = listFlag(values.conditions, '--conditions must list at least one condition name (e.g. --conditions=react-native,browser)') ?? []
-  // --metro: resolve like Metro (its conditions and mainFields, platform suffixes per --platforms), with
-  // --jsx and --flow on, as Metro's Babel parses JSX and Flow in every file.
+  // --metro parses JSX and Flow, as Metro's Babel does in every file.
   const metro = Boolean(values.metro)
   if (values.flow && !allJs) throw new Error('--flow is only valid for JS bundles')
   const flow = Boolean(values.flow) || metro
-  // --typescript: a specifier naming a missing JS output lands on its on-disk TS source, as tsc's do.
   if (values.typescript && !allJs) throw new Error('--typescript is only valid for JS bundles')
   const typescript = Boolean(values.typescript)
-  // --tsconfig: the config whose `paths` --typescript honours (else each importing package's own).
   if (values.tsconfig !== undefined && !typescript) throw new Error('--tsconfig is only valid with --typescript')
-  // --mainFields: legacy package entry fields (e.g. react-native,browser,main) for the non-exports resolver.
   if (values.mainFields !== undefined && !allJs) throw new Error('--mainFields is only valid for JS bundles')
   const mainFields = listFlag(values.mainFields, '--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
-  // --metro-resolver: resolve through the project's own metro-resolver instead of the built-in approximation.
   const metroResolver = Boolean(values['metro-resolver'])
   const platforms = [...new Set((values.platforms ?? []).flatMap((p) => p.split(',')).map((s) => s.trim()).filter(Boolean))]
   // A platform name becomes an edge key, so no '/' (parsers reject it) or '*' (a reserved placeholder).
@@ -181,16 +152,13 @@ function buildOptions(values, { allSol, allJs, allRust }) {
     if (p === '*' || p.includes('/')) throw new Error(`invalid --platforms value '${p}' (a platform name can't contain '/' or be '*')`)
   }
   if ((metro || platforms.length > 0) && !allJs) throw new Error('--metro is only valid for JS bundles')
-  // --jsx: parse JSX in .js files (React Native's convention; oxc enables it for .jsx/.tsx alone).
   const jsx = Boolean(values.jsx) || metro
   if (jsx && !allJs) throw new Error('--jsx is only valid for JS bundles')
-  // --package-json: fold each bundled module's package.json into the bundle.
   const packageJSON = Boolean(values['package-json'])
   if (packageJSON && !allJs) throw new Error('--package-json is only valid for JS bundles')
-  // --resources: the extensions/filenames of assets the graph reaches to carry as resources (Metro's).
   if (values.resources !== undefined && !allJs) throw new Error('--resources is only valid for JS bundles')
   const resources = listFlag(values.resources, '--resources must list at least one extension or filename (e.g. --resources=png,svg)')
-  parseResourcesOption('--resources', resources) // validate early for a clean usage error (code exts / bad chars rejected)
+  parseResourcesOption('--resources', resources)
   if (metro) {
     if (conditions.length > 0) throw new Error("--conditions can't be combined with --metro (it sets its own conditions)")
     if (mainFields !== undefined) throw new Error("--mainFields can't be combined with --metro (it sets its own mainFields)")
@@ -199,57 +167,42 @@ function buildOptions(values, { allSol, allJs, allRust }) {
     throw new Error('--platforms is only valid with --metro')
   }
   if (metroResolver && !metro) throw new Error('--metro-resolver is only valid with --metro')
-  // --babel: resolve through the import aliases (babel-plugin-module-resolver) of the project's
-  // babel.config.*, which Metro runs before it resolves; running that config, it is opt-in.
   const babel = Boolean(values.babel)
   if (babel && !metro) throw new Error('--babel is only valid with --metro')
-  // --babel-aliases: the same aliases from a JSON file (module-resolver's `alias` option as data), which
-  // runs nothing, so stasis.config.json's entries may set it alone.
   if (values['babel-aliases'] !== undefined && !metro) throw new Error('--babel-aliases is only valid with --metro')
   if (values['babel-aliases'] !== undefined && babel) throw new Error("--babel-aliases can't be combined with --babel (both set the import aliases)")
   if (typescript && metroResolver) throw new Error("--typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
-  // --define=KEY=VALUE: a global's value (JSON); the scan leaves out the imports of the branches the
-  // values keep from running (`if (__DEV__)` under __DEV__=false).
   if (values.define !== undefined && !allJs) throw new Error('--define is only valid for JS bundles')
   const define = values.define === undefined ? undefined : parseDefineFlags(null, values.define)
   return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, babelAliases: values['babel-aliases'], platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
 }
 
-// The CONSENT_FLAGS that run a program of the project's from disk, which needs what it installs on
-// disk: none that --deptree lays out in memory.
+// The CONSENT_FLAGS that run a program of the project's from disk, where --deptree installs nothing.
 const DISK_RUN_FLAGS = ['babel', 'metro-resolver']
 
-// bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.
 function outputOptions(values, { allJs, allSol, jsAndSol }) {
   if (values.lockfile && !allJs) throw new Error('--lockfile is only valid for JS bundles')
-  // --deptree: the dependencies laid out in memory from the lockfile (pnpm, yarn 1, npm or Soldeer's),
-  // never read from disk, which holds none.
   const deptree = Boolean(values.deptree)
   if (deptree && !allJs && !allSol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
   for (const flag of deptree ? DISK_RUN_FLAGS : []) {
     if (values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${CONSENT_FLAGS.get(flag)} from disk, where --deptree installs nothing)`)
   }
-  // --brotli-quality: valid for every entry language (no allJs gate).
   const brotliQuality = values['brotli-quality'] === undefined ? undefined : parseBrotliQuality('--brotli-quality', values['brotli-quality'])
-  // --add merges into the existing bundle at --output, so it can't target write-only stdout.
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
-  // --lockfile-only: write the --lockfile alone, no bundle.
   const lockfileOnly = Boolean(values['lockfile-only'])
   const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'] }) : null
   if (lockfileOnlyRefused !== null) throw new Error(lockfileOnlyRefused)
   return { output: values.output, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
 }
 
-// An entry's options in stasis.config.json's `entries` (`what` names it) as the flags they alias, in
-// parseArgs' shape: `true` for a boolean flag set (`false`, its default, is no flag), a string for one
-// taking a value, which a list flag takes as an array too, and an array of it for a repeatable one
-// (each of a REPEATED_FLAGS one's values, as given).
+// An entry's options in stasis.config.json's `entries` as parseArgs would give the flags they alias: `true`
+// for a boolean set (`false` is no flag), a list flag's array as one string, a REPEATED_FLAGS one's as given.
 function entryFlags(what, options) {
   if (!isPlainObject(options)) throw new Error(`${what} must be an object of stasis bundle options`)
   const values = {}
   for (const [flag, value] of Object.entries(options)) {
-    if (POLICY_KEYS.includes(flag)) continue // the entry's Policy (readConfigEntries)
+    if (POLICY_KEYS.includes(flag)) continue
     if (OUTPUT_FLAGS.has(flag)) throw new Error(`${what}: ${flag} is the bundle's option, not an entry's: pass --${flag}`)
     if (!Object.hasOwn(BUNDLE_FLAGS, flag)) throw new Error(`${what}: unknown option ${JSON.stringify(flag)}`)
     const { type, multiple } = BUNDLE_FLAGS[flag]
@@ -271,9 +224,8 @@ function entryFlags(what, options) {
   return values
 }
 
-// The `entries` of the stasis.config.json in `cwd`: each entry it names, as a path relative to cwd
-// -> { entry: the name as written, values: its options as flags (entryFlags'), policy?: its own Policy,
-// held beside the config's }. null where there is none.
+// The `entries` of the stasis.config.json in `cwd`, by entryKey: { entry: as written, values: its entryFlags,
+// policy?: its own Policy, held beside the config's }; null where there is none.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const entries = readConfigFile(undefined, cwd, host)?.entries
   if (entries === undefined) return null
@@ -291,18 +243,14 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   return named
 }
 
-// bundleCommand's options for bundling `entries` with the parsed flags `values` in `cwd`, `config` its
-// stasis.config.json's `entries` (readConfigEntries'). Where it names every entry, each is built with its
-// options there (the same ones together), the flags given only the bundle's own (OUTPUT_FLAGS) and the
-// consent an entry's CONSENT_FLAGS option needs; where it names none, all are built with the flags.
-// It may not name only some. A usage error throws.
+// bundleCommand's options for `entries` and the flags `values`. Where `config` (readConfigEntries') names every
+// entry, each is built with its options there, the flags only the bundle's own (OUTPUT_FLAGS) and the consent
+// its CONSENT_FLAGS need; where it names none, all are built with the flags.
 export function bundlePlan({ cwd = process.cwd(), entries, values, config = null }) {
   const lang = entriesLanguage(entries, cwd)
   const output = outputOptions(values, lang)
   const { keys, first } = configuredKeys(cwd, entries, config)
   if (first === undefined && !lang.jsAndSol) return { ...output, entries, ...buildOptions(values, lang) }
-  // JS and Solidity entries given: a build of each language's, the flags valid for both (one language's
-  // own are set in stasis.config.json's entries).
   if (first === undefined) {
     return { ...output, builds: [...Map.groupBy(entries, isJsEntry).values()].map((part) => {
       try {
@@ -331,40 +279,36 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
     }
     const what = `${CONFIG_FILE}: entries ${JSON.stringify(name)}: `
     const language = prefixed(what, () => entriesLanguage([entry], cwd))
-    const options = prefixed(what, () => buildOptions(flags, language))
-    // Entries of another language are built apart, whatever their options: a build's are of one.
-    addToBuild(builds, entry, named[i], options, language)
+    addToBuild(builds, entry, named[i], prefixed(what, () => buildOptions(flags, language)), language)
   }
   return { ...output, builds: withPolicies(builds) }
 }
 
-// Adds `entry` (`named`, readConfigEntries') to the build in `builds` with the same language, options and
-// Policy, or starts one.
+// Adds `entry` to the build in `builds` of the same language, options and Policy (the first entry's,
+// relabelled by withPolicies), or starts one.
 function addToBuild(builds, entry, named, options, language) {
   const id = JSON.stringify([language, options, named.policy?.key])
-  // The same Policy for each entry of a build, by `id`: the first one's, relabelled by withPolicies.
   if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [], policy: named.policy })
   const build = builds.get(id)
   build.entries.push(entry)
   build.written.push(named.entry)
 }
 
-// The builds `addToBuild` made, each held to the Policy its entries set (`policy`, where they set one),
-// whose errors name them all, `prefix` before. -> [build]
+// addToBuild's builds, each Policy's errors naming all its entries.
 function withPolicies(builds, prefix = '') {
   return [...builds.values()].map(({ written, policy, ...build }) => (policy === undefined ? build
     : { ...build, policy: policy.withLabel(`${prefix}${CONFIG_FILE}: entries ${written.map((entry) => JSON.stringify(entry)).join(', ')}`) }))
 }
 
-// buildOptions' options, each by the flag it is given as; and those whose values are a set, in
-// whatever order given (each value of `resources` as parseResourcesOption takes it).
+// buildOptions' options, each by its flag.
 const OPTION_FLAGS = {
   mappingFile: 'mapping', manifests: 'manifests', scope: 'scope', conditions: 'conditions', mainFields: 'mainFields', metro: 'metro', metroResolver: 'metro-resolver', babel: 'babel', babelAliases: 'babel-aliases', platforms: 'platforms', jsx: 'jsx', flow: 'flow', typescript: 'typescript', tsconfig: 'tsconfig', resources: 'resources', define: 'define', packageJSON: 'package-json', cargo: 'cargo', cargoFeatures: 'cargo-features', cargoNoDefaultFeatures: 'cargo-no-default-features', cargoAllFeatures: 'cargo-all-features', cargoTarget: 'cargo-target', cargoManifests: 'cargo-manifests',
 }
+// Those whose values are a set, in whatever order given.
 const SET_OPTIONS = new Set(['conditions', 'platforms', 'resources', 'cargoFeatures'])
-// buildOptions' options where no flag is given.
 const DEFAULT_OPTIONS = buildOptions({}, {})
-// An option's value as compared: a set's sorted, defines by name, none (null) for no value or no define.
+// An option's value as compared: a set's sorted (each of `resources` as parseResourcesOption takes it), defines
+// by name, 'null' for no value or no define.
 const comparable = (key, value) => {
   if (value === undefined || value === null || (key === 'define' && isPlainObject(value) && Object.keys(value).length === 0)) return 'null'
   if (key === 'resources' && Array.isArray(value)) value = value.map((v) => (typeof v === 'string' ? v.toLowerCase().replace(/^\./u, '') : v))
@@ -372,17 +316,13 @@ const comparable = (key, value) => {
   if (key === 'define' && isPlainObject(value)) return JSON.stringify(Object.entries(value).toSorted(([a], [b]) => (a < b ? -1 : 1)))
   return JSON.stringify(value)
 }
-// An option as its flags give it: `--jsx`, `--platforms=ios,android`, `--define=__DEV__=false`.
 const optionText = (key, value) => (key === 'define'
   ? Object.entries(value).map(([name, v]) => `--define=${name}=${JSON.stringify(v)}`).join(' ')
   : flagText(OPTION_FLAGS[key], Array.isArray(value) ? value.join(',') : value))
 
-// The builds of `entries` (where none are given, every one it names) that the stasis.config.json in `cwd`
-// names, for `name`'s bundle, built from a project it runs nothing of (vfs-bundle's): -> { entries, builds },
-// each build `{ entries, ...options }` (buildOptions'), the entries of one language with the same options
-// together; null where it names none of them, or has no `entries`. It may not name only some. Each of
-// `options` given other than at its default must be what each entry's options set; one that runs a
-// program (CONSENT_FLAGS'), set or given, is refused. A usage error throws.
+// The builds of `entries` (by default, every one it names) the stasis.config.json in `cwd` names, for `name`'s
+// bundle of a project it runs nothing of (vfs-bundle's): -> { entries, builds }, or null where it names none.
+// Each of `options` given other than at its default must be what each entry's options set.
 export function configuredBuilds(name, { cwd, host = diskHost, entries, options = {} }) {
   const config = prefixed(`${name}: `, () => readConfigEntries(cwd, host))
   if (config === null || (entries !== undefined && !Array.isArray(entries))) return null
@@ -408,7 +348,6 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
       const set = comparable(key, built[key]) === comparable(key, DEFAULT_OPTIONS[key]) ? `without --${OPTION_FLAGS[key]}` : `with ${optionText(key, built[key])}`
       throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
     }
-    // Entries of another language are built apart, whatever their options: a build's are of one.
     addToBuild(builds, entry, named, built, language)
   }
   const running = given.find((key) => CONSENT_FLAGS.has(OPTION_FLAGS[key]))

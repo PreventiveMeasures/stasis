@@ -56,8 +56,7 @@ const BASH_EXTS = new Set(['.sh', '.bash'])
 const RUST_EXTS = new Set(['.rs'])
 const nonEmpty = (list) => Array.isArray(list) && list.length > 0
 
-// Deepest common parent dir of `paths`, relative to `cwd`; starts with `..` when entries
-// escape cwd (e.g. via remapping), or "." when it is cwd itself.
+// The deepest dir holding every one of `paths`, relative to `cwd` (`..` where they escape it, by remapping).
 export function outermostDir(paths, cwd) {
   if (paths.length === 0) return '.'
   const cwdAbs = posix.resolve(toPosix(cwd))
@@ -67,38 +66,27 @@ export function outermostDir(paths, cwd) {
   return posix.relative(cwdAbs, first.slice(0, depth).join('/') || '/') || '.'
 }
 
-// Split a Soldeer dep dir `<name>-<version>` (its authoritative identity); falls back to
-// version 0.0.0 when it doesn't end in a semver (every bucket must attest a version).
+// A Soldeer dependency's folder `<name>-<version>`; 0.0.0 where it ends in no semver, as every bucket attests one.
 function parseSoldeerDir(seg) {
   const m = /^(.+)-(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)$/u.exec(seg)
   return m ? { name: m[1], version: m[2] } : { name: seg, version: '0.0.0' }
 }
 
-// A url as git fetches from a host: scp's `[user@]host:path`, or a URL of a transport git has itself
-// (lowercase), its `[userinfo@]host[:port]` ending at a slash. Not `ssh://git@github.com:owner/name`
-// (host `github.com:owner` to git), `git+https://`, `HTTPS://`, nor a bare `owner/name` path.
+// A url as git fetches from a host: scp's `[user@]host:path`, or a URL of a transport of git's own (lowercase).
+// Not `ssh://git@github.com:owner/name` (host `github.com:owner` to git), `git+https://`, nor a bare path.
 const GIT_URL = /^(?:[^/]*:(?!\/\/)|(?:https?|git|ssh|git\+ssh|ssh\+git):\/\/(?:[^/@]*@)?[^/:@]*(?::\d*)?\/)/u
 
-// The GitHub `owner/name` a .gitmodules `url` names, else null: none for a url git doesn't fetch so
-// (GIT_URL), for npm's `github:owner/name` (the host `github` to git), nor one with a `#`, which git
-// keeps in the path. git's `ssh+git://` is its `ssh://`.
+// Not npm's `github:owner/name` (the host `github` to git), nor one with a `#`, which git keeps in the path.
 const submoduleGithub = (url) => (GIT_URL.test(url) && !/^github:/iu.test(url) && !url.includes('#') ? parseGithubRepository(url.replace(/^ssh\+git:/u, 'ssh:')) : null)
 
-// The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {
-  const byPath = new Map()
-  for (const { path, url, branch } of submodules) {
-    const name = url && submoduleGithub(url)
-    if (name) byPath.set(path, { name, branch })
-  }
-  return byPath
+  const named = submodules.map(({ path, url, branch }) => [path, { name: url && submoduleGithub(url), branch }])
+  return new Map(named.filter(([, { name }]) => name))
 }
 
-// The root of the GitHub repository `github` at `commit`, where both are valid; else undefined.
 const repoRootAt = (github, commit) => (isValidRepoField('github', github) && isValidRepoField('commit', commit) ? { github, directory: '', commit } : undefined)
 
-// The text of `rel`, a file of the project root, read as `ownership` vouches for it; null where it
-// refuses it, nothing is there, or it isn't UTF-8.
+// `rel` as `ownership` vouches for it; null where it refuses it, nothing is there, or it isn't UTF-8.
 function ownedText(baseDir, rel, ownership, host) {
   const { reason, real, outside } = ownership.of(rel)
   if (reason || real === null || outside) return null
@@ -110,17 +98,14 @@ function ownedText(baseDir, rel, ownership, host) {
   }
 }
 
-// What the root's soldeer.lock locks of each dependency, by its folder under `dependencies/`
-// (`<name>-<version>`): a GitHub git one's `repo` at its `rev`, a zip's `integrity` (its checksum,
-// which Soldeer extracts it by). None where it can't be read or parsed: metadata never stops a build.
+// soldeer.lock's lock of each dependency, by its folder: a GitHub git one's `repo` at its `rev`, a zip's
+// `integrity` (the checksum Soldeer extracts it by). None where it can't be read: metadata never stops a build.
 function soldeerLocks(baseDir, ownership, host) {
   const text = ownedText(baseDir, 'soldeer.lock', ownership, host)
   let lock = null
   try {
     lock = text === null ? null : parseSoldeerLockfile(text)
-  } catch {
-    // Not one Soldeer writes: nothing is recorded from it.
-  }
+  } catch { /* not one Soldeer writes: nothing is recorded of it */ }
   const locks = new Map()
   for (const dep of Object.values(lock?.dependencies ?? {})) {
     locks.set(`${dep.name}-${dep.version}`, dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: archiveIntegrity('soldeer', dep.checksum) })
@@ -128,25 +113,22 @@ function soldeerLocks(baseDir, ownership, host) {
   return locks
 }
 
-// Classify a Solidity file's dep bucket: Soldeer (`dependencies/<name>-<version>/`) or a GitHub
-// submodule, else null to defer to the node_modules/workspace logic. A bucket's `repo` is where its
-// checkout's HEAD is; a Soldeer git dependency records one only at its soldeer.lock `rev`.
+// A Solidity file's Soldeer or GitHub submodule bucket, else null. A bucket's `repo` is where its checkout's
+// HEAD is; a Soldeer git dependency records one only at its soldeer.lock `rev`.
 function makeSolidityClassifier(baseDir, ownership, host) {
   const submodules = githubSubmodules(ownership.submodules)
   const versionOf = memoized((sub) => readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check: ownership.assert, host })?.version)
   const commitOf = memoized((dir) => checkoutCommit(join(baseDir, dir), host))
-  let soldeer // read at the first Soldeer file
+  let soldeer
   return (path) => {
-    if (path.startsWith('dependencies/')) {
-      const seg = path.slice('dependencies/'.length).split('/')[0]
-      if (seg) {
-        const { name, version } = parseSoldeerDir(seg)
-        const bucketDir = `dependencies/${seg}`
-        soldeer ??= soldeerLocks(baseDir, ownership, host)
-        const { repo: locked, integrity } = soldeer.get(seg) ?? {}
-        const repo = locked !== undefined && commitOf(bucketDir) === locked.commit ? locked : undefined
-        return { bucketDir, name, version, ecosystem: 'soldeer', integrity, ...(repo && { repo }) }
-      }
+    const seg = path.startsWith('dependencies/') ? path.slice('dependencies/'.length).split('/')[0] : ''
+    if (seg) {
+      const { name, version } = parseSoldeerDir(seg)
+      const bucketDir = `dependencies/${seg}`
+      soldeer ??= soldeerLocks(baseDir, ownership, host)
+      const { repo: locked, integrity } = soldeer.get(seg) ?? {}
+      const repo = locked !== undefined && commitOf(bucketDir) === locked.commit ? locked : undefined
+      return { bucketDir, name, version, ecosystem: 'soldeer', integrity, ...(repo && { repo }) }
     }
     for (const [sub, { name, branch }] of submodules) {
       if (path === sub || path.startsWith(`${sub}/`)) {
@@ -159,17 +141,11 @@ function makeSolidityClassifier(baseDir, ownership, host) {
   }
 }
 
-// A vendored crate's ecosystem, by where `cargo vendor` copied it from: only a registry's copy is
-// `cargo`, which `stasis audit` asks OSV about; a git checkout's (`cargo-git`) or one with no
-// `.cargo-checksum.json` (`cargo-unknown`) is never sent to a public advisory database.
-const vendoredEcosystem = (from) => {
-  if (from === 'registry') return 'cargo'
-  return from === 'git' ? 'cargo-git' : 'cargo-unknown'
-}
+// Only a registry's copy is `cargo`, which `stasis audit` asks OSV about: a git checkout's or one with no
+// `.cargo-checksum.json` is never sent to a public advisory database.
+const vendoredEcosystem = (from) => (from === 'registry' ? 'cargo' : from === 'git' ? 'cargo-git' : 'cargo-unknown')
 
-// Classify a Rust file by the nearest Cargo.toml `[package]`: a vendored crate is a dependency (a
-// registry's with its integrity), any other package first-party. Null (no manifest above the file)
-// defers to the package.json/placeholder logic.
+// A Rust file's bucket, its nearest Cargo.toml `[package]`'s: a vendored crate is a dependency, any other first-party.
 function makeRustClassifier(cargo) {
   return (path) => {
     const pkg = cargo.packageInfo(path)
@@ -179,9 +155,8 @@ function makeRustClassifier(cargo) {
   }
 }
 
-// The bytes of `rel` in the bundle root (`realBase` its real path), or null when it isn't a regular
-// file there (a FIFO would hang a read) or doesn't really lie in the directory `within` (a vendored
-// crate's manifest linked to a project file).
+// Null where `rel` isn't a regular file (a FIFO would hang a read) or doesn't really lie in `within` (a
+// vendored crate's manifest linked to a project file).
 function readFileWithinBase(baseDir, realBase, rel, within) {
   try {
     assertRealPathWithinBase(realBase, baseDir, rel)
@@ -199,30 +174,20 @@ function assertEntries(name, entries, what, isEntry, noun = what) {
   for (const e of entries) if (!isEntry(e)) throw new Error(`${name}: not a ${noun}: ${e}`)
 }
 
-// Bundles must be self-contained: throw on a missing entry or an unresolved `noun` (import, script,
-// module) of a `lang` bundle -- `missing`'s { spec, from }, with the `reason` it was refused if given.
+// Bundles must be self-contained.
 function assertSelfContained(lang, noun, entries, sources, missing) {
-  const issues = []
-  for (const entry of entries) {
-    if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
-  }
-  for (const { spec, from, reason } of missing) {
-    issues.push(`Unresolved ${noun}: ${spec} from ${from}${reason ? ` (refused: ${reason})` : ''}`)
-  }
-  if (issues.length > 0) {
-    throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}`)
-  }
+  const issues = [...entries].filter((entry) => !sources.has(entry)).map((entry) => `Missing entry: ${entry}`)
+  for (const { spec, from, reason } of missing) issues.push(`Unresolved ${noun}: ${spec} from ${from}${reason ? ` (refused: ${reason})` : ''}`)
+  if (issues.length > 0) throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}`)
 }
 
-// A codeBundle of `sources`, each bucketed by `classifyDep(path)` where it places it, else by its
-// nearest package.json (`packageOf`), else in "." under the workspace identity, which Bundle.parse
-// needs every bucket to attest.
+// A codeBundle of `sources`, each in `classifyDep(path)`'s bucket, else its nearest package.json's, else in "."
+// under the workspace identity, which Bundle.parse needs every bucket to attest.
 function assembleCodeBundle({
   baseDir, entries, sources, resolutions, keyedResolutions, workspaceName, workspaceVersion = '0.0.0', format, formats, conditionKey, classifyDep, host,
   packageOf = packageLookup(baseDir, { host }), consumer, consumerFiles,
 }) {
   const modules = new Map()
-  // A later file's identity adds the vendored package it is in.
   const ensureBucket = (dir, identity) => {
     const bucket = modules.get(dir)
     modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
@@ -236,7 +201,7 @@ function assembleCodeBundle({
       continue
     }
     const meta = packageOf(path)
-    // A node_modules file whose nearest package.json is the workspace root (or none) is a misconfigured dep.
+    // One of node_modules whose nearest package.json is the workspace root's (or none) is a misconfigured dep.
     if (splitNodeModulesPath(path) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
       throw new Error(`No package.json with name+version found for ${path}`)
     }
@@ -247,9 +212,7 @@ function assembleCodeBundle({
   return codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions, format, formats, conditionKey, host, consumer, consumerFiles })
 }
 
-// A full-scope code Bundle of `sources`, bucketed as `modules`: `formats` overrides `format` per file,
-// the `resolutions` are keyed under `conditionKey` beside the `keyedResolutions`, and the
-// `consumerFiles` (every file, by default) are attributed to `consumer`.
+// A full-scope code Bundle; `formats` overrides `format` per file, `consumerFiles` (by default all) are `consumer`'s.
 function codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions = new Map(), format, formats, conditionKey, host, consumer = 'bundle', consumerFiles }) {
   const formatsMap = new Map()
   for (const path of sources.keys()) {
@@ -262,30 +225,26 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, keyedReso
     modules,
     formats: formatsMap,
     imports: new Map([[conditionKey, new Map(resolutions)], ...keyedResolutions]),
-    // Off disk: a synthetic source with no file there is not executable.
-    executable: new Set([...sources.keys()].filter((path) => observeExecutable(join(baseDir, path), host) === true)),
+    // Off disk: a synthetic source with no file is not executable.
+    executable:new Set([...sources.keys()].filter((path) => observeExecutable(join(baseDir, path), host) === true)),
   }).withReason(consumer, consumerFiles)
 }
 
-// Files never carried, whatever reads them: `.env` files, and Hardhat's config, which is code
-// (both however they're cased).
+// Never carried, whatever reads them, however cased: `.env` files, and Hardhat's config, which is code.
 const neverCarried = (rel) => isDotEnvFile(rel) || posix.basename(rel).toLowerCase().startsWith('hardhat.config.')
 
-// --manifests: a Solidity bundle's build-description files, as a sorted Map<path, text>. Each of the
-// `configFiles` the resolution read must be carried; the SOLIDITY_*_MANIFESTS of the root and of each
-// bundled package are carried where they exist and `ownership` allows. Carried as written, secrets too.
+// --manifests: each of the `configFiles` the resolution read, and the SOLIDITY_*_MANIFESTS of the root and each
+// bundled package where `ownership` allows, as a sorted Map<path, text>. Carried as written, secrets too.
 function solidityManifests(baseDir, sources, configFiles, { classifyDep, packageOf, ownership, host }) {
   const realBase = host.realpath(baseDir)
-  // `{ text }`, or `{ why }` it can't be carried (null: nothing is there), read by the real path
-  // `ownership` vouched for.
+  // `{ text }`, or `{ why }` it can't be carried (null: nothing is there).
   const carry = (rel) => {
     const { reason, real, outside } = ownership.of(rel)
     if (reason) return { why: reason }
     if (real === null) return { why: null }
     if (outside) throw new Error(`Refusing to follow symlink escaping bundle root: ${rel} -> ${resolve(realBase, real)}`)
     const buf = readRegularFileOrNull(join(realBase, real), rel, host)
-    if (buf === null) return { why: null } // a directory
-    return { text: decodeUtf8(buf, rel) }
+    return buf === null ? { why: null } : { text: decodeUtf8(buf, rel) }
   }
   const unreproducible = (rel, why) => new Error(`--manifests can't carry ${rel}, which the Solidity resolution read: ${why}`)
   const out = new Map()
@@ -313,16 +272,14 @@ function solidityManifests(baseDir, sources, configFiles, { classifyDep, package
   return new Map([...out.keys()].toSorted().map((rel) => [rel, out.get(rel)]))
 }
 
-// An entry `stasis bundle` takes for a directory: one that is, or an extensionless path that
-// doesn't exist (a project without `script/` still bundles with `src test script`).
+// A directory, or an extensionless path that doesn't exist (a project without `script/` still bundles
+// with `src test script`).
 const isDirEntry = (abs, host) => isDir(abs, host) || (extname(abs) === '' && host.stat(abs) === null)
 
-// Whether `entry` (resolved against `cwd`) is a Solidity bundle's: a .sol file or a directory entry.
 export const isSolidityEntry = (entry, cwd = process.cwd(), host = diskHost) => entry.endsWith('.sol') || isDirEntry(resolve(cwd, entry), host)
 
-// What's wrong with `entries`' directory entries, or null: they go with Solidity entries only, and
-// entries all missing extensionless paths are a mistyped file. `fetched` false: `host` is an empty
-// tree standing in for one not fetched yet, which can't say what is missing.
+// What's wrong with `entries`' directory entries, or null; entries all missing are a mistyped file. `fetched`
+// false: `host` is an empty tree standing in for one not fetched yet, which can't say what is missing.
 export function directoryEntryError(entries, cwd = process.cwd(), host = diskHost, { fetched = true } = {}) {
   const dirs = entries.filter((e) => isDirEntry(resolve(cwd, e), host))
   const absent = fetched ? dirs.filter((e) => host.stat(resolve(cwd, e)) === null) : []
@@ -333,27 +290,20 @@ export function directoryEntryError(entries, cwd = process.cwd(), host = diskHos
     : `a directory entry is only supported for Solidity bundles (it stands for the .sol files under it): ${dirs[0]}`
 }
 
-// Build an in-memory Bundle from entry .sol files and directories (each its .sol files; a missing one
-// skipped), imports resolved through the project's remappings (discoverSolidityConfig), or exactly
-// those `mappingFile` lists. `env` supplies FOUNDRY_PROFILE / FOUNDRY_REMAPPINGS.
+// A Bundle of entry .sol files and directories (a missing one skipped), imports resolved through the project's
+// remappings, or those `mappingFile` lists. `env` supplies FOUNDRY_PROFILE / FOUNDRY_REMAPPINGS.
 export async function buildSolidityBundle({ cwd = process.cwd(), entries, mappingFile, manifests = false, env = process.env, host = diskHost } = {}) {
   if (!nonEmpty(entries)) throw new Error('buildSolidityBundle: at least one entry .sol file or directory is required')
-
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
-  for (const e of normalized) {
-    if (!isSolidityEntry(e, baseDir, host)) throw new Error(`buildSolidityBundle: not a .sol file or directory: ${e}`)
-  }
+  for (const e of normalized) if (!isSolidityEntry(e, baseDir, host)) throw new Error(`buildSolidityBundle: not a .sol file or directory: ${e}`)
   const expanded = expandSolidityEntries(baseDir, normalized, host)
-
   const { remappings, libs, ownership, files: configFiles, envUsed } = discoverSolidityConfig(baseDir, { mappingFile, env, host })
   // The bundle doesn't record the environment, so say when it shaped the resolution.
   if (envUsed.length > 0) console.warn(`[stasis] Solidity imports resolved with ${envUsed.join(', ')} from the environment`)
   const sources = collectSolidityFilesFromDisk(baseDir, expanded, remappings, { libs, ownership, host })
   const { resolutions, missing } = buildSolidityTree(sources, { remappings, baseDir, libs, ownership, host })
-
   assertSelfContained('Solidity', 'import', expanded, sources, missing)
-
   const classifyDep = makeSolidityClassifier(baseDir, ownership, host)
   const packageOf = packageLookup(baseDir, { strict: true, check: ownership.assert, host })
   const bundled = new Map(sources)
@@ -366,45 +316,24 @@ export async function buildSolidityBundle({ cwd = process.cwd(), entries, mappin
   }
 
   return assembleCodeBundle({
-    baseDir,
-    entries: expanded,
-    sources: bundled,
-    resolutions,
-    workspaceName: 'solidity-bundle',
-    format: 'solidity',
-    formats,
-    conditionKey: 'solidity',
-    classifyDep,
-    packageOf,
-    host,
+    baseDir, entries: expanded, sources: bundled, resolutions, workspaceName: 'solidity-bundle', format: 'solidity', formats,
+    conditionKey: 'solidity', classifyDep, packageOf, host,
   })
 }
 
-// Build an in-memory Bundle from entry .sh/.bash files by walking the source/exec graph.
-// A local `source` inside the bundle root that resolves to no bundled script is fatal;
-// external refs (PATH commands, `$VAR`, absolute, `../`-escaping) are dropped.
+// A Bundle of entry .sh/.bash files and the scripts they source; a local `source` resolving to no bundled
+// script is fatal, an external one (a PATH command, `$VAR`, absolute, escaping the root) dropped.
 export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
   assertEntries('buildBashBundle', entries, '.sh/.bash file', (e) => BASH_EXTS.has(extname(e)))
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
-
   const sources = await collectBashFilesFromDisk(baseDir, normalized)
   const { resolutions, missing } = buildBashTree(sources)
   assertSelfContained('Bash', 'script', normalized, sources, missing)
-
-  return assembleCodeBundle({
-    baseDir,
-    entries: normalized,
-    sources,
-    resolutions,
-    workspaceName: 'bash-bundle',
-    format: 'shell',
-    conditionKey: 'shell',
-  })
+  return assembleCodeBundle({ baseDir, entries: normalized, sources, resolutions, workspaceName: 'bash-bundle', format: 'shell', conditionKey: 'shell' })
 }
 
-// Build an in-memory Bundle from entry .teal files (Algorand TEAL programs): the entries alone, as
-// written, with no edges, since a TEAL program includes no other file. A missing entry is fatal.
+// A Bundle of entry .teal files alone, as written: a TEAL program includes no other file.
 export async function buildTealBundle({ cwd = process.cwd(), entries } = {}) {
   assertEntries('buildTealBundle', entries, '.teal file', (e) => e.endsWith('.teal'))
   const baseDir = resolve(cwd)
@@ -412,45 +341,26 @@ export async function buildTealBundle({ cwd = process.cwd(), entries } = {}) {
   const normalized = normalizeEntries(entries, cwd)
   const sources = new Map()
   for (const rel of new Set(normalized)) {
-    // Null for a missing entry, refused below.
     const buf = readFileWithinBase(baseDir, realBase, rel, '.')
     if (buf !== null) sources.set(rel, decodeUtf8(buf, rel))
   }
-
   assertSelfContained('TEAL', 'program', normalized, sources, [])
-
-  return assembleCodeBundle({
-    baseDir,
-    entries: normalized,
-    sources,
-    resolutions: new Map(),
-    workspaceName: 'teal-bundle',
-    format: 'teal',
-    conditionKey: 'teal',
-  })
+  return assembleCodeBundle({ baseDir, entries: normalized, sources, resolutions: new Map(), workspaceName: 'teal-bundle', format: 'teal', conditionKey: 'teal' })
 }
 
-// Build an in-memory Bundle from entry .rs files (crate roots) by walking `mod` declarations and the
-// in-tree crates they reach, features resolved as `cargo build` would (`cargo`: by `cargo metadata`);
-// the cargo* options are cargo's flags, and `cargoManifests` carries each package's build files too.
+// A Bundle of entry .rs files (crate roots), their `mod` declarations and the in-tree crates they reach, features
+// resolved as `cargo build` would; `cargoManifests` carries each package's build files too.
 export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   assertEntries('buildRustBundle', entries, '.rs file', (e) => RUST_EXTS.has(extname(e)))
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
-
   // One Cargo context for the walk, the edges and the bucketing, so their crate and feature decisions agree.
   const cargoCtx = createCargoContext(baseDir, {
-    entries: normalized,
-    cargo,
-    features: cargoFeatures,
-    noDefaultFeatures: cargoNoDefaultFeatures,
-    allFeatures: cargoAllFeatures,
-    target: cargoTarget,
+    entries: normalized, cargo, features: cargoFeatures, noDefaultFeatures: cargoNoDefaultFeatures, allFeatures: cargoAllFeatures, target: cargoTarget,
   })
-  // `include_str!` / `include_bytes!` assets ride along as resources.
   const { sources, formats, tree } = await collectRustBundle(baseDir, normalized, { cargo: cargoCtx, buildScripts: cargoManifests })
   if (cargoManifests) {
-    // Carried as written, credentials too; a file that isn't UTF-8 text is refused, not altered.
+    // Carried as written, credentials too; a file that isn't UTF-8 is refused, not altered.
     const files = new Set()
     for (const path of sources.keys()) for (const f of cargoCtx.buildFilesFor(path)) files.add(f.path)
     const realBase = realpathSync(baseDir)
@@ -465,15 +375,11 @@ export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = fa
     }
   }
   const { resolutions, missing, unresolvedCrates } = tree
-
   assertSelfContained('Rust', 'module', normalized, sources, missing)
-
-  // Features from a replay of the manifests, where cargo's resolver is missing, are said to be.
   const resolution = cargoCtx.resolution()
   if (resolution.mode === 'replay' && normalized.some((e) => cargoCtx.packageInfo(e) !== null)) {
     console.warn(`[stasis] Rust features from a replay of the manifests, not cargo's resolver: ${resolution.why}`)
   }
-  // EXODUS_STASIS_DEBUG=1: the feature resolution, per package and context, to compare the modes.
   if (debugging()) {
     const mode = { cargo: "cargo's resolver", metadata: 'cargo metadata', replay: 'manifest replay' }[resolution.mode]
     for (const context of ['target', 'host']) {
@@ -486,8 +392,7 @@ export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = fa
     }
   }
 
-  // Crates named or linked that the bundle doesn't hold: an unvendored registry dependency, a path
-  // outside the root, a crate root the walk refused.
+  // Crates named or linked that the bundle doesn't hold: unvendored, outside the root, or refused by the walk.
   const notLoaded = tree.wantedRoots.filter((r) => !sources.has(r)).map((r) => `${cargoCtx.packageInfo(r)?.name ?? r} (${r})`)
   const bundledPackages = new Set([...sources.keys()].map((p) => cargoCtx.packageInfo(p)?.dir).filter((d) => d !== undefined))
   const lacking = cargoCtx.lackingDependencies(bundledPackages, { buildScripts: cargoManifests })
@@ -501,63 +406,42 @@ export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = fa
   }
 
   return assembleCodeBundle({
-    baseDir,
-    entries: normalized,
-    sources,
-    resolutions,
-    workspaceName: 'rust-bundle',
-    format: 'rust',
-    formats,
-    conditionKey: 'rust',
+    baseDir, entries: normalized, sources, resolutions, workspaceName: 'rust-bundle', format: 'rust', formats, conditionKey: 'rust',
     classifyDep: makeRustClassifier(cargoCtx),
   })
 }
 
-// Build an in-memory Bundle from entry .php files by statically scanning the require/include graph
-// (strictly) and Composer's class-autoload graph (best-effort); no PHP is executed.
+// A Bundle of entry .php files, their require/include graph (strictly) and Composer's class-autoload graph
+// (best-effort), scanned statically: no PHP is executed.
 export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
   assertEntries('buildPhpBundle', entries, '.php file', (e) => e.endsWith('.php'))
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
   const autoload = loadComposerAutoload(baseDir)
-  // Read once, before anything is scanned.
   const packages = loadComposerPackages(baseDir)
   // Laravel auto-discovers service providers: seeded as roots so their config/route/view files come along.
   const providerRoots = loadLaravelProviderFiles(baseDir, autoload, packages)
-
   const sources = await collectPhpFilesFromDisk(baseDir, [...normalized, ...providerRoots], { autoload })
   const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload })
-
   assertSelfContained('PHP', 'import', normalized, sources, missing)
-
-  return codeBundle({
-    baseDir,
-    entries: normalized,
-    sources,
-    modules: bucketizePhpSources(baseDir, sources, 'php-bundle', '0.0.0', packages),
-    resolutions,
-    format: 'php',
-    conditionKey: 'php',
-  })
+  const modules = bucketizePhpSources(baseDir, sources, 'php-bundle', '0.0.0', packages)
+  return codeBundle({ baseDir, entries: normalized, sources, modules, resolutions, format: 'php', conditionKey: 'php' })
 }
 
-// A scanned file URL for diagnostics: project-relative when inside `baseDir`, as the bundle stores
-// it, else absolute.
+// Project-relative where inside `baseDir`, as the bundle stores it, else absolute.
 function displayPath(url, baseDir) {
   const abs = fileURLToPath(url)
   const rel = relative(baseDir, abs)
   return rel && !relativeEscapes(rel) ? rel : abs
 }
 
-// One unresolved scan edge for diagnostics, naming the file --typescript would resolve it to when
-// the scan found one (Scan#typescriptCandidate).
 function describeUnresolved(u, show) {
   const typescript = u.typescriptURL ? `; resolves to ${show(u.typescriptURL)} under --typescript` : ''
   return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason}${typescript})`
 }
 
-// Static ESM import/export-from edges load eagerly before user code, so a failure there is
-// uncatchable; one below a require()/dynamic-import() boundary is catchable.
+// Static ESM edges load eagerly before user code, so a failure there is uncatchable; one below a
+// require()/import() boundary is catchable.
 const STATIC_KINDS = new Set(['import', 'export-from'])
 
 // The files `roots` link, themselves included, through the edges `follows(edge)` takes.
@@ -577,9 +461,9 @@ function linkedThrough(scanner, roots, follows) {
 
 const eagerlyLinked = (scanner) => linkedThrough(scanner, scanner.entries, (e) => STATIC_KINDS.has(e.kind))
 
-// The scan within the project root (`within(url)`): a file outside it the entries link eagerly is in
-// `outside`, for the caller to refuse; one reached only past a require()/import() boundary is left
-// out, with what only it reaches, its edges in `leftOut`, misses load can catch.
+// The scan within the project root (`within(url)`): a file outside it the entries link eagerly is in `outside`,
+// for the caller to refuse; one reached only past a require()/import() boundary is left out with what only it
+// reaches, its edges in `leftOut`, misses load can catch.
 function withinRoot(scanner, within) {
   const outside = [...eagerlyLinked(scanner)].filter((url) => scanner.files.has(url) && !within(url))
   if (outside.length > 0) return { scanner, outside, leftOut: [] }
@@ -612,8 +496,8 @@ function withinRoot(scanner, within) {
   return { scanner: { entries: scanner.entries, files, imports, unresolved, parseErrors }, outside, leftOut }
 }
 
-// Refuse an edge one --metro platform resolves within the root and another leaves out (see
-// withinRoot): collapsed to the one target, it would serve that platform the other's file.
+// An edge one --metro platform resolves within the root and another leaves out, collapsed to the one target,
+// would serve that platform the other's file.
 function refuseSplit(split, baseDir) {
   for (const { parentURL, spec, outsideURL } of split) {
     throw new Error(
@@ -623,15 +507,13 @@ function refuseSplit(split, baseDir) {
   }
 }
 
-// The first 10 of `items` as indented lines (`line` renders one), then how many more there are.
 const listed = (items, line = (s) => s) => {
   const more = items.length > 10 ? `\n  ... and ${items.length - 10} more` : ''
   return items.slice(0, 10).map((x) => `  ${line(x)}`).join('\n') + more
 }
 
-// The scan's issues: `fatal` (broken at load, every parse error, and any miss `generated(u)` says a
-// generator would write), else `tolerated` (a catchable runtime miss); `typescript`, whether a fatal
-// miss resolves under --typescript.
+// `fatal`: broken at load, a parse error, or a miss `generated(u)` says a generator would write; else
+// `tolerated`, a catchable runtime miss. `typescript`: whether a fatal miss resolves under --typescript.
 function analyzeScanner(scanner, { baseDir, generated }) {
   const show = (url) => displayPath(url, baseDir)
   const staticReachable = eagerlyLinked(scanner)
@@ -649,7 +531,7 @@ function analyzeScanner(scanner, { baseDir, generated }) {
   // A file the parser couldn't read cleanly has unknown or partial edges, never a graph to record.
   for (const p of scanner.parseErrors) fatal.push(`parse error in ${show(p.url)}: ${p.message}`)
   // An edge to a file a source bundle can't carry (.node/.wasm/extensionless), which load would die on.
-  for (const [, byParent] of scanner.imports) {
+  for (const byParent of scanner.imports.values()) {
     for (const [parentURL, specMap] of byParent) {
       for (const [spec, childURL] of specMap) {
         if (!scanner.files.has(childURL)) {
@@ -661,7 +543,6 @@ function analyzeScanner(scanner, { baseDir, generated }) {
   return { fatal, tolerated, typescript }
 }
 
-// Throw on fatal scan issues; warn on tolerated and left-out ones. `label` tags the scan pass.
 function reportScanIssues({ fatal, tolerated, typescript, leftOut }, { label = '', baseDir, root }) {
   const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
@@ -673,19 +554,16 @@ function reportScanIssues({ fatal, tolerated, typescript, leftOut }, { label = '
     console.warn(`[stasis] Bundle has ${tolerated.length} unresolved import(s)${where}; they will fall through at load time:\n${summary}`)
   }
   if (leftOut.length > 0) {
-    // The file outside the root by its path from the cwd, as the refusal of one linked eagerly names it.
     const summary = listed(leftOut, (u) => `${u.kind} ${u.spec} from ${show(u.parentURL)} (at ${relative(baseDir, fileURLToPath(u.outsideURL))})`)
     console.warn(`[stasis] Bundle leaves out ${leftOut.length} import(s) of files outside the project root${root}${where}; they will fall through at load time:\n${summary}`)
   }
 }
 
-// Normalize conditions (trim, drop empties) so a sloppy programmatic caller can't push a bogus
-// token into the resolver.
+// Trimmed, empties dropped, so a sloppy programmatic caller can't push a bogus token into the resolver.
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
-// The tsconfig `paths` aliases --typescript honours: an explicit --tsconfig's for every file, else
-// those of each package's tsconfig.json. Without --typescript they only hint a miss, so a config that
-// doesn't load is none.
+// An explicit --tsconfig's `paths` for every file, else each package's tsconfig.json's. Without --typescript
+// they only hint a miss, so a config that doesn't load is none.
 function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
   if (typescript && tsconfig !== undefined) {
     const matcher = loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
@@ -694,26 +572,23 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
   return packageTsconfigPaths(baseDir, { host, lenient: !typescript, projectCwd: env.PROJECT_CWD })
 }
 
-// Build a JS/TS bundle through a State by statically scanning the require/import graph (no user code
-// runs; TS is stored verbatim). `innermostRoot` roots it at the innermost package holding every file
-// reached; `extra` adds the config's `extra` files; `memo` keeps scans across a lazy tree's rounds.
+// A JS/TS bundle through a State, of the require/import graph scanned statically (no user code runs).
+// `innermostRoot` roots it at the innermost package holding every file reached; `memo` keeps scans across a
+// lazy tree's rounds.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated } = {}) {
   assertEntries('buildJsBundle', entries, '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', (e) => JS_EXTENSIONS.has(extname(e)), 'JS/TS file')
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
-
   const scanConditions = cleanConditions(conditions)
   const resourceSet = parseResourcesOption('buildJsBundle', resources)
-
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
-
   const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined })
   // A round of a lazy tree that asked for a package already is void: the rest is moot.
   if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
 
-  // bundle:'replace' reads no stasis.code.br on disk; lock:'ignore' leaves the lockfile to
-  // heldToLockfile; never written, the State claims nothing, and assertPolicies checks the bundle.
+  // bundle:'replace' reads no stasis.code.br on disk; lock:'ignore' leaves the lockfile to heldToLockfile;
+  // never written, the State claims nothing, and assertPolicies checks the bundle.
   const stateOptions = { bundle: 'replace', lock: 'ignore', ownLock: true, ...(scope && { scope }), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
   // A root holding a stasis file is the project's own choice, whose config the build takes.
@@ -722,8 +597,6 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
     // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
     if (root !== state.root) state = new State(baseDir, { ...stateOptions, env: { ...env, PROJECT_CWD: root } })
   }
-  // A file outside the root the entries link eagerly is refused here, naming what roots the State
-  // (a stray stasis.code.br below the project's root, say).
   const { scanner, outside, leftOut } = withinRoot(scanned, (url) => isPathWithin(state.root, fileURLToPath(url)))
   const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy(state.root, host, ', which can be removed if stale')}`
   for (const url of outside) {
@@ -733,9 +606,8 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   for (const [url, info] of scanner.files) {
     state.addFile(url, info.resource ? { resource: true, reason: 'bundle' } : { format: info.format, isEntry: scanner.entries.has(url), reason: 'bundle' })
   }
-  // An edge every context resolves alike is keyed '*'; one the contexts resolve apart, or one a
-  // context misses or leaves out, keeps each target under its own conditions, so no context is
-  // served another's file.
+  // An edge every context resolves alike is keyed '*'; one they resolve apart, misses or leave out keeps each
+  // target under its own conditions, so no context is served another's file.
   const missed = new Set([...scanner.unresolved, ...leftOut].filter((u) => u.spec !== undefined).map((u) => `${u.parentURL}\0${u.spec}`))
   const byParent = new Map()
   for (const [key, parents] of scanner.imports) {
@@ -753,7 +625,6 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
       }
     }
   }
-  // Its own targets are none of the State's: it writes nothing.
   if (extra) state.includeExtra({ outputs: outputsAt(state.root), resources: resources === undefined ? undefined : resourceSet })
   if (packageJSON || state.config.packageJSON) state.includePackageJson()
   return state
@@ -762,14 +633,13 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
 // The files that root a State in the directory holding one (state.js's discovery).
 const STASIS_ROOT_FILES = [CONFIG_FILE, LOCK_FILE, BUNDLE_FILE]
 
-// ` (rooted there by its <the STASIS_ROOT_FILES in `dir`><hint>)`, or '' where `dir` holds none.
 function rootedBy(dir, host = diskHost, hint = '') {
   const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(dir, name)) !== null)
   return markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}${hint})`
 }
 
-// The innermost directory at or above `baseDir`, below `root`, holding every one of `files` (real
-// paths) and a package.json with a name (a `{"type":"module"}` marker roots no State), else `root`.
+// The innermost directory from `baseDir` up, below `root`, holding every one of `files` and a package.json with
+// a name (a `{"type":"module"}` marker roots no State), else `root`.
 function innermostRootOf(baseDir, files, root, host) {
   for (let dir = baseDir; dir !== root && dirname(dir) !== dir; dir = dirname(dir)) {
     if (files.every((file) => isPathWithin(dir, file)) && readPackageJson(dir, 'package.json', { host })?.name !== undefined) return dir
@@ -777,65 +647,45 @@ function innermostRootOf(baseDir, files, root, host) {
   return root
 }
 
-// React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 
-// The config files a React Native app's build loads from its project root, though nothing the app
-// imports reaches them: Metro's and the React Native CLI's, and with --babel(-aliases) Babel's.
+// What a React Native app's build loads from its root, though nothing the app imports reaches it.
 const METRO_CONFIG_FILE = 'metro.config.js'
 const METRO_CONFIG_FILES = [METRO_CONFIG_FILE, 'react-native.config.js']
-// @preventive/rn's config of a React Native app's build (rn-bundle's and rn-serve's), in its root.
+// @preventive/rn's config of a React Native app's build (rn-bundle's and rn-serve's).
 const RN_CONFIG_FILE = 'rn.config.json'
 const BABEL_CONFIG_FILE = 'babel.config.js'
-// What else a React Native app's build runs in Node, loaded by a name or path: each package `name`
-// as the packages `via` find it in turn (else fewer of them, down to the project), and `file` in it,
-// else its entry. Metro is found as React Native's CLI plugin runs it.
+// What else a React Native app's build runs in Node: each package `name` as the packages `via` find it in turn
+// (else fewer of them, down to the project), and `file` in it, else its entry, as React Native's CLI runs Metro.
 const METRO_VIA = ['react-native', '@react-native/community-cli-plugin', 'metro']
 const METRO_TOOLCHAIN = [
-  // React Native's CLI, which an app runs Metro through.
   { name: 'react-native', file: 'cli.js', via: [] },
   { name: 'metro', via: METRO_VIA.slice(0, -1) },
-  // Metro's worker, its transform worker, the child process jest-worker forks them in, and
-  // metro-file-map's Haste worker: each loaded by a path.
+  // Loaded by a path: Metro's worker, its transform worker, jest-worker's child process and the Haste worker.
   { name: 'metro', file: 'src/DeltaBundler/Worker.js', via: METRO_VIA.slice(0, -1) },
   { name: 'metro-transform-worker', via: METRO_VIA },
   { name: 'jest-worker', file: 'build/workers/processChild.js', via: METRO_VIA },
   { name: 'metro-file-map', file: 'src/plugins/haste/worker.js', via: METRO_VIA },
-  // And its minifier (metro-config's default `minifierPath`), which the transform worker requires.
+  // metro-config's default `minifierPath`, which the transform worker requires.
   { name: 'metro-minify-terser', via: [...METRO_VIA, 'metro-transform-worker'] },
 ]
-// With --babel(-aliases), the Babel transformer React Native's Metro config names (`babelTransformerPath`).
+// With --babel(-aliases), the `babelTransformerPath` React Native's Metro config names.
 const BABEL_TOOLCHAIN = [{ name: '@react-native/metro-babel-transformer', via: ['@react-native/metro-config'] }]
-// The transformers beside stasis's Metro plugin (src/metro.js) that Metro's workers run under withStasis().
+// Beside stasis's Metro plugin (src/metro.js), run by Metro's workers under withStasis().
 const STASIS_METRO_TRANSFORMERS = ['metro-transformer.js', 'metro-babel-transformer.js']
-// The conditions a require() resolves with in Node, and the key its edges take (the scan's).
 const NODE_REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'module-sync'])
 const REQUIRE_KEY = [...NODE_REQUIRE_CONDITIONS].join(', ')
-// What esbuild and webpack 5 both assert besides `import`/`require` and `default`, and so
-// `--mainFields` too: `module`, a package's ESM build's condition. Node and Metro never assert it.
+// What esbuild and webpack 5 both assert besides `import`/`require` and `default`, which Node and Metro never do.
 const BUNDLER_CONDITIONS = ['module']
 
-// The field/suffix resolver (resolve-fields.js) of the legacy-field build on `platform` (null for
-// --mainFields), its `mainFields`, and the conditions it adds to the bundler base: --metro's React
-// Native ones (+ browser on web), else BUNDLER_CONDITIONS and the user's --conditions.
+// The legacy-field build's resolver on `platform` (null for --mainFields), its `mainFields`, and the conditions
+// it adds to the bundler base: --metro's React Native ones, else BUNDLER_CONDITIONS and --conditions.
 export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, sourceExts = METRO_SOURCE_EXTS, assetResolutions, conditions = [], typescript = false, typescriptPaths = null, host = diskHost, kept }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : [...new Set([...BUNDLER_CONDITIONS, ...conditions])]
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
-    mainFields: fields,
-    platform,
-    preferNative: platform !== null && platform !== 'web',
-    sourceExts,
-    conditions: resolveConditions('commonjs', extras),
-    // Opt into Metro's package-entry browser-field quirks only on the --metro path.
-    metro,
-    assetExts,
-    assetResolutions,
-    // tsc's mapping, inside the field resolver (the scanner's own fallback only backs the built-in one).
-    typescript,
-    typescriptPaths,
-    host,
-    kept,
+    mainFields: fields, platform, preferNative: platform !== null && platform !== 'web', sourceExts, conditions: resolveConditions('commonjs', extras),
+    metro, assetExts, assetResolutions, typescript, typescriptPaths, host, kept,
   })
   return { extras, mainFields: fields, resolver }
 }
@@ -848,22 +698,21 @@ function parseJson(text, message) {
   }
 }
 
-// The stasis.config.json in `cwd`, parsed; null where there is none. `name`, if any, prefixes errors.
+// The stasis.config.json in `cwd`, parsed; null where there is none.
 export function readConfigFile(name, cwd, host = diskHost) {
   const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
   return text === null ? null : parseJson(text, `${name === undefined ? '' : `${name}: `}${CONFIG_FILE} is not valid JSON`)
 }
 
-// Holds each of `builds` (as built, `builts[i]`) to its entries' Policy, and the whole `bundle` (`extra`
-// included) to that of the stasis.config.json at `root`, read through `host`; links are followed through
-// `files`, the host the builds read.
+// Each of `builds` (as built, `builts[i]`) held to its entries' Policy, and `bundle` to the one of the
+// stasis.config.json at `root`; links are followed through `files`, the host the builds read.
 function assertPolicies(name, { builds = [], builts = [], bundle, root, host = diskHost, files = host, label = CONFIG_FILE }) {
   const links = linksOn(root, files)
   for (const [i, build] of builds.entries()) build.policy?.assertArtifact(builts[i].bundle, { links })
   parsePolicy(label, readConfigFile(name, root, host))?.assertArtifact(bundle, { links })
 }
 
-// The stasis.config.json `key` in `cwd`, true or false, true where it is left out.
+// The stasis.config.json `key` in `cwd`, true where it is left out.
 function configFlag(key, name, cwd, host) {
   const value = readConfigFile(name, cwd, host)?.[key]
   if (value === undefined) return true
@@ -871,23 +720,18 @@ function configFlag(key, name, cwd, host) {
   return value
 }
 
-// Whether the tree laid out from the lockfile at `cwd` installs devDependencies, as a plain install
-// does, or leaves out what they alone reach, as `pnpm install --prod` does.
+// Whether the tree laid out from the lockfile installs devDependencies, or leaves out what they alone reach.
 export const installsDevDependencies = (name, cwd, host) => configFlag('installDevDependencies', name, cwd, host)
 
-// The lockfiles the stasis.config.json in `cwd` names (`lockfiles`, as parseLockfilesOption has them),
-// a tree laid out of each in place of the one detected; undefined where it names none. `name` prefixes
-// a refusal.
+// stasis.config.json's `lockfiles`, a tree laid out of each in place of the one detected; undefined where none.
 export const configuredLockfiles = (name, cwd, host) => parseLockfilesOption(`${name}: ${CONFIG_FILE}`, readConfigFile(name, cwd, host)?.lockfiles)
 
-// --babel-aliases: the alias map of the JSON file `file` (a path from `baseDir`, in the project, read through
-// `host`), babel-plugin-module-resolver's `alias` option as data: each alias to the string it maps to.
+// --babel-aliases: babel-plugin-module-resolver's `alias` option as data, from a JSON file in the project.
 function readAliasesFile(baseDir, file, host) {
   const rel = relative(baseDir, resolve(baseDir, file))
   if (relativeEscapes(rel)) throw new Error(`stasis bundle: --babel-aliases must name a file in the project: ${file}`)
   const text = readFileSyncMaybe(baseDir, toPosix(rel), 'utf8', host)
   if (text === null) throw new Error(`stasis bundle: --babel-aliases file not found: ${file}`)
-  // A link to a file out of the project is refused too.
   assertRealPathWithinBase(host.realpath(baseDir), baseDir, toPosix(rel), host)
   const alias = parseJson(text, `stasis bundle: --babel-aliases file ${file} is not valid JSON`)
   if (!isPlainObject(alias) || !Object.values(alias).every((value) => typeof value === 'string')) {
@@ -904,9 +748,8 @@ function readAliasesFile(baseDir, file, host) {
   return alias
 }
 
-// The `resources` and `packageJSON` of a --mainFields/--metro build: as given, else as the
-// stasis.config.json in `cwd` sets them. It builds a full-scope bundle alone, so a narrower scope,
-// from either, is refused rather than silently ignored.
+// A --mainFields/--metro build's `resources` and `packageJSON`, as given, else as stasis.config.json sets them.
+// It builds a full-scope bundle alone, so a narrower scope is refused rather than silently ignored.
 function fieldBuildOptions(name, { cwd, scope, resources, packageJSON = false, host }) {
   const resourcesGiven = resources !== undefined
   const config = scope === undefined || !resourcesGiven || !packageJSON ? readConfigFile(name, cwd, host) : null
@@ -925,14 +768,11 @@ function fieldBuildOptions(name, { cwd, scope, resources, packageJSON = false, h
   }
 }
 
-// Metro's own empty module, which it resolves a disabled import to (its default
-// resolver.emptyModulePath), where the project installs metro-runtime at its root.
+// Metro's default resolver.emptyModulePath, which it resolves a disabled import to.
 const METRO_EMPTY_MODULE = 'node_modules/metro-runtime/src/modules/empty-module.js'
-// An empty module's source, trimmed: nothing, or a lone "use strict" directive.
 const EMPTY_MODULE_SOURCE = /^(?:(["'])use strict\1;?)?$/u
 
-// The real path of METRO_EMPTY_MODULE under `baseDir`, where it is a file in the project that is in
-// fact empty (EMPTY_MODULE_SOURCE), else null.
+// METRO_EMPTY_MODULE's real path, where it is a file in the project that is in fact empty, else null.
 function metroEmptyModule(baseDir, host) {
   const abs = join(baseDir, METRO_EMPTY_MODULE)
   if (!host.stat(abs)?.isFile()) return null
@@ -942,9 +782,8 @@ function metroEmptyModule(baseDir, host) {
   return isUtf8(buf) && EMPTY_MODULE_SOURCE.test(buf.toString('utf8').trim()) ? real : null
 }
 
-// The real directory of package `name` in the nearest node_modules up from `dir` that holds it, as
-// Node looks for one; through each package of `via` first, for an install (pnpm) that links it only
-// beside the one depending on it. -> undefined where none does
+// Package `name`'s real directory as Node finds it from `dir`, through each of `via` first, for an install
+// (pnpm) that links it only beside the one depending on it.
 function packageDirFrom(dir, name, host, via = []) {
   let from = dir
   for (const step of [...via, name]) {
@@ -958,8 +797,6 @@ function packageDirFrom(dir, name, host, via = []) {
   return from
 }
 
-// What a require() of `spec` from the directory `dir` resolves to, as Node resolves it. -> absolute
-// path, or undefined where none does
 function requireFrom(dir, spec, host) {
   try {
     return host.resolve(join(dir, 'package.json'), spec, NODE_REQUIRE_CONDITIONS)
@@ -968,10 +805,8 @@ function requireFrom(dir, spec, host) {
   }
 }
 
-// The AST of the module `file`, read through `host` (`source` where read already).
 const parseModule = (file, host, source = host.readFile(file).toString('utf8')) => getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program
 
-// Calls `fn` on each node of the AST `node`, depth first.
 function walkAst(node, fn) {
   if (Array.isArray(node)) {
     for (const child of node) walkAst(child, fn)
@@ -982,17 +817,15 @@ function walkAst(node, fn) {
   for (const key of Object.keys(node)) if (key !== 'type') walkAst(node[key], fn)
 }
 
-// The method `node` calls on an object (`x.concat(...)` -> 'concat'), on the one named `object` where
-// given (`require.resolve(...)`), or undefined.
+// The method `node` calls (`x.concat(...)` -> 'concat'), on the object named `object` where given.
 function memberCall(node, object) {
   if (node?.type !== 'CallExpression' || node.callee.type !== 'MemberExpression' || node.callee.computed) return undefined
   if (object !== undefined && (node.callee.object.type !== 'Identifier' || node.callee.object.name !== object)) return undefined
   return node.callee.property.name
 }
 
-// What the module `file` names by `require.resolve('x')`, read off its source, never run, each where
-// Node resolves it (babelPathCall): React Native's polyfills, the plugins a Babel plugin runs.
-// -> [specifier, absolute path][] of those that resolve, in source order
+// What `file` names by `require.resolve('x')`, read off its source, never run. -> [specifier, path][] of
+// those that resolve, in source order
 function requireResolutions(file, host) {
   const resolved = []
   const source = host.readFile(file).toString('utf8')
@@ -1006,9 +839,7 @@ function requireResolutions(file, host) {
   return resolved
 }
 
-// The name Babel requires a plugin or preset its config names by (@babel/core's standardizeName):
-// `module:x` as x, a short one prefixed (`@babel/env` -> @babel/preset-env, `@scope` ->
-// @scope/babel-plugin), a path as is.
+// The name Babel requires a plugin or preset by, as @babel/core's standardizeName has it.
 const BABEL_PREFIX = { plugin: /^(?!@|module:|[^/]+\/|babel-plugin-)/u, preset: /^(?!@|module:|[^/]+\/|babel-preset-)/u }
 const BABEL_ORG = { plugin: /^(@babel\/)(?!plugin-|[^/]+\/)/u, preset: /^(@babel\/)(?!preset-|[^/]+\/)/u }
 const OTHER_ORG = { plugin: /^(@(?!babel\/)[^/]+\/)(?![^/]*babel-plugin(?:-|\/|$)|[^/]+\/)/u, preset: /^(@(?!babel\/)[^/]+\/)(?![^/]*babel-preset(?:-|\/|$)|[^/]+\/)/u }
@@ -1020,33 +851,25 @@ const standardizeBabelName = (type, name) => (isAbsolute(name) ? name : name
   .replace(OTHER_ORG_DEFAULT, `$1/babel-${type}`)
   .replace(/^module:/u, ''))
 
-// A string that names a Babel plugin or preset by its form, a package or a path: `module:x`,
-// `@babel/plugin-x`, `babel-plugin-x`, `@react-native/babel-preset`,
-// `node_modules/@org/x-babel/babel/plugin-inline.js`.
+// A string naming a Babel plugin or preset by its form, a package or a path.
 const BABEL_MODULE_STRING = /^module:|babel[-/](?:plugin|preset)/u
-// A module of a Babel config by its name: `babel` and `config` in its file's name (babel.config.js,
-// create-babel-config.js), or in its package's (a shared config, @org/babel-config).
+// `babel` and `config` in its file's name (create-babel-config.js), or its package's (@org/babel-config).
 const BABEL_CONFIG_NAME = /babel.*config|config.*babel/iu
 const isBabelConfigModule = (rel) => BABEL_CONFIG_NAME.test(posix.basename(rel)) || BABEL_CONFIG_NAME.test(splitNodeModulesPath(rel)?.name ?? '')
 
-// The lists a Babel config names its plugins and presets in, by the name of the key, variable or object
-// holding one, and what Babel takes each of them as.
+// The name of a key, variable or object holding a list -> what an entry of it is taken as.
 const BABEL_LISTS = new Map([['plugins', 'plugin'], ['presets', 'preset']])
-// And the list of extensions a Metro config gives Metro to take as assets (`resolver.assetExts`).
 const METRO_ASSET_LISTS = new Map([['assetExts', 'asset']])
 // The array methods making a list of the one they're called on (`concat` with its arguments').
 const LIST_METHODS = new Set(['concat', 'filter', 'flat', 'slice'])
-// How deep a Babel config's lists nest, as read: arrays of arrays `.flat()` flattens.
 const MAX_LIST_DEPTH = 8
-// The levels `.flat(arg)` flattens: 1 by default, else the number written (Infinity as deep as read).
 function flatDepth(arg) {
   if (arg === undefined) return 1
   if (arg.type === 'Identifier' && arg.name === 'Infinity') return MAX_LIST_DEPTH
   return arg.type === 'Literal' && typeof arg.value === 'number' ? arg.value : 1
 }
 
-// A path the module `file` computes from its own directory and strings: `__dirname`, a string, or a
-// `path.resolve(...)` or `path.join(...)` of them. -> the path (a relative one from Babel's cwd), or null
+// `__dirname`, a string, or a `path.resolve(...)` or `path.join(...)` of them. -> the path, or null
 function staticPath(node, file) {
   if (node?.type === 'Identifier' && node.name === '__dirname') return dirname(file)
   const string = literalSpec(node)
@@ -1058,9 +881,8 @@ function staticPath(node, file) {
   return name === 'resolve' && parts.some((part) => isAbsolute(part)) ? resolve(...parts) : join(...parts)
 }
 
-// The path a call computes, as Babel takes a plugin or preset named by path: a staticPath, or what
-// `require.resolve('x')` resolves to as Node resolves it, from the module, else from each of the
-// `paths` it gives in turn. -> it, or null
+// A staticPath, as Babel takes a plugin named by path, or what `require.resolve('x')` resolves to, from the
+// module, else from each of the `paths` it gives in turn. -> it, or null
 function babelPathCall(node, file, host) {
   if (memberCall(node, 'require') !== 'resolve') {
     const path = node?.type === 'CallExpression' ? staticPath(node, file) : null
@@ -1082,9 +904,8 @@ function babelPathCall(node, file, host) {
   return null
 }
 
-// Each entry (or the first of a `[name, options]` pair) of the lists `lists` names (a key, variable or
-// property name -> what an entry is taken as) in the AST `program`, read through spreads, variables,
-// branches and LIST_METHODS, never run, passed to `entry(type, node)`.
+// `entry(type, node)` on each entry (or the first of a `[name, options]` pair) of the `lists` in `program`, read
+// through spreads, variables, branches and LIST_METHODS, never run.
 function readLists(program, lists, entry) {
   const declarators = []
   walkAst(program, (node) => {
@@ -1092,9 +913,8 @@ function readLists(program, lists, entry) {
   })
   const inits = Map.groupBy(declarators, (node) => node.id.name)
   const seen = new Map()
-  // Read `node` for the `type`s it lists: `depth` levels of arrays in it lists (1 a list, 2 one `.flat()`
-  // flattens), and an array below them an entry's `[name, options]` pair. A spread joins its elements to
-  // the array spreading it; a variable is its initializers; a branch (`a ? b : c`, `a && b`) either side.
+  // `depth` levels of arrays in `node` list (2: one `.flat()` flattens), and an array below them is an entry's
+  // `[name, options]` pair.
   const read = (node, type, depth) => {
     if (!node || depth > MAX_LIST_DEPTH) return
     const key = `${type}${depth}`
@@ -1112,8 +932,6 @@ function readLists(program, lists, entry) {
     } else if (node.type === 'ConditionalExpression' || node.type === 'LogicalExpression') {
       for (const side of node.type === 'LogicalExpression' ? [node.left, node.right] : [node.consequent, node.alternate]) read(side, type, depth)
     } else if (depth > 0 && LIST_METHODS.has(memberCall(node))) {
-      // `base.concat(more)` of both, `[a, b].filter(Boolean)` of its own, `[[a], b].flat()` of its own
-      // flattened, as many levels as it says (`flat(2)`, `flat(Infinity)`).
       const method = memberCall(node)
       const levels = method === 'flat' ? flatDepth(node.arguments[0]) : 0
       read(node.callee.object, type, Math.min(depth + levels, MAX_LIST_DEPTH))
@@ -1124,7 +942,7 @@ function readLists(program, lists, entry) {
   }
   const listName = (node) => (node.type === 'Identifier' ? node.name : node.type === 'MemberExpression' && !node.computed ? node.property.name : undefined)
   walkAst(program, (node) => {
-    // A list: under a key, held in a variable or assigned to a property, so named.
+    // A list under a key, held in a variable or assigned to a property, so named.
     const [name, value] = node.type === 'Property' && !node.computed ? [node.key.name ?? node.key.value, node.value]
       : node.type === 'VariableDeclarator' ? [listName(node.id), node.init]
       : node.type === 'AssignmentExpression' ? [listName(node.left), node.right]
@@ -1139,9 +957,7 @@ function readLists(program, lists, entry) {
   })
 }
 
-// The plugins and presets the module `file` lists (readLists), standardized as Babel requires them, or
-// the paths it computes for them; with `anyString`, also any string naming one by its form
-// (BABEL_MODULE_STRING) wherever it is. -> the names
+// The plugins and presets `file` lists, as Babel requires them; with `anyString`, any BABEL_MODULE_STRING too.
 function babelNamedModules(file, host, { anyString = false } = {}) {
   const program = parseModule(file, host)
   const named = new Set()
@@ -1160,8 +976,7 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
   return named
 }
 
-// Metro's default assetExts and each string the Metro config `file` lists among them, read off its
-// source, never run (`[...defaultConfig.resolver.assetExts, 'riv']`); one it filters out still counts.
+// Metro's default assetExts and each the Metro config `file` lists, read off its source (one it filters out too).
 function metroAssetExts(baseDir, host, file) {
   const exts = new Set(METRO_ASSET_EXTS)
   const config = resolve(baseDir, file)
@@ -1188,8 +1003,7 @@ const isPackageGlob = (value) => typeof value === 'string' && /^(?:@[^/]+\/[^/]+
 const PACKAGE_GLOBS = [listOf(isPackageGlob), 'a list of globs of packages\' names ("react-native", "@react-native/*")']
 const RN_CONFIG_RESTRICTIONS = { allowedPaths: PATH_GLOBS, disallowedPaths: PATH_GLOBS, allowedModules: PACKAGE_GLOBS, disallowedModules: PACKAGE_GLOBS }
 
-// The project's rn.config.json, or null where there's none; throws where it isn't a JSON object, as
-// rn-bundle refuses to build.
+// Throws where it isn't a JSON object, as rn-bundle refuses to build.
 function readRnConfig(baseDir, host) {
   const text = readFileSyncMaybe(baseDir, RN_CONFIG_FILE, 'utf8', host)
   if (text === null) return null
@@ -1198,8 +1012,6 @@ function readRnConfig(baseDir, host) {
   return config
 }
 
-// Each of `options` that `config` (rn.config.json's, or its section `prefix`'s) has; throws on one of
-// another kind.
 function rnOptions(config, options, prefix = '') {
   const taken = {}
   for (const [key, [valid, what]] of Object.entries(options)) {
@@ -1210,8 +1022,7 @@ function rnOptions(config, options, prefix = '') {
   return taken
 }
 
-// rn.config.json's restrictions, the top level's and each build section's, which restrictionsOf adds to
-// them for its build.
+// The top level's restrictions and each build section's, which restrictionsOf adds to them for its build.
 function rnRestrictions(config) {
   const restrictions = rnOptions(config, RN_CONFIG_RESTRICTIONS)
   for (const mode of ['development', 'production']) {
@@ -1222,9 +1033,8 @@ function rnRestrictions(config) {
   return restrictions
 }
 
-// --metro: Metro's resolver lists as rn-bundle takes them from rn.config.json (`config`) and the Metro
-// config it loads, unless rn.config.json has assetExts or metroConfig false. `configs` are the files the
-// lists came of, to carry.
+// --metro: Metro's resolver lists as rn-bundle takes them from rn.config.json and the Metro config it loads
+// (unless rn.config.json has assetExts or metroConfig false), and the `configs` they came of, to carry.
 function metroLists(baseDir, host, config) {
   const rn = config === null ? {} : rnOptions(config, RN_CONFIG_LISTS)
   const metroFile = rn.assetExts !== undefined || rn.metroConfig === false ? null : typeof rn.metroConfig === 'string' ? rn.metroConfig : METRO_CONFIG_FILE
@@ -1241,8 +1051,7 @@ function metroLists(baseDir, host, config) {
   }
 }
 
-// Throws with each rn.config.json restriction (`restrict`) a file of the app's Metro graph breaks, by its
-// real path and package, as rn-bundle refuses to build.
+// Each rn.config.json restriction a file of the app's Metro graph breaks, by its real path, refused as rn-bundle does.
 function refuseRestricted(files, restrict, host) {
   const packageOf = packagesOf({ isFile: (path) => host.stat(path)?.isFile() ?? false, readFile: (path) => host.readFile(path) })
   const errors = [...new Set([...files].map((file) => host.realpath(file)).flatMap((file) => restrict(file, packageOf(file))))].toSorted()
@@ -1250,13 +1059,11 @@ function refuseRestricted(files, restrict, host) {
 }
 
 const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
-// Metro's asyncRequire (metro-config's default `asyncRequireModulePath`), which Metro adds to a build
-// with an `import()`.
+// metro-config's default `asyncRequireModulePath`, which Metro adds to a build with an `import()`.
 const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'
 
-// A get-or-read cache across a lazy tree's rounds, in its `memo` under `label`: what `read()` gives
-// for a key, kept where it read no package not unpacked yet (`host.touches()`); without a `memo`,
-// read each time.
+// A get-or-read cache across a lazy tree's rounds, in `memo`: what `read()` gives, kept where it read no
+// package not unpacked yet (`host.touches()`).
 function keptAcross(label, host, memo) {
   const kept = memo ? nestedMap(memo, label) : null
   return (key, read) => {
@@ -1268,16 +1075,15 @@ function keptAcross(label, host, memo) {
   }
 }
 
-// `fn()` on `host`, its reads probes of what files packages hold, which read none of their code,
-// where the host tells them apart (a lazy tree's, vfs-bundle/tree.js's treeHost).
+// `fn()`, its reads probes of what files packages hold, which read none of their code, where `host` (a lazy
+// tree's) tells them apart.
 const probing = (host, fn) => (host.probing === undefined ? fn() : host.probing(fn))
 
-// What Babel and Metro add to a React Native build beyond what its source imports, resolved from the
-// code `files` or `assets` it is added to: Babel's helpers, Metro's module system and React Native's
-// polyfills (when `babelled`), asyncRequire, the JSX runtime, and the asset registry. -> absolute paths
+// What Babel and Metro add to a React Native build beyond what its source imports, resolved from the code
+// `files` or `assets` they are added to. -> absolute paths
 function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, jsx, resolver, platformResolver, conditions: conds, host, kept }) {
   const inserted = new Set()
-  // One file of each directory: a specifier resolves alike from every file of one.
+  // A specifier resolves alike from every file of a directory.
   const onePerDir = (list) => [...new Map(list.map((file) => [dirname(file), file])).values()]
   const resolveFrom = (from, spec, by = resolver) => kept(`${by === resolver ? '' : 'platform\0'}${dirname(from)}\0${spec}`, () => {
     const url = by(from, spec, conds)?.url
@@ -1301,19 +1107,17 @@ function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, 
       for (const [, file] of requireResolutions(join(polyfills, 'index.js'), host)) inserted.add(file)
     }
   }
-  // asyncRequire, of a module with an `import()`: from the project, else through Metro, beside which
-  // a pnpm install links metro-runtime.
+  // From the project, else through Metro, beside which a pnpm install links metro-runtime.
   if (dynamicImports) {
     const metroDir = packageDirFrom(baseDir, 'metro', host)
     const file = requireFrom(baseDir, ASYNC_REQUIRE, host) ?? (metroDir === undefined ? undefined : requireFrom(metroDir, ASYNC_REQUIRE, host))
     if (file !== undefined) inserted.add(file)
   }
-  // The JSX runtime, into a file with JSX: under --jsx any one, else a .jsx/.tsx one.
   for (const from of onePerDir(jsx ? files : files.filter((file) => JSX_FILE_EXTS.has(extname(file))))) {
     const runtime = resolveFrom(from, 'react/jsx-runtime')
     if (runtime !== undefined) inserted.add(runtime)
   }
-  // The asset registry Metro's module of an asset requires, past Babel, so with no alias of its.
+  // Metro's module of an asset requires it past Babel, so with no alias of its.
   for (const from of onePerDir(assets)) {
     const registry = resolveFrom(from, ASSET_REGISTRY, platformResolver)
     if (registry !== undefined) inserted.add(registry)
@@ -1321,18 +1125,16 @@ function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, 
   return inserted
 }
 
-// Build a JS/TS Bundle via the legacy-field resolver (`--mainFields`/`--metro`), scanned once per
-// platform: an edge is flat where the platforms agree, else a `{ platform: target }` map.
-// -> { bundle, lockfile: () => Lockfile }
+// A JS/TS Bundle via the legacy-field resolver (`--mainFields`/`--metro`), scanned once per platform: an edge
+// is flat where the platforms agree, else a `{ platform: target }` map. -> { bundle, lockfile: () => Lockfile }
 async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo, generated }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
 
-  // A resolved file arrives by its real path, an entry as spelled: below either is within the root.
-  // (Realpathed only when needed, so a missing cwd is still the scan's missing entry.)
+  // A resolved file arrives by its real path, an entry as spelled: below either is within the root. (Realpathed
+  // only when needed, so a missing cwd is still the scan's missing entry.)
   let realRoot
-  // Each file's path from the root, and each file URL's path, worked out once (across a lazy tree's rounds, in `memo`).
   const fromRoot = memo ? nestedMap(memo, 'paths from the root') : new Map()
   const relWithin = (abs) => {
     if (fromRoot.has(abs)) return fromRoot.get(abs)
@@ -1353,44 +1155,36 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   }
 
   const scanConditions = cleanConditions(conditions)
-
-  // Taken as given where the entries import TS sources by output name, but under --metro-resolver,
-  // which has no tsc mapping.
+  // Not under --metro-resolver, which has no tsc mapping.
   if (!metroResolver) typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
 
   const formatsByRel = new Map()
-  // Read as bytes below, not UTF-8 source.
   const resourceRels = new Set()
   // parentRel -> specifier -> Map<platformKey, targetRel>; collapsed after all platforms scanned.
   const edges = new Map()
-  const reached = new Set() // absolute paths reached on any platform
+  const reached = new Set()
   let usesEmpty = false
-  // What a disabled import resolves to: under --metro Metro's own empty module where the project
-  // has it, else the reserved synthetic one.
+  // A disabled import resolves to Metro's own empty module where the project has it, else the reserved one.
   const metroEmpty = metro ? metroEmptyModule(baseDir, host) : null
   const emptyTarget = metroEmpty === null ? EMPTY_MODULE_PATH : toRel(metroEmpty)
 
-  // --babel-aliases: the same aliasing as --babel's, from a JSON file of the project, for every platform alike.
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
-  // A build Metro runs through Babel, which adds its helpers to each file.
+  // Metro runs the build through Babel, which adds its helpers to each file.
   const babelled = babel || fileAliases !== null
   const leftOutEdges = []
-  // --metro: Metro's resolver lists, and rn.config.json's restrictions of the app's Metro graph (metroTaken).
   const rnConfig = metro ? readRnConfig(baseDir, host) : null
   const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host, rnConfig) : { assetExts: METRO_ASSET_EXTS, sourceExts: METRO_SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS, configs: [] }
   // A --metro bundle builds as a release build does, so production's restrictions apply, not development's.
   const restrict = rnConfig === null ? null : restrictionsOf(rnRestrictions(rnConfig), host.realpath(baseDir), false)
   const metroTaken = new Set()
-  // A resource the app imports that is no asset of Metro's reaches the build only as a transform's
-  // input, inlined by a Babel plugin (`require('./messages.po')`): no edge to one, nor asset registry.
+  // A resource that is no asset of Metro's reaches the build only as a transform's input, inlined by a Babel
+  // plugin (`require('./messages.po')`): no edge to one, nor asset registry.
   const isTransformInput = (abs, info) => metro && info?.resource === true && !isAssetFile(abs, assetExts)
-  // A round of a lazy tree that asked for a package already is void: it reads on, for all else it
-  // asks for, but reports and refuses nothing, and stops before it reads the files in.
+  // A round of a lazy tree that asked for a package already is void: it reads on, for all else it asks for,
+  // but reports and refuses nothing, and stops before it reads the files in.
   const voided = () => Boolean(memo) && host.touches() > 0
-  // Scan from `roots`, keeping what lies within the root (withinRoot), its issues reported under
-  // `label`, by which `memo` keeps what each scan read. -> { scanner, leftOut }
   const scanWithin = (roots, options, label) => {
     const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
     for (const url of outside) toRel(pathOf(url))
@@ -1398,22 +1192,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
-    // What each resolves, kept across a lazy tree's rounds where it read nothing not unpacked yet.
     const keptFor = (label) => (memo ? nestedMap(memo, `${label} ${platform ?? '*'}`) : undefined)
     const field = fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript, typescriptPaths, host, kept: keptFor('resolutions') })
     const { extras } = field
-    // --metro-resolver: the project's own metro-resolver, which derives every condition but the extra
-    // `react-native` itself.
+    // The project's own metro-resolver derives every condition but the extra `react-native` itself.
     const resolver = metroResolver
       ? createMetroResolver({ projectDir: baseDir, platform, sourceExts, mainFields, conditionNames: ['react-native'], assetExts, assetResolutions, host })
       : field.resolver
-    // Without --typescript, the field resolver --typescript would build names the file a miss would
-    // land on: a hint in the unresolved report, never an edge (see Scan#typescriptCandidate).
+    // Without --typescript, the file a miss would land on under it: a hint in the unresolved report, never an edge.
     const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript: true, typescriptPaths, host, kept: keptFor('typescript resolutions') }).resolver
-    // --babel: a specifier the project's babel-plugin-module-resolver rewrites resolves as rewritten,
-    // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
+    // --babel: a specifier babel-plugin-module-resolver rewrites resolves as rewritten, as Metro resolves it
+    // after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
-    // --babel: and whether it keeps a TypeScript import listing types alone (onlyRemoveTypeImports).
     const keepsTypeImports = babel ? createBabelTypeImportsKept({ projectDir: baseDir, platform }) : null
     const aliased = (resolveFn) => {
       if (!aliases || !resolveFn) return resolveFn
@@ -1422,8 +1212,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     // --metro: built through Babel, which erases an import listing types alone (Scan's `babel`).
     const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, keepsTypeImports, host, missTargets: generated !== undefined }
-    const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
-    // Record what scanning from `roots` reaches: its files, their formats and edges. -> its scanner
+    // '*' is a private placeholder for the single mainFields pass; it never unflattens.
+    const platformKey = platform ?? '*'
     const absorb = (roots) => {
       const { scanner, leftOut } = scanWithin(roots, scanOptions, platform ?? 'mainFields')
       leftOutEdges.push(...leftOut)
@@ -1431,18 +1221,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         const abs = pathOf(url)
         const rel = toRel(abs)
         reached.add(abs)
-        // A transform's input, which a Babel plugin reads, is no module of Metro's.
         if (restrict !== null && !isTransformInput(abs, info)) metroTaken.add(abs)
         if (info.resource) resourceRels.add(rel)
-        // Under --metro a code file has only the format its name gives it (nodeExtFormat), as the
-        // Metro plugin records it: Metro transforms it from source.
+        // Under --metro a code file has only the format its name gives it, as the Metro plugin records it.
         formatsByRel.set(rel, metro && !info.resource ? nodeExtFormat(abs) : info.format)
         for (const e of info.edges) {
           if (e.builtin || e.dynamic) continue
           let target
           if (e.empty) { usesEmpty = true; target = emptyTarget }
           else if (e.child) target = toRel(pathOf(e.child))
-          else continue // unresolved (already warned/thrown by reportScanIssues)
+          else continue // unresolved: reportScanIssues warned or threw
           // A transform's input is no dependency of Metro's: the import is gone before Metro sees it.
           if (e.child && isTransformInput(pathOf(e.child), scanner.files.get(e.child))) continue
           nestedMap(nestedMap(edges, rel), e.spec).set(platformKey, target)
@@ -1451,16 +1239,14 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       return scanner
     }
     const scanner = staged('scan', () => absorb(absEntries))
-    // --metro: and what Babel and Metro add, which the source doesn't import, scanned in turn; one
-    // above the root passed over, as the Metro plugin passes one over.
+    // --metro: and what Babel and Metro add, scanned in turn; one above the root passed over, as the Metro plugin does.
     if (metro) {
       const metroAt = performance.now()
       const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => pathOf(url))
       const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(pathOf(url), info)).map(([url]) => pathOf(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
-      // And each asset's other scales (`logo@2x.png`), which Metro reads to build its module: no
-      // import names one, so no edge.
+      // Each asset's other scales (`logo@2x.png`), which Metro reads to build its module: no import names one.
       const scales = assets.flatMap((file) => metroAssetFiles(file, platform, host)).filter((file) => relWithin(host.realpath(file)) !== null)
       const dynamicImports = [...scanner.files.values()].some((info) => !info.resource && info.edges.some((e) => e.kind === 'dynamic-import'))
       const kept = keptAcross(`Metro's additions ${platformKey}`, host, memo)
@@ -1471,29 +1257,22 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
   }
 
-  // An edge one platform leaves out and another resolves within the root would serve the one the
-  // other's file, once collapsed below.
   if (!voided()) refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(pathOf(e.parentURL)))?.has(e.spec)), baseDir)
   if (restrict !== null && !voided()) refuseRestricted(usesEmpty && metroEmpty !== null ? [...metroTaken, metroEmpty] : metroTaken, restrict, host)
 
-  // --metro: and the configs and toolchain a React Native build loads in Node, which nothing the app
-  // imports reaches, traced as Node entries: their edges keyed by Node's conditions, as the Metro
-  // plugin's run records them, apart from the app's '*' ones (conditions -> parent -> spec -> target).
+  // --metro: and the configs and toolchain a React Native build loads in Node, traced as Node entries: their
+  // edges keyed by Node's conditions, as the Metro plugin's run records them, apart from the app's '*' ones.
   const keyedResolutions = new Map()
-  // The edges from `parent` (rel) keyed `key`: specifier -> targetRel.
   const keyedFrom = (key, parent) => nestedMap(nestedMap(keyedResolutions, key), parent)
-  // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
+  // `${parentRel}\0${specifier}` -> the configs' miss.
   const configMissed = new Map()
-  // The files the configs reach (rel), and those of them the app's build doesn't: attributed to
-  // `bundle`, not to `bundle:metro`.
+  // What the configs reach, and of it what the app's build doesn't: attributed to `bundle`, not `bundle:metro`.
   const configReached = new Set()
   const configOnly = new Set()
   const configsAt = performance.now()
   if (metro) {
     const rootConfigs = [...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel))
-    // And the files Metro's resolver lists came of (metroLists), where in the project.
     const configs = [...new Set([...rootConfigs, ...listConfigs.filter((abs) => relWithin(abs) !== null)])].filter((abs) => host.stat(abs)?.isFile())
-    // A METRO_TOOLCHAIN entry's file. -> absolute path, or undefined
     const toolchainFile = ({ name, file, via }) => {
       for (let i = 0; i <= via.length; i++) {
         const chain = via.slice(i)
@@ -1512,15 +1291,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const file = toolchainFile(entry)
       if (file !== undefined && relWithin(file) !== null) configs.push(file)
     }
-    // And the React Native configs of the app's packages, which React Native's CLI requires, each by
-    // its real path, as Node loads it.
+    // And the React Native configs of the app's packages, which its CLI requires, by their real path.
     for (const dir of probing(host, () => linkedPackages(baseDir, host))) {
       const file = join(dir, 'react-native.config.js')
       if (!probing(host, () => host.stat(file)?.isFile())) continue
       const real = host.realpath(file)
       if (relWithin(real) !== null) configs.push(real)
     }
-    // Trace `roots` as Node entries, recording what they reach. -> the scan
     const traceNode = (roots) => {
       const { scanner, leftOut } = scanWithin(roots, { resources: resourceSet, host }, 'configs and toolchain')
       for (const [url, info] of scanner.files) {
@@ -1544,16 +1321,15 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       return scanner
     }
     const traced = configs.length > 0 ? traceNode(configs) : null
-    // And the transformers of stasis's Metro plugin beside it, where a config requires it, in turn.
+    // And the transformers beside stasis's Metro plugin, where a config requires it.
     const transformers = [...(traced?.files.keys() ?? [])].map((url) => pathOf(url))
       .filter((file) => basename(file) === 'metro.js' && basename(dirname(file)) === 'src' &&
         readJson(join(dirname(dirname(file)), 'package.json'), host)?.name === '@exodus/stasis-plugins')
       .flatMap((file) => STASIS_METRO_TRANSFORMERS.map((name) => join(dirname(file), name)))
       .filter((file) => host.stat(file)?.isFile() && relWithin(file) !== null && !traced.files.has(pathToFileURL(file).toString()))
     if (transformers.length > 0) traceNode(transformers)
-    // And the plugins and presets the Babel config's modules name (babelNamedModules), resolved as
-    // @babel/core resolves them, and what any module reached names by `require.resolve('x')`, which
-    // Babel loads: each traced in turn.
+    // And the plugins and presets the Babel config's modules name, and what any module reached names by
+    // `require.resolve('x')`, which Babel loads: each traced in turn.
     const babelConfig = pathToFileURL(join(baseDir, BABEL_CONFIG_FILE)).toString()
     const resolutionsOf = keptAcross('require.resolve', host, memo)
     const namedOf = keptAcross('babel names', host, memo)
@@ -1582,8 +1358,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           for (const [spec, target] of resolutionsOf(file, () => requireResolutions(file, host))) {
             if (!JS_EXTENSIONS.has(extname(target)) || relWithin(target) === null) continue
             named.add(target)
-            // A specifier keeps the first edge recorded (a require() of it Node's loader's), as a run
-            // records a resolution only where no edge is; every copy found is still traced.
+            // A specifier keeps the first edge recorded, as a run records a resolution only where no edge is.
             const keyed = keyedFrom(REQUIRE_KEY, rel)
             if (!keyed.has(spec)) keyed.set(spec, toRel(target))
           }
@@ -1599,8 +1374,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         frontier = [...named].map((file) => pathToFileURL(file).toString())
       }
     }
-    // And the toolchain files the Metro plugin carries for every build (AUTO_INCLUDES), resolved and
-    // tagged as it does: a resource where the classifier names no format.
+    // And the toolchain files the Metro plugin carries for every build, tagged as it does them.
     for (const specifier of AUTO_INCLUDES) {
       const file = requireFrom(baseDir, specifier, host)
       if (file === undefined || reached.has(file) || relWithin(file) === null) continue
@@ -1618,14 +1392,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (voided()) throw new Error('buildResolvedJsBundle: this round reads a package not unpacked yet')
   const carryingAt = performance.now()
 
-  // Each reached file, read once, carried as the bytes read, encoded without loss: the lockfile
-  // hashes them from there once it is wanted (deferredLockfile).
+  // Each reached file carried as the bytes read, encoded without loss, for the lockfile to hash once wanted.
   const sources = new Map()
   const put = (rel, content, format) => {
     sources.set(rel, content)
     formatsByRel.set(rel, format)
   }
-  // A resource carries bytes: UTF-8 verbatim, or base64 when binary.
   const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource') : put(rel, buf.toString('base64'), 'resource:base64'))
   // Code carries its source, UTF-8, which non-UTF-8 bytes would not survive: refused.
   const putCode = (rel, buf, format, what = 'JS bundle source') => {
@@ -1637,8 +1409,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (usesEmpty && metroEmpty !== null) reached.add(metroEmpty)
   for (const abs of reached) {
     const rel = toRel(abs)
-    // Security: an entry is taken as spelled (and --metro-resolver keeps a path it can't realpath),
-    // so a symlink escaping the root would slip past toRel's textual check: realpath and fail closed.
+    // Security: an entry is taken as spelled (and --metro-resolver keeps a path it can't realpath), so a
+    // symlink escaping the root would slip past toRel's textual check: realpath and fail closed.
     assertRealPathWithinBase(realBase, baseDir, rel, host)
     const buf = host.readFile(abs)
     if (resourceRels.has(rel)) putResource(rel, buf)
@@ -1651,24 +1423,21 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     put(EMPTY_MODULE_PATH, '', metro ? undefined : 'commonjs')
   }
 
-  // The package a bundled file is in (findPackageMetadata), memoized per directory.
   const packageOf = packageLookup(baseDir, { host })
 
-  // --metro also carries the native build inputs of each native package the app links, as the Metro
-  // plugin does: those installed or linked into node_modules, and those React Native links unimported.
+  // --metro also carries the native build inputs of each native package the app links, as the Metro plugin
+  // does: those installed or linked into node_modules, and those React Native links unimported.
   if (metro) {
-    const pkgDirs = new Map() // package dir -> its package's name
-    // The code graph only: a package reached solely for an asset, or only by the configs, which
-    // Node runs at build time, is no linked native dependency.
+    const pkgDirs = new Map()
+    // A package reached only for an asset, or only by the configs Node runs at build time, is no linked native one.
     const isCode = (rel) => !resourceRels.has(rel)
     for (const abs of reached) {
       const rel = toRel(abs)
       const nm = isCode(rel) && !configOnly.has(rel) && splitNodeModulesPath(rel)
       if (nm) pkgDirs.set(nm.dir, nm.name)
     }
-    // A package linked into node_modules from out of it (a workspace package) is reached by its real
-    // path, but is a dependency all the same where it is linked, under any name, into a node_modules
-    // its importer finds packages in: the real package dirs so linked, by directory.
+    // A workspace package linked into node_modules is reached by its real path, but is a dependency all the same
+    // where it is linked, under any name, into a node_modules its importer finds packages in.
     const linkedFrom = memoized((dir) => {
       const parent = dirname(dir)
       const links = new Set(parent === dir ? [] : linkedFrom(parent))
@@ -1684,8 +1453,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         for (const ent of listing(nodeModules, host)) {
           const abs = join(nodeModules, ent.name)
           if (ent.name.startsWith('@')) {
-            // A scope holds packages, a directory or a link to one (a whole scope linked, where
-            // every package in it is reached through the link).
+            // A whole scope may be linked, every package in it reached through the link.
             for (const scoped of listing(abs, host)) {
               if (ent.isSymbolicLink() || scoped.isSymbolicLink()) link(join(abs, scoped.name))
             }
@@ -1701,25 +1469,22 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         for (const target of byPlatform.values()) {
           if (!isCode(target) || splitNodeModulesPath(target)) continue
           const links = linkedFrom(dirname(join(baseDir, parent)))
-          // The linked root holding the target, nearest first: its entry may lie below a manifest of
-          // its own (a named dist/package.json), as a node_modules path names the package it's in.
+          // The linked root holding the target, nearest first: its entry may lie below a manifest of its own
+          // (a named dist/package.json).
           let root = posix.dirname(target)
           while (root !== '.' && !links.has(root)) root = posix.dirname(root)
-          // The project's own source isn't a dependency, nor is an import within the package itself.
           if (root === '.' || parent.startsWith(`${root}/`) || pkgDirs.has(root)) continue
           // Named by its own manifest, whatever name it's linked under.
           pkgDirs.set(root, readPackageJson(baseDir, `${root}/package.json`, { host })?.name)
         }
       }
     }
-    // And the app's packages React Native links whether JS imports them or not, by their real path,
-    // but one above the root, which the plugin passes over too.
+    // And those React Native links whether JS imports them or not, but one above the root, as the plugin does.
     for (const dir of probing(host, () => linkedNativePackages(baseDir, host))) {
       const rel = relWithin(host.realpath(dir))
       if (rel !== null && !pkgDirs.has(rel)) pkgDirs.set(rel, readPackageJson(baseDir, `${rel}/package.json`, { host })?.name)
     }
-    // Each one's native build inputs, walked whole (nativeInputs, shared with the plugin), read only
-    // once its real path is held to the root.
+    // A file read only once its real path is held to the root.
     const nativeFs = {
       readdir: (abs) => host.readdir(abs),
       stat: (abs) => host.stat(abs),
@@ -1730,16 +1495,14 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     for (const [pkgDir, name] of [...pkgDirs].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       const pkgAbs = join(baseDir, pkgDir)
-      // react-native core isn't a Pod (config reports it via reactNativePath, not `dependencies`),
-      // but its native source (React/, ReactCommon/, ReactAndroid/, ...) is walked all the same.
+      // react-native core isn't a Pod (config reports it via reactNativePath), but its native source is walked too.
       const isRnCore = name === 'react-native'
       if (!isRnCore && !probing(host, () => looksNative(pkgAbs, nativeFs))) continue
       for (const { file, source, action, format } of nativeInputs(pkgAbs, nativeFs, { resources: resourceSet, skip: (abs) => sources.has(toRel(abs)) })) {
         if (action === 'code') putCode(toRel(file), source, format, 'native source')
         else putResource(toRel(file), source)
       }
-      // RN core's `.js` build scripts the classify loop skips (Metro-owned by extension, but never in
-      // the graph): force-include as code so the podspec/Ruby that invokes them at pod-install resolves.
+      // RN core's `.js` build scripts, never in the graph, which the podspec runs at pod-install.
       if (isRnCore) {
         for (const file of RN_CORE_INCLUDE_FILES) {
           const abs = join(pkgAbs, file)
@@ -1750,12 +1513,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
   }
 
-  // --package-json (or the config's packageJSON): each bundled module's package.json, and the nearer
-  // one a reached file of it has (scopeManifestOf: a `{"type":"module"}` marker), which Metro's
-  // resolver reads for the file, as the State path does.
+  // --package-json: each bundled module's package.json, and the nearer one a reached file of it has (a
+  // `{"type":"module"}` marker), which Metro's resolver reads for the file, as the State path does.
   if (withManifests) {
     const exists = memoized((rel) => packageJSONStat(host, join(baseDir, rel))?.isFile() ?? false)
-    const manifests = new Map() // manifest -> the reached files it serves
+    const manifests = new Map()
     for (const abs of reached) {
       const rel = toRel(abs)
       const pkgDir = packageOf(rel)?.pkgDir ?? (splitNodeModulesPath(rel) ? undefined : '.')
@@ -1775,7 +1537,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
   }
 
-  // Collapse each edge: one distinct target across platforms -> flat string; else a sorted Map<platform, target>.
   const resolutions = new Map()
   for (const [parent, bySpec] of edges) {
     const specMap = new Map()
@@ -1785,8 +1546,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     resolutions.set(parent, specMap)
   }
-  // A config's import Node misses in a context, from a file the app's build reaches too, where Metro
-  // resolves it: the app's edge under '*' would serve that context Metro's file in its place.
+  // Where Node misses a config's import Metro resolves for the app, the app's edge under '*' would serve Node
+  // Metro's file.
   for (const [key, { parentURL, spec }] of configMissed) {
     if (!resolutions.get(key.slice(0, key.indexOf('\0')))?.has(spec)) continue
     throw new Error(
@@ -1797,18 +1558,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
   const assembled = assembleCodeBundle({
-    baseDir,
-    entries: normalized,
-    sources,
-    resolutions,
-    keyedResolutions,
-    formats: formatsByRel,
-    workspaceName: rootPkg.name ?? 'workspace',
-    workspaceVersion: rootPkg.version ?? '0.0.0',
-    conditionKey: '*',
-    host,
-    packageOf,
-    consumer: metro ? 'bundle:metro' : 'bundle',
+    baseDir, entries: normalized, sources, resolutions, keyedResolutions, formats: formatsByRel, workspaceName: rootPkg.name ?? 'workspace',
+    workspaceVersion: rootPkg.version ?? '0.0.0', conditionKey: '*', host, packageOf, consumer: metro ? 'bundle:metro' : 'bundle',
     consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel)),
   })
   // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are.
@@ -1817,21 +1568,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   return { bundle, lockfile: deferredLockfile(bundle) }
 }
 
-// Classify entries into their single shared language and check option applicability; `name` prefixes
-// errors. `partial`: a stasis.config.json entry may yet complete the options, so what one option
-// needs of another there (`--platforms` of `--metro`) is left to the build.
+// The one language of `entries`, the options checked against it; `name` prefixes errors. `partial`: a
+// stasis.config.json entry may yet complete the options, so what one needs of another is left to the build.
 function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched, partial = false }) {
   if (!nonEmpty(entries)) throw new Error(`${name}: at least one entry file is required`)
   const dirError = directoryEntryError(entries, cwd, host, { fetched })
   if (dirError !== null) throw new Error(`${name}: ${dirError}`)
-  let kind
-  if (entries.every((e) => isSolidityEntry(e, cwd, host))) kind = 'sol'
-  else if (entries.every((e) => e.endsWith('.php'))) kind = 'php'
-  else if (entries.every((e) => JS_EXTENSIONS.has(extname(e)))) kind = 'js'
-  else if (entries.every((e) => BASH_EXTS.has(extname(e)))) kind = 'bash'
-  else if (entries.every((e) => RUST_EXTS.has(extname(e)))) kind = 'rust'
-  else if (entries.every((e) => e.endsWith('.teal'))) kind = 'teal'
-  else {
+  const kinds = {
+    sol: (e) => isSolidityEntry(e, cwd, host), php: (e) => e.endsWith('.php'), js: (e) => JS_EXTENSIONS.has(extname(e)),
+    bash: (e) => BASH_EXTS.has(extname(e)), rust: (e) => RUST_EXTS.has(extname(e)), teal: (e) => e.endsWith('.teal'),
+  }
+  const kind = Object.keys(kinds).find((key) => entries.every((e) => kinds[key](e)))
+  if (kind === undefined) {
     throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
   // Refuse each of the options `given` that is on, for the `only` (`what`) bundles alone, in order.
@@ -1842,9 +1590,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   onlyFor('sol', '.sol', { mapping: mappingFile, manifests })
   onlyFor('rust', 'Rust', { cargo, 'cargo-features': nonEmpty(cargoFeatures), 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget, 'cargo-manifests': cargoManifests })
   onlyFor('js', 'JS', { scope: scope !== undefined, lockfile: lockfile !== undefined, conditions: nonEmpty(conditions), flow, typescript })
-  if (tsconfig !== undefined && !typescript && !partial) {
-    throw new Error(`${name}: --tsconfig is only valid with --typescript`)
-  }
+  if (tsconfig !== undefined && !typescript && !partial) throw new Error(`${name}: --tsconfig is only valid with --typescript`)
   // Checked here too, so a typo surfaces with the command name rather than deep in the scan.
   if (nonEmpty(resources)) {
     if (kind !== 'js') throw new Error(`${name}: --resources is only valid for JS bundles`)
@@ -1853,15 +1599,9 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   // `define` is parsed (checked) whatever the kind.
   onlyFor('js', 'JS', { mainFields: mainFields !== undefined, jsx, define: parseDefine(name, define).size > 0, 'package-json': packageJSON, metro: metro || nonEmpty(platforms) })
   if (metro) {
-    if (nonEmpty(conditions)) {
-      throw new Error(`${name}: --conditions can't be combined with --metro (it sets its own conditions)`)
-    }
-    if (mainFields !== undefined) {
-      throw new Error(`${name}: --mainFields can't be combined with --metro (it sets its own mainFields)`)
-    }
-    if (!nonEmpty(platforms) && !partial) {
-      throw new Error(`${name}: --metro requires --platforms (e.g. --platforms=ios,android)`)
-    }
+    if (nonEmpty(conditions)) throw new Error(`${name}: --conditions can't be combined with --metro (it sets its own conditions)`)
+    if (mainFields !== undefined) throw new Error(`${name}: --mainFields can't be combined with --metro (it sets its own mainFields)`)
+    if (!nonEmpty(platforms) && !partial) throw new Error(`${name}: --metro requires --platforms (e.g. --platforms=ios,android)`)
     // A platform name becomes an edge key, which Bundle/Lockfile parse refuse with a '/', and '*' is reserved.
     for (const p of Array.isArray(platforms) ? platforms : []) {
       if (typeof p !== 'string' || p.length === 0 || p === '*' || p.includes('/')) {
@@ -1871,12 +1611,8 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   } else if (nonEmpty(platforms) && !partial) {
     throw new Error(`${name}: --platforms is only valid with --metro`)
   }
-  if (metroResolver && !metro) {
-    throw new Error(`${name}: --metro-resolver is only valid with --metro`)
-  }
-  if (babel && !metro) {
-    throw new Error(`${name}: --babel is only valid with --metro`)
-  }
+  if (metroResolver && !metro) throw new Error(`${name}: --metro-resolver is only valid with --metro`)
+  if (babel && !metro) throw new Error(`${name}: --babel is only valid with --metro`)
   if (babelAliases !== undefined) {
     if (typeof babelAliases !== 'string' || babelAliases === '') throw new TypeError(`${name}: babelAliases must be a path to a JSON file`)
     if (!metro && !partial) throw new Error(`${name}: --babel-aliases is only valid with --metro`)
@@ -1890,9 +1626,8 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   return kind
 }
 
-// A JS bundle as `stasis bundle` builds it: by the legacy-field resolver with `mainFields` or `metro`
-// (whose per-platform edges a State can't hold), else through a State. `metro` parses JSX and Flow, as
-// Metro's Babel does, with Metro's release defines. -> { bundle, lockfile: () => Lockfile, stateBuilt, root }
+// By the legacy-field resolver with `mainFields` or `metro` (whose per-platform edges a State can't hold), else
+// through a State. -> { bundle, lockfile: () => Lockfile, stateBuilt, root }
 async function buildJs({ mainFields, platforms, metro, metroResolver, babel, babelAliases, innermostRoot, extra, outputsAt, ...options }) {
   if (metro) options = { ...options, jsx: true, flow: true, define: { ...METRO_RELEASE_DEFINE, ...options.define } }
   if (metro || mainFields !== undefined) {
@@ -1901,14 +1636,12 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, babel, bab
   }
   const state = await buildJsBundle({ ...options, innermostRoot, extra, outputsAt })
   const bundle = state.sourceBundle
-  // Stamp the `bundle` consumer (the static build carries none), unless `extra` added files: then
-  // the State attributes each file, to `bundle` or `extra`.
+  // The `bundle` consumer, unless `extra` added files: then the State attributes each, to `bundle` or `extra`.
   return { bundle: bundle.reason === undefined ? bundle.withReason('bundle') : bundle, lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
 }
 
-// The companion lockfile of `bundle`, built on the first call, the same one after: a file is hashed
-// only once it is wanted (bundledIntegrity). Its records are taken now: one the bundle replaces after
-// (a commit pinned onto a module) is not the lockfile's. -> () => Lockfile
+// `bundle`'s lockfile, built on the first call, so a file is hashed only once it is wanted. Its records are
+// taken now: one the bundle replaces after (a commit pinned onto a module) is not the lockfile's.
 function deferredLockfile(bundle) {
   const { config, entries, imports, formats, executable } = bundle
   const now = { config, entries, modules: new Map(bundle.modules), imports, formats, executable }
@@ -1916,12 +1649,11 @@ function deferredLockfile(bundle) {
   return () => (lockfile ??= Lockfile.fromBundle(now, (file, content) => bundledIntegrity(content, formats.get(file))))
 }
 
-// The files stasis.config.json's `extra` names under `baseDir` but `outputs`, packed as `stasis add`
-// packs them, that `bundle` doesn't carry already. -> { bundle, lockfile } of the `extra` consumer
-// (null when there is nothing to add), and `carried`: the files named that `bundle` carries already
+// The `extra` files `bundle` doesn't carry already, packed as `stasis add` packs them. -> { bundle, lockfile }
+// (null for none), and `carried`: the files named that `bundle` carries already
 function extraArtifacts({ baseDir, patterns, resources, bundle, outputs, host }) {
   const named = expandExtra(baseDir, patterns, outputs, host).files
-  // Bundle#sources builds its Map afresh on each read: once.
+  // Bundle#sources builds its Map afresh on each read.
   const bundled = bundle.sources
   const carried = [...named.keys()].filter((rel) => bundled.has(rel))
   const files = new Map([...named].filter(([rel]) => !bundled.has(rel)))
@@ -1933,15 +1665,13 @@ function extraArtifacts({ baseDir, patterns, resources, bundle, outputs, host })
   return { bundle: extra, get lockfile() { return lockfile() }, carried }
 }
 
-// `built` (built in `cwd` without a State) with the files the stasis.config.json there names in
-// `extra` (extraArtifacts) in its bundle and lockfile; never one of `outputs`, and resources by the
-// build's `resources` where given, else by the config's.
+// `built` (without a State) with the files stasis.config.json's `extra` names in its bundle and lockfile, but
+// `outputs`; resources by the build's `resources` where given, else by the config's.
 function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name = 'bundle' }) {
   const config = readConfigFile(name, cwd, host)
   const patterns = parseExtraOption(CONFIG_FILE, config?.extra)
   if (patterns.length === 0) return built
-  // The union of `builds` (see bundleCommand) may be State-built in node_modules scope, which the
-  // full-scope files `extra` adds can't join.
+  // The union of `builds` may be State-built in node_modules scope, which the full-scope files can't join.
   if (built.bundle.config.scope !== 'full') throw new Error(`${name}: ${CONFIG_FILE}'s extra can't be added to a ${built.bundle.config.scope}-scope bundle of its entries`)
   const baseDir = resolve(cwd)
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
@@ -1953,17 +1683,14 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   // A file `extra` names that the build carries itself is attributed to both.
   const merged = added.bundle === null ? built.bundle : built.bundle.merge(added.bundle)
   const bundle = added.carried.length === 0 ? merged : merged.withReason('extra', added.carried)
-  // The lockfile of what was added is built when read, as the build's is: not here.
   const { lockfile } = built
   return { ...built, bundle, ...(lockfile && added.bundle !== null && { lockfile: () => lockfile().merge(added.lockfile) }) }
 }
 
-// The bundle of `kind` (classifyEntries') built from disk with the files stasis.config.json's `extra`
-// names, its dependencies yet to be pinned (pinnedOf); `outputsAt(root)` the absolute paths written.
-// -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
+// The bundle of `kind` built from disk with stasis.config.json's `extra` (unless `extra` is false: one of
+// several builds), its dependencies yet to be pinned. -> { bundle, lockfile, stateBuilt } (the last two of JS)
 async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
-  // Without `extra`, built as if the config named none (one of several builds of a bundle, see bundleCommand).
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
   if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
   if (kind === 'php') return withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) })
@@ -1974,9 +1701,8 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   return built.stateBuilt ? built : withExtraOf(built, resources)
 }
 
-// The account of how each Soldeer, Composer and vendored Cargo dependency of `modules` is installed
-// at `root`, by its dir, where what a build reads its integrity of tells of it: soldeer.lock's
-// checksum, Composer's record of its dist's shasum, its .cargo-checksum.json's package checksum.
+// How each Soldeer, Composer and vendored Cargo dependency of `modules` is installed at `root`, by its dir, where
+// what a build reads its integrity of tells: soldeer.lock, Composer's record, .cargo-checksum.json.
 function archiveAccounts(modules, root) {
   let soldeer, composer
   const told = {
@@ -1987,17 +1713,14 @@ function archiveAccounts(modules, root) {
   return new Map([...modules].map(([dir, { ecosystem }]) => [dir, Object.hasOwn(told, ecosystem) ? told[ecosystem](dir) : undefined]).filter(([, account]) => account))
 }
 
-// `built` (of disk builds rooted at `root`) with its npm dependencies as their install records name them,
-// each held to the lockfile beside it, whatever its kind (a Solidity import out of node_modules is one):
-// their `accounts`, `accountsOf(modules)` any other's (archiveAccounts too), its lockfile attesting as they do.
+// `built` with its npm dependencies as their install records name them, whatever its kind (a Solidity import
+// out of node_modules is one): their `accounts`, `accountsOf(modules)` any other's, its lockfile attesting so.
 function pinnedOf(built, root) {
   const accounts = pinInstalled(built.bundle, root)
   return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
 }
 
-// Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
-// rooted at `roots[i]`: their strict union, rooted where every one of them is; a lockfile only where
-// every one has one (only JS builds do).
+// The strict union of `builts`, of `builds` rooted at `roots`, which must agree; a lockfile where each has one.
 function unionOfBuilds(name, builds, builts, roots) {
   const other = roots.findIndex((root) => root !== roots[0])
   if (other !== -1) {
@@ -2006,29 +1729,24 @@ function unionOfBuilds(name, builds, builts, roots) {
   return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && b.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
 }
 
-// `bundle` with each of its paths put under `dir` (POSIX), as a build from its root's parent would hold
-// the same files; its specifiers, records, `repo` and `package` as they are.
+// `bundle` with each of its paths put under `dir`, as a build from its root's parent would hold them.
 function bundleUnder(bundle, dir) {
   const at = (path) => posix.join(dir, path)
   const target = (to) => (typeof to === 'string' ? at(to) : new Map([...to].map(([platform, file]) => [platform, at(file)])))
   const { version, config, entries, modules, formats, imports, executable, reason, repo, package: pkg } = bundle
   return new Bundle({
-    version,
-    config,
+    version, config, repo, package: pkg,
     entries: new Set([...entries].map(at)),
     modules: new Map([...modules].map(([bucket, info]) => [at(bucket), info])),
     formats: new Map([...formats].map(([file, format]) => [at(file), format])),
     imports: new Map([...imports].map(([conditions, byParent]) => [conditions, new Map([...byParent].map(([parent, specifiers]) => [at(parent), new Map([...specifiers].map(([specifier, to]) => [specifier, target(to)]))]))])),
     executable: new Set([...executable].map(at)),
     reason: reason && Object.fromEntries(Object.entries(reason).map(([consumer, files]) => [consumer, files.map(at)])),
-    repo,
-    package: pkg,
   })
 }
 
-// buildSolidityBundle's bundle of `build`, its entries and `mappingFile` paths from `cwd` (of `args`,
-// with `host` and `env`), built from `from`, cwd or a directory under it, as from there: its paths
-// put under `from`'s from cwd (bundleUnder).
+// buildSolidityBundle's bundle of `build` (its paths from `cwd`) built from `from`, cwd or a directory under
+// it, as from there, its paths put under `from`.
 async function solidityFrom(build, from, { cwd, ...args }) {
   if (from === cwd) return buildSolidityBundle({ ...build, ...args, cwd })
   const fromThere = (path) => posix.relative(from, posix.resolve(cwd, path)) || '.'
@@ -2038,8 +1756,7 @@ async function solidityFrom(build, from, { cwd, ...args }) {
 }
 
 // buildVfsBundle's checks of `options`, before anything is fetched (`host` an empty tree's with
-// `fetched: false`): no metro-resolver, which reads the disk; `generate` only for JS.
-// -> the kind of bundle its entries make
+// `fetched: false`). -> the kind of bundle its entries make
 export function checkVfsOptions(name, options) {
   const kind = classifyEntries(name, options)
   if (options.metroResolver) throw new Error(`${name}: metroResolver is not supported`)
@@ -2051,9 +1768,8 @@ export function checkVfsOptions(name, options) {
   return kind
 }
 
-// A bundle from the lockfile of the project held in `vfs` alone, built as `stasis bundle` builds it
-// with nothing read from disk but tarballs and zips, nor from the environment (doc/github-bundle.md).
-// -> { bundle, lockfile, stats, packageManager, packageManagers, root, accounts, accountsOf }
+// A bundle from the lockfile of the project held in `vfs` alone, as `stasis bundle` builds it, with nothing
+// read from disk but tarballs and zips, nor from the environment (doc/github-bundle.md).
 export async function buildVfsBundle({ lock, ...options } = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', options.vfs)
@@ -2069,9 +1785,8 @@ export async function buildVfsBundle({ lock, ...options } = {}) {
   return built
 }
 
-// The trees to lay out (layOutTrees) of `project` at `cwd`, a real path: one of each lockfile
-// stasis.config.json names in its `lockfiles`, none detected; else the one of `packageManager`, or the
-// one detected, saying `why`.
+// The trees to lay out: one of each lockfile stasis.config.json's `lockfiles` names, else the one of
+// `packageManager`, or the one detected, saying `why`.
 async function treeSpecs(name, project, cwd, { packageManager, packageManagerVersion, os, why }) {
   const { checkVersion, lockfileSpecs, packageManagerFor } = await import('../vfs-bundle/tree.js')
   const lockfiles = configuredLockfiles(name, cwd, project)
@@ -2081,8 +1796,7 @@ async function treeSpecs(name, project, cwd, { packageManager, packageManagerVer
   return lockfileSpecs(name, project, cwd, lockfiles, os)
 }
 
-// Each of `specs` (treeSpecs') lazy where its tree can be, unless stasis.config.json's `lazyDependencies`
-// or `lazy` says not.
+// Each of `specs` lazy where its tree can be, unless `lazy` or stasis.config.json's `lazyDependencies` says not.
 async function layLazily(name, project, cwd, specs, lazy) {
   const { lazyTaken } = await import('../vfs-bundle/tree.js')
   const lazyDependencies = configFlag('lazyDependencies', name, cwd, project)
@@ -2090,17 +1804,15 @@ async function layLazily(name, project, cwd, specs, lazy) {
   for (const spec of specs) spec.lazy = lazy ?? (lazyDependencies && lazyTaken(project, spec.packageManager, spec.cwd))
 }
 
-// The Prisma Clients generatePrismaClients generates (`options` its but for `host` and `root`), read
-// through `tree` over `project`: for a lazy tree, in rounds of their own.
+// generatePrismaClients' clients, read through `tree` over `project`: for a lazy tree, in rounds of their own.
 async function prismaOutputs(tree, project, options) {
   const [{ generatePrismaClients }, { treeHost }, { inRounds }] = await Promise.all([import('../vfs-bundle/prisma.js'), import('../vfs-bundle/tree.js'), import('../vfs-bundle/lazy.js')])
   const generating = (reads) => generatePrismaClients({ ...options, host: treeHost(tree, project, reads), root: tree.root })
   return tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)
 }
 
-// The Prisma Clients the schemas of the project held in `vfs` generate, as buildVfsBundle generates
-// them for a build at `cwd` with `generate: ['prisma']`, but with devDependencies whatever
-// stasis.config.json says. -> generatePrismaClients' outputs (none where no project has a schema)
+// The Prisma Clients of `vfs`, as buildVfsBundle generates them under `generate: ['prisma']`, but with
+// devDependencies whatever stasis.config.json says. -> generatePrismaClients' outputs
 export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, cache } = {}) {
   const name = 'prismaClientsOf'
   const { layOutTrees, packageManagerOf, plannedTrees, vfsHost } = await import('../vfs-bundle/tree.js')
@@ -2115,9 +1827,8 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
   return (await prismaOutputs(tree, project, { projects: schemaProjects(project, tree.root, tree.projects), strict: false, shared: true })).outputs
 }
 
-// buildVfsBundle's build of `project` (a host): a Vfs, which `vfs` is, or the disk, for `stasis bundle
-// --deptree`, which also gives the `plan` of builds bundleCommand makes, the `env` they read, the
-// `outputsAt(root)` they write, `refuseInstalled` and `why` the package manager is detected.
+// buildVfsBundle's build of `project`: a Vfs, which `vfs` is, or the disk, for `stasis bundle --deptree`,
+// which also gives the `plan` of builds bundleCommand makes and the `env` they read.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false, why } = {}) {
   const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinFromTree, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
@@ -2133,8 +1844,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const packageManagers = specs.map((spec) => spec.packageManager)
   const pms = packageManagers.map((one) => packageManagerOf(name, one))
   if (lazy) for (const one of packageManagers) checkLazy(name, one)
-  // The builds stasis.config.json's `entries` makes (configuredBuilds), whose union takes `extra`
-  // once, as bundleCommand adds it; else the options given, whose build adds its own.
+  // The builds stasis.config.json's `entries` makes, whose union takes `extra` once; else the options given.
   const configured = plan === undefined ? configuredBuilds(name, { cwd, host: project, entries: options.entries, options }) : null
   const { builds, bundleExtra } = plan ?? { builds: configured?.builds ?? [options], bundleExtra: configured !== null }
   if (builds.length === 0) throw new Error(`${name}: no entries given, and ${CONFIG_FILE}'s entries name none`)
@@ -2142,20 +1852,19 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   if (parseExtraOption(CONFIG_FILE, readConfigFile(name, cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()
   const installDevDependencies = installsDevDependencies(name, cwd, project)
   await layLazily(name, project, cwd, specs, lazy)
-  // Each project's Prisma Client: asked for, every project's, strictly; else, of a JS build of a Vfs,
-  // those the entries reach, where `generatePrisma` leaves it; or none, their outputs read all the same.
+  // Prisma Clients: asked for, every project's, strictly; else, of a JS build of a Vfs, those the entries reach,
+  // where `generatePrisma` leaves it; or none, their outputs read all the same.
   const generatePrisma = configFlag('generatePrisma', name, cwd, project)
   if (generate?.length > 0 && !generatePrisma) throw new Error(`${name}: generate is given, and ${CONFIG_FILE}'s generatePrisma is false`)
   const vfsJs = vfs !== undefined && pms.some((pm) => pm.kind === 'js')
   const prismaGeneration = generate?.includes('prisma') ? 'asked' : !vfsJs ? null : generate === undefined && generatePrisma ? 'detected' : 'off'
-  // Each build's kind, one a tree's package manager builds.
   const kinds = builds.map((build) => {
     const kind = checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project })
     checkKind(name, kind, packageManagers)
     return kind
   })
-  // An entry out of what the trees install is in the project already: checked before anything is
-  // fetched. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
+  // An entry out of what the trees install is in the project already: checked before anything is fetched. (A
+  // Solidity entry that is no .sol file is a directory, skipped where it is missing.)
   const installs = new Set(pms.map((pm) => pm.installs))
   for (const [i, build] of builds.entries()) {
     for (const entry of build.entries) {
@@ -2164,9 +1873,8 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       if (!posix.relative(cwd, abs).split('/').some((part) => installs.has(part)) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
     }
   }
-  // A Solidity build's bundles: one, built from cwd, but where a Soldeer project the trees lay out is
-  // below it: then each .sol file is built from the innermost project holding it, with its
-  // foundry.toml and remappings, its bundle put under its root (solidityFrom).
+  // A Solidity build is built from cwd, but where a Soldeer project the trees lay out is below it: then each .sol
+  // file is built from the innermost project holding it, with its foundry.toml and remappings.
   const solRoots = specs.filter((spec, i) => pms[i].kind === 'sol' && spec.cwd !== cwd).map((spec) => spec.cwd)
   const projectOf = (file) => solRoots.filter((dir) => isPathWithin(dir, posix.resolve(cwd, file))).reduce((inner, dir) => (isPathWithin(inner, dir) ? dir : inner), cwd)
   const solidityBuilt = async (build, args) => {
@@ -2181,17 +1889,16 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const laidOut = specs.length > 1 ? 'Laid out the trees' : specs[0].lazy ? 'Laid out the tree' : 'Installed the tree'
   const tree = await debugTimed(laidOut, () => layOutTrees({ project, specs, os, cpu, libc, client, cache, installDevDependencies, refuseInstalled }))
   const { inRounds, warningsHeld } = await import('../vfs-bundle/lazy.js')
-  // The project the builds read, with the Prisma Clients generated once before any build, so that each
-  // of a lazy tree's rounds reads the same project.
+  // The project the builds read, the Prisma Clients generated once before any build, so that each of a lazy
+  // tree's rounds reads the same project.
   let outside = project
   let expected = []
   const prisma = prismaGeneration === null ? null : await import('../vfs-bundle/prisma.js')
   if (prisma !== null) {
-    // The projects with a schema (before any `prisma` is read): all of them, asked for; else those the
-    // entries reach. Nothing done, nor said, where none has one.
+    // Before any `prisma` is read. Nothing done, nor said, where no project has a schema.
     const withSchema = prisma.schemaProjects(project, tree.root, tree.projects)
     const strict = prismaGeneration === 'asked'
-    // Each entry by its real path, as the scan reaches it, where the project holds it.
+    // By its real path, as the scan reaches it, where the project holds it.
     const entryPath = (entry) => {
       const path = posix.resolve(cwd, entry)
       try {
@@ -2211,14 +1918,13 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     }
   }
   const generated = expected.length === 0 ? undefined : prisma.generatedMiss(expected)
-  // The builds read the tree through a host of `outside`: once, or for a lazy tree in rounds, each
-  // build keeping what its scans read across them in a memo of its own.
+  // For a lazy tree, in rounds, each build keeping what its scans read across them in a memo of its own.
   const memos = tree.unpack === undefined ? undefined : builds.map(() => new Map())
   const attempt = async (reads) => {
     const host = treeHost(tree, outside, reads)
     const args = { cwd, host, env }
-    // A Vfs holds nothing built: a build broken at load by a miss --typescript resolves is built with
-    // it instead, saying nothing of what the first warned.
+    // A Vfs holds nothing built: a build broken at load by a miss --typescript resolves is built with it
+    // instead, saying nothing of what the first warned.
     const jsBuilt = async (build, memo) => {
       const js = (typescript, kept = memo) => buildJs({ ...build, ...args, typescript, innermostRoot, extra: !bundleExtra, outputsAt, memo: kept, generated })
       if (vfs === undefined || build.typescript) return js(build.typescript)
@@ -2229,10 +1935,9 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       return first.value
     }
     const builts = []
-    // A build of a round that asked for a package already is void, whatever it threw: the builds
-    // after it are run all the same, for all else they ask for, and the round is set aside after.
+    // A build of a round that asked for a package already is void, whatever it threw: the builds after it
+    // are run all the same, for all else they ask for, and the round is set aside after.
     let voided
-    // The build each of `builts` is of.
     const ofBuilds = []
     for (const [i, build] of builds.entries()) {
       let built
@@ -2252,11 +1957,9 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       }
     }
     if (voided !== undefined) throw voided.error
-    // Merged as bundleCommand merges its builds.
     const { root } = builts[0]
     const union = unionOfBuilds(name, ofBuilds, builts, builts.map((built) => built.root))
-    // `extra` once: to the union, as bundleCommand adds it; else to the one build given, as buildOfKind
-    // adds it, unless its State took it.
+    // `extra` once: to the union; else to the one build given, unless its State took it.
     return { root, builts, host, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { outputs: outputsAt(root), resources: bundleExtra ? undefined : builds[0].resources, host, name }) : union }
   }
   const since = counts()
@@ -2266,19 +1969,18 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const { bundle, lockfile, root } = built
   // After the lazy rounds, so only the full tree's build is checked.
   assertPolicies(name, { builds, builts: built.builts, bundle, root, host: project, files: built.host, label: `${name}: ${CONFIG_FILE}` })
-  // Detected, what generators stasis didn't run it took as the repo has them is said where it carries some.
+  // Said where the bundle carries what generators stasis didn't run would write, as the repo has it.
   if (prismaGeneration === 'detected') for (const warning of prisma.committedWarnings(expected, bundle, root)) console.warn(warning)
   if (repo !== undefined) bundle.repo = repo
   const accounts = pinFromTree(bundle, root, tree)
   const unpacked = unpackedOf(tree)
-  // The lockfile is built when first read, the same one after: `stasis github-bundle` and `stasis
-  // bundle --deptree` read it for --lockfile alone.
+  // Built when first read: `stasis github-bundle` and `stasis bundle --deptree` read it for --lockfile alone.
   let lock
   return { bundle, get lockfile() { return (lock ??= lockfile && withAttested(lockfile(), bundle)) }, stats: { ...tree.stats, unpacked }, packageManager: packageManagers.length === 1 ? packageManagers[0] : undefined, packageManagers, root, accounts, accountsOf: (modules) => pinFromTree({ modules }, root, tree) }
 }
 
-// `to` (a Lockfile or a Bundle) with the ATTESTED_METADATA `from`'s records of the same buckets
-// carry, in place of its own: a build's lockfile, taken before its bundle was pinned, with the bundle's.
+// `to` (a Lockfile or a Bundle) with the ATTESTED_METADATA `from`'s records of the same buckets carry, in place
+// of its own: a build's lockfile, taken before its bundle was pinned, with the bundle's.
 function withAttested(to, from) {
   for (const [dir, info] of to.modules) if (from.modules.has(dir)) to.modules.set(dir, withAttestedOf(info, from.modules.get(dir)))
   return to
@@ -2286,9 +1988,7 @@ function withAttested(to, from) {
 
 export const debugging = () => process.env.EXODUS_STASIS_DEBUG === '1' || process.env.EXODUS_STASIS_DEBUG === 'true'
 
-// The time a --metro build's stages took, all told, in milliseconds: its scans of what the app
-// imports, what Metro and Babel add to it, the configs and toolchain, and carrying the files reached
-// into the bundle. What EXODUS_STASIS_DEBUG says of each build.
+// The time a --metro build's stages took, all told, in milliseconds, for EXODUS_STASIS_DEBUG.
 const stageTimes = { scan: 0, metro: 0, configs: 0, carrying: 0 }
 const staged = (stage, fn) => {
   const at = performance.now()
@@ -2300,9 +2000,8 @@ const staged = (stage, fn) => {
 }
 const seconds = (ms) => `${(ms / 1000).toFixed(2)} s`
 
-// `run()`, said on stderr once what it gives settles where EXODUS_STASIS_DEBUG asks for it: `what`, in
-// how long, and what `detail()` adds. Written, not warned: inRounds holds back what a round it sets
-// aside warns. -> what `run()` gives
+// `run()`, said on stderr once it settles under EXODUS_STASIS_DEBUG. Written, not warned: inRounds holds back
+// what a round it sets aside warns.
 export async function debugTimed(what, run, detail = () => '') {
   if (!debugging()) return run()
   const at = performance.now()
@@ -2313,24 +2012,19 @@ export async function debugTimed(what, run, detail = () => '') {
   }
 }
 
-// scanCounts and stageTimes as they are, for builtSince.
 const counts = () => ({ files: { ...scanCounts }, stages: { ...stageTimes } })
 const STAGES = { scan: 'scan', metro: "Metro's additions", configs: 'configs and toolchain', carrying: 'carrying' }
 
-// What builds did since `since` (counts()'): the files their scans parsed, resolved again from a
-// parse kept and took as kept, and the time of each stage they went through.
+// What builds did since `since` (counts()'): the files their scans took, and the time of each stage.
 function builtSince(since) {
   const files = Object.keys(scanCounts).map((key) => `${scanCounts[key] - since.files[key]} ${key}`).join(', ')
   const times = Object.keys(STAGES).filter((key) => stageTimes[key] > since.stages[key]).map((key) => `${STAGES[key]} ${seconds(stageTimes[key] - since.stages[key])}`)
   return ` (files ${files}${times.length > 0 ? `; ${times.join(', ')}` : ''})`
 }
 
-// A package's name, as its directory in a tree says it: what follows its last node_modules.
 const packageName = (dir) => dir.slice(dir.lastIndexOf('/node_modules/') + '/node_modules/'.length)
 
-// `attempt` and `unpack` as inRounds takes them, each round said on stderr as it ends (debugTimed):
-// what it built (builtSince), the packages it asked for, the first of them named, and how long
-// unpacking them took.
+// `attempt` and `unpack` as inRounds takes them, each round said on stderr as it ends (debugTimed).
 function reportedRounds(attempt, unpack) {
   let round = 0
   return [
@@ -2344,8 +2038,7 @@ function reportedRounds(attempt, unpack) {
   ]
 }
 
-// Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without writing
-// to disk, a JS one held to the project's stasis.lock.json as `stasis bundle` holds it.
+// `stasis bundle`'s Bundle, not written, a JS one held to the project's stasis.lock.json as `stasis bundle` holds it.
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   const built = await buildOfKind(classifyEntries('buildBundle', options), options)
@@ -2355,19 +2048,15 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
   return built.bundle
 }
 
-// Run `stasis bundle` (doc/bundle.md): build a bundle and write it to `output` (stasis.code.br at the
-// root by default, `-` for stdout) with its `lockfile`, or that alone (`lockfileOnly`); `add` unions it
-// into the bundle on disk, `builds` are several as one, `deptree` lays dependencies out of the lockfile.
+// Run `stasis bundle` (doc/bundle.md).
 export async function bundleCommand({ cwd = process.cwd(), output, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
-  if (add && output === '-') {
-    throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
-  }
+  if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, add, brotliQuality }) : null
   if (lockfileOnlyRefused !== null) throw new Error(`bundleCommand: ${lockfileOnlyRefused}`)
   const built = await buildOfCommand({ ...options, cwd, output, lockfile })
   const { root } = built
-  // By default at the root, where `stasis run --bundle=load` discovers it: in cwd below the root it
-  // would root the next run and `stasis bundle` there, out of the files above it.
+  // By default at the root, where `stasis run --bundle=load` discovers it: in cwd below the root it would root
+  // the next run and `stasis bundle` there, out of the files above it.
   const target = output ?? relative(resolve(cwd), join(root, BUNDLE_FILE))
 
   let { bundle } = built
@@ -2377,10 +2066,9 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   if (lockfile !== undefined && ['frozen', 'ignore', 'none'].includes(mode)) throw new Error(`bundleCommand: --lockfile: lock = ${mode} writes no lockfile`)
   let lockData = lockfile ? built.held.lockfile().serialize() : undefined
 
-  // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
   const outAbs = target === '-' ? undefined : resolve(cwd, target)
   const lockAbs = lockData ? resolve(cwd, lockfile) : undefined
-  // Files the pre-existing bundle carried; undefined when no merge happened (the summary's merged sentinel).
+  // What the bundle on disk carried; undefined where nothing is merged.
   let mergedFrom
   if (add && existsSync(outAbs)) {
     let existing
@@ -2395,8 +2083,8 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     const links = linksOn(root)
     policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
-    // What it carries already is held to the lockfile too, and to how its packages are installed, read
-    // anew where the build has no account of them: as is what the lockfile there records, written again.
+    // What it carries already is held to the lockfile too, and to how its packages are installed, read anew
+    // where the build has no account of them: as is what the lockfile there records, written again.
     const heldAsInstalled = (artifact, label) => {
       const unread = new Map([...artifact.modules].filter(([dir, info]) => !built.accounts.has(dir) && attestsAny(info)))
       heldToAccounts(artifact.modules, new Map([...built.accountsOf(unread), ...built.accounts]), `${label}: `)
@@ -2404,15 +2092,14 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     built.held?.hold(deferredLockfile(existing))
     heldAsInstalled(existing, target)
     bundle = existing.merge(bundle)
-    // Keep the companion lockfile consistent with the merged bundle: union an existing one, or in
-    // replace, which reads none, the bundle there recorded anew.
+    // The lockfile there merged too; in replace, which reads none, the bundle there recorded anew.
     if (lockData) {
       let existingLock
       if (mode === 'replace') {
         existingLock = deferredLockfile(existing)()
       } else {
-        // With none on disk we can't attest the pre-existing bundle's files (their hashes live
-        // only in that missing lockfile), so refuse rather than write an under-attesting lockfile.
+        // With none on disk the bundle's files can't be attested (their hashes live only in the missing
+        // lockfile): refused rather than written under-attesting.
         if (!existsSync(lockAbs)) {
           throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockfile}: the bundle at ${target} already carries files a fresh lockfile wouldn't attest, and there's no existing lockfile to merge into. Write --lockfile alongside the bundle from the first build, or drop --lockfile.`)
         }
@@ -2429,8 +2116,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
   } else if (add && lockData && mode !== 'replace' && existsSync(lockAbs)) {
-    // No bundle to add to, but a lockfile at --lockfile: replaced, as one that can't be read is,
-    // unless rooted elsewhere, its bundle that root's.
+    // No bundle to add to, but a lockfile: replaced, as one that can't be read is, unless rooted elsewhere.
     let existingLock
     try {
       existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
@@ -2451,7 +2137,6 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   if (lockfileOnly) {
     console.warn(lockedSummary(files.length, modules, fromDir, lockfile))
   } else if (mergedFrom !== undefined) {
-    // On a merge, report newly-added files alongside the totals; a fresh write keeps the plain line.
     const added = files.length - mergedFrom
     console.warn(`[stasis] Added ${added} file${added === 1 ? '' : 's'} (${files.length} total in ${packagesLabel(modules)}) from ${fromDir} to ${dest}`)
   } else {
@@ -2463,9 +2148,8 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   }
 }
 
-// The warning that `file`, a stasis file the build rooted at `root` wrote in a package below it,
-// roots stasis run and stasis bundle in that package, though its paths are relative to `root`; null
-// where it roots nothing but `root`.
+// Where `file`, written in a package below `root`, roots stasis run and stasis bundle there, though its paths
+// are relative to `root`.
 function nestedRootWarning(file, root, cwd) {
   const dir = dirname(file)
   if (!STASIS_ROOT_FILES.includes(basename(file)) || dir === root || !isPathWithin(root, dir) || diskHost.stat(join(dir, 'package.json')) === null) return null
@@ -2473,8 +2157,8 @@ function nestedRootWarning(file, root, cwd) {
   return `[stasis] ${shown(file)} roots stasis run and stasis bundle in the package at ${shown(dir)}, but its paths are relative to ${shown(root)}: write it at ${shown(join(root, basename(file)))}`
 }
 
-// A build's lockfile held to the one `lockfile` names, else its project's, by its runs' lock mode
-// (heldToLockfile): `{ lock, label, lockfile, hold, loads }`, `hold(other)` holding another to it.
+// A build's lockfile held to the one `lockfile` names, else its project's, by its runs' lock mode;
+// `hold(other)` holds another to it.
 function heldOf({ bundle, lockfile: built, accounts }, root, { cwd, env, lockfile }) {
   if (!built) return undefined
   const { lock, file } = lockModeOf(root, env)
@@ -2488,8 +2172,7 @@ function heldOf({ bundle, lockfile: built, accounts }, root, { cwd, env, lockfil
   return { lock, label, lockfile: () => fresh ?? built(), hold, loads }
 }
 
-// The lock mode the runs of the project at `root` take, and their EXODUS_STASIS_LOCK_FILE, of a run
-// that writes a bundle, as a build does.
+// The lock mode and EXODUS_STASIS_LOCK_FILE of a run at `root` that writes a bundle, as a build does.
 function lockModeOf(root, env = process.env, host = diskHost) {
   const config = new Config({ env: { EXODUS_STASIS_LOCK: env.EXODUS_STASIS_LOCK, EXODUS_STASIS_LOCK_FILE: env.EXODUS_STASIS_LOCK_FILE }, bundle: 'replace' })
   const text = readFileSyncMaybe(root, CONFIG_FILE, 'utf-8', host)
@@ -2498,9 +2181,8 @@ function lockModeOf(root, env = process.env, host = diskHost) {
   return { lock: config.lock, file: config.lockFile && resolve(config.lockFile) }
 }
 
-// The lockfile `built()` gives held to the one at `lockAbs` by `mode`: in add, agreeing with it on all
-// both record (Lockfile.mergeAgreeing); in frozen, that too, and it must be there and attest every file
-// built; in none, it must not be there. -> what built() gave, where it was called.
+// `built()` held to the lockfile at `lockAbs` by `mode`: in add, agreeing with it on all both record; in frozen,
+// that too, and it must be there and attest every file built; in none, it must not be there.
 function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, accounts = [] } = {}) {
   if (mode !== 'add' && mode !== 'frozen' && mode !== 'none') return undefined
   const text = readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host)
@@ -2529,9 +2211,8 @@ function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, 
   return fresh
 }
 
-// That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis
-// run --lock=frozen --bundle=load` loads them, through `host`; stasis.config.json is read without the
-// bundle paths a run would read instead.
+// That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis run
+// --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths it names.
 function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost }) {
   // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
   const bytes = brotliCompressSync(text, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
@@ -2551,9 +2232,8 @@ function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost })
   }
 }
 
-// The directory the paths of `artifact` (a Bundle or Lockfile) are relative to: the first of
-// `candidates` holding each workspace package it records and each of its entries, or with no
-// workspace package, each npm dependency; undefined where none does.
+// The first of `candidates` holding each workspace package `artifact` records and each of its entries, or with
+// no workspace package, each npm dependency: the directory its paths are relative to.
 function artifactRootOf(artifact, candidates) {
   const named = [...artifact.modules].filter(([, info]) => typeof info.name === 'string')
   const ecosystemOf = ([dir, { ecosystem }]) => dependencyEcosystem(dir, ecosystem)
@@ -2564,9 +2244,8 @@ function artifactRootOf(artifact, candidates) {
     entries.every((entry) => isFile(join(dir, entry))))
 }
 
-// Refuse, under --add, to add the build rooted at `root` to `artifact` (`what`, at `at`), whose paths
-// are relative to another directory: its records and the build's would be keyed apart, never held to
-// each other. One whose root can't be told is added to as ever.
+// --add to an artifact whose paths are relative to another root would key its records and the build's apart,
+// never held to each other. One whose root can't be told is added to as ever.
 function refuseOtherRoot(artifact, what, root, { cwd, at }) {
   const baseDir = resolve(cwd)
   const theirs = artifactRootOf(artifact, [...new Set([root, ...ancestors(baseDir), ...ancestors(dirname(at))])])
@@ -2575,17 +2254,15 @@ function refuseOtherRoot(artifact, what, root, { cwd, at }) {
   throw new Error(`bundleCommand: --add can't add to ${what}: its paths are relative to ${shown(theirs)} and this build's to ${shown(root)}${rootedBy(root)}; rebuild it without --add`)
 }
 
-// The bundle bundleCommand writes of its options (but `brotliQuality` and `add`), built as it builds
-// it, warnings, errors and all, and not written: a Bundle parsed from what bundleCommand would
-// compress, as `stasis audit` would read it back from the file.
+// The bundle bundleCommand would write (but for `add`), not written: parsed from what it would compress, as
+// `stasis audit` would read it back.
 export async function buildCommandBundle(options = {}) {
   const { bundle } = await buildOfCommand(options)
   return Bundle.parse(bundle.serialize())
 }
 
-// bundleCommand's bundle and lockfile, built as it builds them and not written, with the root their
-// paths are relative to; `output` and `lockfile` are where it would write them, which `extra` never
-// takes in. -> { bundle, lockfile: () => Lockfile, root, held (heldOf's) }
+// bundleCommand's bundle and lockfile, not written, and the root their paths are relative to; `output` and
+// `lockfile` are where it would write them, which `extra` never takes in.
 async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, builds, deptree = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   if (builds !== undefined) {
@@ -2596,21 +2273,15 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
   // Each build's options, the defaults above where it leaves one out.
   const plans = (builds ?? [{}]).map((build) => ({ ...options, ...build, cwd, env }))
   const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
-
-  // The files this build writes, never taken into `extra`, given the root its paths are relative to.
   const outputsAt = (root) => [output ?? join(root, BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
-  // With `builds`, `extra` is the bundle's, not any build's: added to their union below.
+  // With `builds`, `extra` is the bundle's, not any build's: added to their union.
   const bundleExtra = builds !== undefined
   let union, root
   if (deptree) {
     // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
     const { createClient } = await import('@preventive/upstream/github.js')
     const built = await withNpmToken(home, () => buildFromLockfile('bundleCommand', diskHost, {
-      cwd: resolve(cwd),
-      lockfile,
-      cache: false,
-      lazy: false,
-      client: createClient({ token: env.GITHUB_TOKEN || null }),
+      cwd: resolve(cwd), lockfile, cache: false, lazy: false, client: createClient({ token: env.GITHUB_TOKEN || null }),
     }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true, why: '--deptree lays out the dependencies from a lockfile' }))
     console.warn(unpackedSummary(built.stats))
     root = built.root
@@ -2628,7 +2299,7 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
     for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
     union = unionOfBuilds('bundleCommand', plans, builts, roots)
-    // Once, to their union, by the allowlist of the stasis.config.json at the root, not any entry's.
+    // By the allowlist of the stasis.config.json at the root, not any entry's.
     if (bundleExtra) union = withExtra(union, root, { outputs: outputsAt(root) })
     union = pinnedOf(union, root)
     assertPolicies('bundleCommand', { builds: plans, builts, bundle: union.bundle, root })

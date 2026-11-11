@@ -6,15 +6,10 @@ import { writeOutput } from './output.js'
 
 // The one-line summary goes to stderr so it never corrupts an SBOM streamed to stdout.
 export function sbomCommand({ cwd = process.cwd(), files, format, output, now, uuid } = {}) {
-  if (!Array.isArray(files) || files.length === 0) {
-    throw new Error('sbom: at least one lockfile or bundle is required')
-  }
-  const artifacts = files.map((f) => parseFile(resolve(cwd, f)))
-  const components = collectComponents(artifacts)
+  if (!Array.isArray(files) || files.length === 0) throw new Error('sbom: at least one lockfile or bundle is required')
+  const components = collectComponents(files.map((f) => parseFile(resolve(cwd, f))))
   const doc = generateSbom(format, components, { now, uuid })
-  const text = JSON.stringify(doc, undefined, 2) + '\n'
-
-  const dest = writeOutput(cwd, output ?? '-', text)
+  const dest = writeOutput(cwd, output ?? '-', JSON.stringify(doc, undefined, 2) + '\n')
   const n = components.length
   const vendored = components.reduce((sum, c) => sum + (c.vendored?.length ?? 0), 0)
   const inThem = vendored === 0 ? '' : ` (and ${vendored} vendored in them)`

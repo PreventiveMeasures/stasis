@@ -21,25 +21,19 @@ import { writeFile } from './output.js'
 
 export { bundleFromLockfile }
 
-
-// Allowlist (not blocklist) of per-file formats `stasis build` accepts, so a bundle
-// format added later fails closed here rather than in a cryptic esbuild error.
+// An allowlist, so that a bundle format added later fails closed here rather than in a cryptic esbuild error.
 const BUILDABLE_FORMATS = new Set([
   'module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript',
   'resource', 'resource:base64', 'directory', 'stat:file', 'stat:directory',
 ])
 
-// esbuild is an optional peer dep; resolve it from the local install, else fall back
-// to a global one.
+// esbuild is an optional peer dependency: the local install's, else a global one.
 async function importEsbuild() {
   let mod
   try {
     mod = await import('esbuild')
   } catch (cause) {
-    // Only a genuine "not installed" miss falls through to the global lookup; surface other failures.
-    if (cause?.code !== 'ERR_MODULE_NOT_FOUND' && cause?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-      throw cause
-    }
+    if (cause?.code !== 'ERR_MODULE_NOT_FOUND' && cause?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause
     const globalMain = resolveGlobalEsbuild()
     if (!globalMain) {
       throw new Error(
@@ -51,17 +45,12 @@ async function importEsbuild() {
     }
     mod = await import(pathToFileURL(globalMain).href)
   }
-  // A globally-imported CJS copy may land its exports on `default` -- accept both shapes.
+  // A globally-imported CJS copy may land its exports on `default`.
   return typeof mod.build === 'function' ? mod : mod.default
 }
 
 function resolveGlobalEsbuild() {
-  const probes = [
-    ['npm', ['root', '-g']],
-    ['pnpm', ['root', '-g']],
-    ['yarn', ['global', 'dir']],
-  ]
-  for (const [cmd, args] of probes) {
+  for (const [cmd, args] of [['npm', ['root', '-g']], ['pnpm', ['root', '-g']], ['yarn', ['global', 'dir']]]) {
     let out
     try {
       out = spawnSync(cmd, args, { encoding: 'utf8' })
@@ -70,8 +59,7 @@ function resolveGlobalEsbuild() {
     }
     const base = out?.status === 0 ? out.stdout?.trim() : undefined
     if (!base) continue
-    // `npm/pnpm root -g` print the global node_modules dir; `yarn global dir` prints a
-    // dir whose node_modules holds the packages. Try both shapes.
+    // `npm/pnpm root -g` print the global node_modules; `yarn global dir` a dir whose node_modules holds them.
     for (const nm of [base, join(base, 'node_modules')]) {
       if (!existsSync(join(nm, 'esbuild', 'package.json'))) continue
       try {
@@ -82,8 +70,6 @@ function resolveGlobalEsbuild() {
   return undefined
 }
 
-// Preconditions independent of which entry we build. Per-entry language checks are deferred
-// to assertBuildableEntry, once selectEntry has picked one.
 function assertBuildableArtifact(artifact, label) {
   if (artifact.config.scope !== 'full') {
     throw new Error(
@@ -91,13 +77,11 @@ function assertBuildableArtifact(artifact, label) {
       `node_modules-scope artifacts omit the entry and workspace code, so there is nothing to build.`
     )
   }
-  if (artifact.entries.size === 0) {
-    throw new Error(`stasis build: ${label} declares no entries to build`)
-  }
+  if (artifact.entries.size === 0) throw new Error(`stasis build: ${label} declares no entries to build`)
 }
 
-// The entry plus its transitive imports in the recorded graph -- the exact set esbuild loads
-// (all conditions buckets; a --metro edge's per-platform targets included).
+// The entry and what it imports in the recorded graph, as esbuild loads it (every conditions bucket and
+// platform).
 function reachableFiles(entry, imports) {
   const seen = new Set([entry])
   const stack = [entry]
@@ -105,7 +89,6 @@ function reachableFiles(entry, imports) {
     const parent = stack.pop()
     for (const byParent of imports.values()) {
       for (const target of byParent.get(parent)?.values() ?? []) {
-        // A plain edge is a file string; a --metro edge is a {platform: file} Map.
         for (const file of typeof target === 'string' ? [target] : target.values()) {
           if (!seen.has(file)) {
             seen.add(file)
@@ -118,16 +101,12 @@ function reachableFiles(entry, imports) {
   return seen
 }
 
-// Language checks scoped to the built entry: it must be JS/TS, and every file reachable from
-// it must be buildable. A non-JS file elsewhere (another entry, or a `stasis add` attachment)
-// isn't reached, so it doesn't block the build. imports/formats are null on a legacy lockfile.
+// Only what the entry reaches must be buildable: another entry or a `stasis add` attachment doesn't block it.
 function assertBuildableEntry(artifact, entry, label) {
   if (!JS_EXTENSIONS.has(extname(entry))) {
     throw new Error(`stasis build only builds JavaScript/TypeScript entries (esbuild); got non-JS entry '${entry}' in ${label}`)
   }
   const reachable = reachableFiles(entry, artifact.imports ?? new Map())
-  // A reachable resource (plugin captures DO record asset edges) stays allowed via BUILDABLE_FORMATS;
-  // an entry that imports an unbuildable asset fails later at esbuild, not here.
   for (const [file, format] of artifact.formats ?? new Map()) {
     if (reachable.has(file) && !BUILDABLE_FORMATS.has(format)) {
       throw new Error(`stasis build only supports JavaScript/TypeScript bundles (esbuild); ${label} carries a '${format}' file (${file})`)
@@ -135,30 +114,21 @@ function assertBuildableEntry(artifact, entry, label) {
   }
 }
 
-// Pick which recorded entry to build; required only when several are recorded. Matched
-// against the recorded project-relative entries (verbatim, `./`-stripped, or cwd-relative).
+// The recorded entry `entryArg` names (as recorded, `./`-stripped, or from cwd); needed only where several are.
 function selectEntry(entryArg, entries, { cwd, root, label }) {
   const recorded = [...entries]
   const list = recorded.map((e) => `  ${e}`).join('\n')
   if (entryArg === undefined) {
     if (recorded.length === 1) return recorded[0]
-    // length === 0 is impossible here (assertBuildableArtifact required >= 1 entry).
     throw new Error(`stasis build: ${label} has ${recorded.length} entry points; pass one as the second argument:\n${list}`)
   }
-  const candidates = new Set([
-    entryArg,
-    entryArg.replace(/^\.\//u, ''),
-    relative(root, resolve(cwd, entryArg)).split(sep).join('/'),
-  ])
+  const candidates = new Set([entryArg, entryArg.replace(/^\.\//u, ''), relative(root, resolve(cwd, entryArg)).split(sep).join('/')])
   const match = recorded.find((e) => candidates.has(e))
-  if (match === undefined) {
-    throw new Error(`stasis build: '${entryArg}' is not an entry point of ${label}; available:\n${list}`)
-  }
+  if (match === undefined) throw new Error(`stasis build: '${entryArg}' is not an entry point of ${label}; available:\n${list}`)
   return match
 }
 
-// Build a bundle-load State that serves an in-memory Bundle. skipDiscovery does NO
-// filesystem discovery (no package.json walk, no on-disk config, no stray stasis.code.br).
+// A bundle-load State serving `bundle`, with no discovery on disk (no package.json, config or stray stasis.code.br).
 function loadStateForBundle(root, bundle) {
   const state = new State(root, { bundle: 'load', lock: 'ignore', scope: bundle.config.scope, skipDiscovery: true })
   const sources = new Map()
@@ -172,27 +142,22 @@ function loadStateForBundle(root, bundle) {
   state.formats = bundle.formats
   state.imports = bundle.imports
   state.entries = new Set(bundle.entries)
-  // Not state.modules or state.executable: the load path reads neither (only the capture paths write them).
+  // Not state.modules or state.executable: the load path reads neither.
   return state
 }
 
-// A file's bytes as the State serves them: a Buffer for a base64 resource, else a string.
 const asBytes = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(source))
 
-// The bytes the artifact carries for `file` (a path from the State's root, or an absolute one), verified
-// by getFile.
+// The bytes the artifact carries for `file`, verified by getFile.
 const readCarried = (state, file) => asBytes(state.getFile(pathToFileURL(resolve(state.root, file)).toString()).source)
 
-// --metro=PLATFORM's resource hook (StasisEsbuild's `resource`): each resource the build reaches (a Metro
-// asset) served as the module Metro builds of it for `platform` (@preventive/rn's assetData, assetModule),
-// from the asset's files the artifact carries. Its require of the asset registry is added to the State's
-// graph, as Metro adds it past the source. `built` collects each asset's data for --assets-dest.
+// --metro=PLATFORM's resource hook: each Metro asset served as the module Metro builds of it, from the files
+// the artifact carries, its require of the asset registry added to the graph as Metro adds it past the source.
 function metroAssetResource(state, platform, built) {
   const listing = bundleDirHost(state)
   const registryFor = assetRegistryResolver(platform, state.sources)
   return (source, { path }) => {
     const rel = toPosix(state.relative(path))
-    // The files the artifact carries, the asset's own bytes those the plugin serves it by.
     const host = {
       readdir: (dir) => listing.readdir(dir).map(({ name }) => name),
       readFile: (file) => (file === path ? asBytes(source) : readCarried(state, file)),
@@ -204,10 +169,8 @@ function metroAssetResource(state, platform, built) {
   }
 }
 
-// --flow's per-file transform (StasisEsbuild's `transform` hook), as `stasis bundle --flow` reads a file and
-// Metro's Babel builds it: a JS-family file's Flow types stripped (an import listing types alone dropped
-// whole), of one marked `@flow` whether or not esbuild parses it, of any other only where esbuild can't.
-// What still doesn't parse fails the build in esbuild.
+// --flow, as Metro's Babel builds a file: Flow types stripped from a file marked `@flow`, else only where
+// esbuild can't parse it; what still doesn't parse fails the build in esbuild.
 function createFlowTransform(esbuild) {
   return async (source, { path, loader }) => {
     if (!FLOW_EXTS.has(extname(path))) return undefined
@@ -226,16 +189,13 @@ function createFlowTransform(esbuild) {
   }
 }
 
-// Two transform hooks over a file in turn, the second over what the first made of it.
 const chainTransforms = (first, second) => async (source, file) => {
   const firstMade = await first(source, file)
   return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
 }
 
-// The options of `entry` in the `entries` of the stasis.config.json the artifact carries, as `stasis build`
-// reads them: those saying how its code is built, `jsx`, `flow`, `define` (K=V strings) and `metro` with
-// its `platforms` (a list, as on the command line). -> { name, jsx, flow, define, platforms } (`platforms`
-// only under `metro`), or null where the artifact carries no config, or it names no such entry
+// `entry`'s options in the `entries` of the stasis.config.json the artifact carries that say how its code
+// is built. -> { name, jsx, flow, define, platforms (under `metro`) }, or null where none are
 function configEntryOptions(state, entry) {
   if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return null
   let config
@@ -276,25 +236,11 @@ function configEntryOptions(state, entry) {
   return { name, jsx: options.jsx === true, flow: options.flow === true, define, platforms }
 }
 
-// Run `stasis build`: run esbuild over one recorded entry, following the artifact's
-// recorded import graph EXACTLY (not esbuild's resolver). A specifier the artifact records
-// is always followed from the artifact; `external` only steers the specifiers it doesn't.
+// Run `stasis build`: esbuild over one recorded entry, following the artifact's recorded import graph exactly,
+// not esbuild's resolver: `external` only steers the specifiers it doesn't record.
 export async function buildCommand({
-  cwd = process.cwd(),
-  artifact,
-  entry,
-  output,
-  format,
-  platform = 'node',
-  babel = false,
-  flow = false,
-  minify = false,
-  sourcemap = false,
-  define = {},
-  external = [],
-  loader = {},
-  metro,
-  assetsDest,
+  cwd = process.cwd(), artifact, entry, output, format, platform = 'node', babel = false, flow = false, minify = false,
+  sourcemap = false, define = {}, external = [], loader = {}, metro, assetsDest,
 } = {}) {
   if (!artifact) throw new Error('stasis build: an artifact (bundle or lockfile) is required')
   if (!output) throw new Error('stasis build: --output is required (a .js/.cjs/.mjs file, or a directory)')
@@ -305,9 +251,7 @@ export async function buildCommand({
   if (flow && babel) {
     throw new Error('stasis build: --babel hands the project\'s Babel config each file as it is, Flow included, for it to compile; --flow strips Flow before esbuild without it -- pass one')
   }
-  // --platform=hermes is a stasis-level target, not an esbuild platform (esbuild gets
-  // 'neutral'): every code file is downleveled to Hermes' dialect before the final bundle,
-  // and the bundle itself must avoid ESM -- Hermes has no import/export.
+  // --platform=hermes is stasis's target, esbuild's 'neutral': code downleveled to Hermes' dialect, and no ESM.
   const hermes = platform === 'hermes'
   format ??= hermes ? 'iife' : 'esm'
   if (hermes && format === 'esm') {
@@ -317,20 +261,16 @@ export async function buildCommand({
   const { kind, artifact: parsed } = parseFileWithKind(artifactAbs)
   assertBuildableArtifact(parsed, artifact)
 
-  // Anchor artifact-relative paths at the artifact's own directory; a lockfile's sources
-  // are read + verified from there.
+  // Paths are the artifact's directory's, where a lockfile's sources are read and verified.
   const root = dirname(artifactAbs)
   const selectedEntry = selectEntry(entry, parsed.entries, { cwd, root, label: artifact })
   assertBuildableEntry(parsed, selectedEntry, artifact)
 
   const bundle = kind === 'lockfile' ? bundleFromLockfile(parsed, { root }) : parsed
   const state = loadStateForBundle(root, bundle)
-  // Make the entry absolute against the State's root so resolution is independent of process cwd.
   const entryPoint = resolve(state.root, selectedEntry)
 
-  // The entry's options in the config the artifact carries, under the flags given: jsx as --loader=.js:jsx,
-  // flow as --flow (not under --babel, whose config compiles Flow), its define under --define's, and metro
-  // as --metro for its one platform (of several, --metro picks one of them).
+  // The config's options for the entry, under the flags given (flow not under --babel, whose config compiles it).
   const configured = configEntryOptions(state, selectedEntry)
   if (configured !== null) {
     const taken = []
@@ -360,9 +300,8 @@ export async function buildCommand({
     }
     if (taken.length > 0) console.warn(`[stasis] ${selectedEntry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(configured.name)} sets`)
   }
-  // --metro, given or the config's, builds as `stasis bundle --metro` reads the files: JSX in .js, Flow
-  // stripped (not under --babel), and METRO_RELEASE_DEFINE's names defined where nothing else defines one
-  // (outside Metro's prelude, `__DEV__` is no global at all).
+  // As `stasis bundle --metro` reads the files; METRO_RELEASE_DEFINE's names too, since outside Metro's
+  // prelude `__DEV__` is no global at all.
   if (metro !== undefined) {
     if (loader['.js'] === undefined) loader = { ...loader, '.js': 'jsx' }
     if (!babel) flow = true
@@ -375,21 +314,17 @@ export async function buildCommand({
   }
 
   const esbuild = await importEsbuild()
-  // Per-file rewrites before esbuild parses a served file: --babel runs the project's babel.config.*, else
-  // --platform=hermes the built-in downlevel pipeline, each with the project's own Babel; --flow strips first.
   let transform
   if (babel) transform = createBabelConfigTransform({ projectDir: cwd })
   else if (hermes) transform = createHermesTransform({ projectDir: cwd, esbuild })
   if (flow) transform = transform === undefined ? createFlowTransform(esbuild) : chainTransforms(createFlowTransform(esbuild), transform)
-  // --metro=PLATFORM: PLATFORM's target of each per-platform edge, and each asset as Metro builds it.
   const builtAssets = new Map()
   const resource = metro === undefined ? undefined : metroAssetResource(state, metro, builtAssets)
 
   const outAbs = resolve(cwd, output)
   const asFile = /\.[cm]?js$/u.test(output)
-  // Never overwrite a file the artifact attests: esbuild's own overwrite check fires only
-  // after writing (corrupting a lockfile's hash), so we build write:false and refuse to
-  // clobber any recorded file before touching disk.
+  // Never overwrite a file the artifact attests: esbuild's own overwrite check fires only after writing
+  // (corrupting a lockfile's hash), so it builds write:false and each output is checked before any is written.
   const attested = new Set([...state.sources.keys(), ...state.resources.keys()].map((f) => resolve(state.root, f)))
 
   let result
@@ -408,16 +343,14 @@ export async function buildCommand({
       ...(external.length > 0 ? { external } : {}),
       ...(Object.keys(define).length > 0 ? { define } : {}),
       ...(asFile ? { outfile: outAbs } : { outdir: outAbs }),
-      // Loader overrides go through the plugin: it serves every in-bundle file, so esbuild's
-      // own `loader` option never sees them. e.g. { '.js': 'jsx' } to parse JSX in .js files.
+      // Loaders go through the plugin: it serves every file, so esbuild's own `loader` option never sees them.
       plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform, resource, platform: metro })],
     })
   } catch (err) {
-    // Under logLevel:'silent' esbuild puts the real errors on err.errors; surface them, then fail.
+    // Under logLevel:'silent' esbuild puts the real errors on err.errors.
     if (Array.isArray(err?.errors) && err.errors.length > 0) {
       const formatted = await esbuild.formatMessages(err.errors, { kind: 'error', color: false })
       for (const line of formatted) process.stderr.write(line)
-      // A resource the build reaches with no loader for its extension: what builds one.
       const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
       if (unloaded !== undefined) {
         process.stderr.write(
@@ -433,16 +366,12 @@ export async function buildCommand({
     throw err
   }
 
-  // --assets-dest's copies of the assets built, as `react-native bundle --assets-dest` lays them out for
-  // the platform (@preventive/rn's assetsDestFiles), from the bytes the artifact carries, in a stable
-  // order (esbuild loads in parallel).
+  // As `react-native bundle --assets-dest` lays them out, in a stable order (esbuild loads in parallel).
   const assetFiles = assetsDest === undefined
     ? []
     : assetsDestFiles([...builtAssets.keys()].toSorted().map((rel) => builtAssets.get(rel)), metro)
         .map(({ dest, src, contents }) => ({ path: resolve(cwd, assetsDest, dest), contents: contents ?? readCarried(state, src) }))
   const writes = [...result.outputFiles, ...assetFiles]
-
-  // Refuse to clobber an attested source, checked against the actual output paths before any write.
   for (const { path } of writes) {
     if (attested.has(path)) {
       throw new Error(

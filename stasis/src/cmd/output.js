@@ -3,13 +3,12 @@ import { dirname, resolve } from 'node:path'
 
 import { compressBundleText } from '@exodus/stasis-core/brotli'
 
-// Write `data` to the absolute path `abs`, creating its directory.
 export function writeFile(abs, data) {
   mkdirSync(dirname(abs), { recursive: true })
   writeFileSync(abs, data)
 }
 
-// Write `data` to `target` (resolved against `cwd`), or to stdout for `-`. -> where it went, for the summary
+// `target` from `cwd`, or `-` for stdout. -> where it went, for the summary
 export function writeOutput(cwd, target, data) {
   if (target === '-') {
     process.stdout.write(data)
@@ -19,32 +18,26 @@ export function writeOutput(cwd, target, data) {
   return target
 }
 
-// Write a bundle's `serialized` text brotli-compressed (at `brotliQuality`) as writeOutput does. -> where it went
 export const writeBundle = (cwd, target, serialized, brotliQuality) => writeOutput(cwd, target, compressBundleText(serialized, brotliQuality))
 
-// `N package(s)`: every non-empty bucket of a bundle's `modules` (the "." workspace bucket counts as one).
+// `N package(s)`: the non-empty buckets of `modules`, the "." workspace bucket one of them.
 export function packagesLabel(modules) {
   const packages = [...modules.values()].filter((m) => Object.keys(m.files).length > 0).length
   return `${packages} package${packages === 1 ? '' : 's'}`
 }
 
-// The summary of what a tree buildVfsBundle built from unpacked, by its `stats`: how many of the
-// packages installed (a Soldeer tree's dependencies), the files and their size, and the tarballs
-// fetched, where deptree counts them.
+// What buildVfsBundle unpacked, by its `stats`; tarballs only where deptree counts them.
 export function unpackedSummary({ unpacked, installed, dependencies, files, bytes, tarballs }) {
   const fetched = typeof tarballs === 'number' ? `, ${tarballs} tarball${tarballs === 1 ? '' : 's'} fetched` : ''
   return `[stasis] Unpacked ${unpacked} of ${installed ?? dependencies} packages: ${files} files, ${(bytes / 2 ** 20).toFixed(1)} MiB${fetched}`
 }
 
-// The summary of a bundle of `count` files in `modules` written from `from` to `dest`, or under --lockfile-only
-// of its lockfile.
 const summary = (verb) => (count, modules, from, dest) => `[stasis] ${verb} ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
 export const bundledSummary = summary('Bundled')
 export const lockedSummary = summary('Locked')
 
-// Why --lockfile-only can't be taken with the bundle's other output options as given (`brotliQuality`
-// parsed or not: only whether it is given counts), or null where it can. It writes the lockfile
-// alone, so it needs one (`lockfile`, its path), and no bundle is written, merged into or compressed.
+// Why --lockfile-only can't be taken with these output options, or null where it can; `brotliQuality`
+// counts as given, parsed or not.
 export function lockfileOnlyError({ lockfile, output, add = false, brotliQuality }) {
   if (!lockfile) return '--lockfile-only requires --lockfile=path'
   if (output !== undefined) return "--lockfile-only can't be combined with --output (no bundle is written)"
