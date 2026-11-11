@@ -156,7 +156,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if (packageJSON && !allJs) throw new Error('--package-json is only valid for JS bundles')
   if (values.resources !== undefined && !allJs) throw new Error('--resources is only valid for JS bundles')
   const resources = listFlag(values.resources, '--resources must list at least one extension or filename (e.g. --resources=png,svg)')
-  parseResourcesOption('--resources', resources)
+  parseResourcesOption('--resources', resources) // checked here, for a clean usage error
   if (metro) {
     if (conditions.length > 0) throw new Error("--conditions can't be combined with --metro (it sets its own conditions)")
     if (mainFields !== undefined) throw new Error("--mainFields can't be combined with --metro (it sets its own mainFields)")
