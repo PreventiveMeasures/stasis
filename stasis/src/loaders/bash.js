@@ -1,6 +1,6 @@
-// Bash loader: `{ sources, resolutions, missing }` from a set of scripts. A .sh/.bash reference
-// landing INSIDE the bundle root must resolve to an in-set script, else it lands in `missing`;
-// everything else (PATH commands, `$VAR` paths, absolute/escaping paths) is best-effort and dropped.
+// Bash loader: `{ sources, resolutions, missing }` from a set of scripts. A .sh/.bash reference landing
+// inside the bundle root must resolve to an in-set script, else it is `missing`; everything else (PATH
+// commands, `$VAR` paths, absolute or escaping paths) is best-effort and dropped.
 
 import { isUtf8 } from 'node:buffer'
 import { realpathSync } from 'node:fs'
@@ -11,26 +11,16 @@ import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { applyToDir } from './paths.js'
 
-// The capture class excludes backtick/`(`/`)` so a ref inside a command
-// substitution (`` `source x.sh` ``, `$(bash x.sh)`) doesn't swallow the closing delimiter.
-
-// `source script.sh`, `. script.sh`, `. ./script.sh`
+// The capture class excludes backtick, `(` and `)` so a ref inside a command substitution
+// (`` `source x.sh` ``, `$(bash x.sh)`) doesn't swallow the closing delimiter.
 const SOURCE_RE = /(?:^|\n|;|&&|\|\||`|\$\()\s*(?:source|\.)\s+["']?([^\s"';&|#`()]+)["']?/gu
-
-// `bash`/`sh script.sh`, incl. `/usr/bin/env bash`, `/bin/sh`, `/usr/bin/bash`.
 const EXEC_RE = /(?:^|\n|;|&&|\|\||`|\$\()\s*(?:\/usr\/bin\/env\s+|\/bin\/|\/usr\/bin\/)?(?:ba)?sh\s+["']?([^\s"';&|#`()]+)["']?/gu
-
-// Direct invocation: `./script.sh`, `../lib/helper.bash`, `/path/to/script.sh`
 const DIRECT_RE = /(?:^|\n|;|&&|\|\||`|\$\()\s*["']?(\.\.?\/[^\s"';&|#`()]+\.(?:sh|bash))["']?/gu
-
-// Dependency hint comment: `# Depends on: example.sh`
 const COMMENT_RE = /^# Depends on: ([^ ]+\.(?:sh|bash))( |$)/gmu
-
-// `# shellcheck source=../lib/config.sh`: pins a dynamically sourced (`$VAR`) file, relative to
-// the script. `source=/dev/null` is shellcheck's "don't follow" sentinel, ignored below.
+// Pins a dynamically sourced (`$VAR`) file; `source=/dev/null` is shellcheck's "don't follow".
 const SHELLCHECK_SOURCE_RE = /#\s*shellcheck\s[^\n]*?\bsource=["']?([^\s"'#]+)["']?/gu
 
-// Candidate file references, `$VAR` expansions and `-flags` dropped (never bundle-able).
+// `$VAR` expansions and `-flags` are never bundle-able.
 export function extractBashCalls(content) {
   const calls = new Set()
   for (const re of [SOURCE_RE, EXEC_RE, DIRECT_RE, COMMENT_RE, SHELLCHECK_SOURCE_RE]) {
@@ -49,20 +39,17 @@ export function resolveBashCall(ref, fromFile, { knownFiles, baseDir } = {}) {
     if (knownFiles) return knownFiles.has(p)
     return Boolean(baseDir) && isFile(join(baseDir, p))
   }
-
   // Null when it escapes baseDir or names baseDir itself.
   const resolveRel = (r) => applyToDir(fromFile, r.split('/')) || null
 
-  // Absolute → project-relative, accepted only if it exists (so `/etc/...` is dropped).
+  // An absolute path is accepted only if it exists in the project (so `/etc/...` is dropped).
   if (ref.startsWith('/')) {
     const stripped = ref.replace(/^\/+/u, '')
     return present(stripped) ? stripped : null
   }
-
-  // Path with a slash → computed against the caller's dir; existence deferred to the caller.
+  // Existence deferred to the caller.
   if (ref.includes('/')) return resolveRel(ref)
 
-  // Bare name → only accept a real file: a sibling, a root file, else any known file of that name.
   const sibling = resolveRel(ref)
   if (present(sibling)) return sibling
   if (sibling !== ref && present(ref)) return ref
@@ -72,9 +59,8 @@ export function resolveBashCall(ref, fromFile, { knownFiles, baseDir } = {}) {
   return null
 }
 
-// The triple from already-loaded scripts. A ref is `missing` (fatal) only when it resolves INSIDE
-// the bundle root but wasn't collected (a dangling `source ./lib.sh`); null-resolving refs are
-// external and tolerated, and self-refs/non-script exts are dropped silently.
+// Null-resolving refs are external and tolerated; self-refs and an extensionless `source ./env`
+// that isn't there are dropped silently.
 export function buildBashTree(sources) {
   const knownFiles = new Set(sources.keys())
   const resolutions = new Map()
@@ -82,13 +68,11 @@ export function buildBashTree(sources) {
   for (const [path, content] of sources) {
     const specMap = new Map()
     for (const ref of extractBashCalls(content)) {
-      // The slash branch returns an unchecked in-bundle path, so a non-null target not in
-      // knownFiles is a genuine dangling dep.
+      // A slash ref resolves unchecked, so a target not in knownFiles is a genuine dangling dep.
       const target = resolveBashCall(ref, path, { knownFiles })
       if (target && knownFiles.has(target)) {
         if (target !== path) specMap.set(ref, target)
       } else if (target && (ref.endsWith('.sh') || ref.endsWith('.bash'))) {
-        // An extensionless `source ./env` isn't flagged missing when absent.
         console.warn(`[loader.bash] Missing file: ${ref} from ${path}`)
         missing.push({ spec: ref, from: path })
       }
@@ -98,8 +82,7 @@ export function buildBashTree(sources) {
   return { sources, resolutions, missing }
 }
 
-// Walk from `entries` following resolved refs, reading each script once; a ref
-// missing on disk warns and is skipped without aborting the walk.
+// A ref missing on disk warns and is skipped without aborting the walk.
 export async function collectBashFilesFromDisk(baseDir, entries) {
   const sources = new Map()
   const realBase = realpathSync(baseDir)
@@ -108,34 +91,24 @@ export async function collectBashFilesFromDisk(baseDir, entries) {
     try {
       assertRealPathWithinBase(realBase, baseDir, relPath)
       const bytes = await readFile(join(baseDir, relPath))
-      // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
       if (!isUtf8(bytes)) throw new Error(`Shell script is not valid UTF-8: ${relPath}`)
       return [relPath, bytes.toString('utf8')]
     } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.warn(`[loader.bash] Missing file: ${relPath}`)
-        return null
-      }
-      // A slash ref can resolve to a directory (`source ./lib`) → EISDIR; skip, don't abort.
-      if (err.code === 'EISDIR') {
-        console.warn(`[loader.bash] Skipping directory reference: ${relPath}`)
-        return null
-      }
-      throw err
+      // A slash ref can resolve to a directory (`source ./lib`).
+      if (err.code !== 'ENOENT' && err.code !== 'EISDIR') throw err
+      console.warn(`[loader.bash] ${err.code === 'ENOENT' ? 'Missing file' : 'Skipping directory reference'}: ${relPath}`)
+      return null
     }
   }
 
   const processWave = async (wave) => {
     if (wave.size === 0) return
-    const next = []
+    const next = new Set()
     for (const [relPath, content] of (await Promise.all([...wave].map(read))).filter(Boolean)) {
       sources.set(relPath, content)
-      for (const ref of extractBashCalls(content)) {
-        const resolved = resolveBashCall(ref, relPath, { baseDir })
-        if (resolved && !sources.has(resolved)) next.push(resolved)
-      }
+      for (const ref of extractBashCalls(content)) next.add(resolveBashCall(ref, relPath, { baseDir }))
     }
-    await processWave(new Set(next.filter((p) => !sources.has(p))))
+    await processWave(new Set([...next].filter((p) => p && !sources.has(p))))
   }
 
   await processWave(new Set(entries))
