@@ -69,7 +69,7 @@ export const normalizeRepo = (repo, what = 'bundle repo') => normalizeBlock(repo
 // An untagged node_modules bucket is npm's: an artifact from before the `ecosystem` tag records none.
 export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
-// A record's `field` block, which only a bucket `carries` (a `kind` one) may hold, its `required` field set.
+// The normalizer of a record's `field` block: only a bucket `carries` takes (a `kind` one) holds it, `required` set.
 const blockMetadata = (field, fields, required, carries, kind) => (dir, { ecosystem, [field]: block }, what) => {
   if (block === undefined) return undefined
   if (!carries(dir, ecosystem)) assert(false, `${what}: '${dir}' is no ${kind} bucket, and carries no ${field}`)
@@ -503,9 +503,10 @@ export function serializedParts({ config: { scope }, entries, modules, formats, 
   }
 }
 
-export const importTargetsEqual = (a, b) => (!(a instanceof Map) || !(b instanceof Map)
-  ? a === b
-  : a.size === b.size && a.entries().every(([platform, file]) => b.get(platform) === file))
+export function importTargetsEqual(a, b) {
+  if (!(a instanceof Map) || !(b instanceof Map)) return a === b
+  return a.size === b.size && a.entries().every(([platform, file]) => b.get(platform) === file)
+}
 
 const fmtTarget = (t) => (t instanceof Map ? `{${[...t].map(([p, f]) => `${p}: ${f}`).join(', ')}}` : t)
 

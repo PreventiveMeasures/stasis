@@ -151,7 +151,9 @@ export class Config {
     }
 
     // bundle=load needs a trust root: frozen pins each file's sha512, else the bundle itself is it (none/ignore).
-    if (bundle === 'load' && !['frozen', 'none', 'ignore'].includes(lock)) throw new RangeError('bundle=load is incompatible with lock=(add|replace)')
+    if (bundle === 'load' && !['frozen', 'none', 'ignore'].includes(lock)) {
+      throw new RangeError('bundle=load is incompatible with lock=(add|replace)')
+    }
 
     // bundle=frozen deliberately constrains no lock mode: it verifies disk against the bundle, its own trust root.
     if (lock === 'none' && bundle === 'none') throw new RangeError('stasis needs a lockfile or a bundle: set lock or bundle')
