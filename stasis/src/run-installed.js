@@ -1,8 +1,7 @@
 import { INSTALLED } from '@exodus/stasis-core/util'
 import { installedRecords } from './installed.js'
 
-// stasis-core's State's reader of how the packages were installed (INSTALLED), as a build reads it
-// (installedRecords), what it read kept across a run's calls. `stasis run` preloads it before the loader.
+// `stasis run` preloads this before the loader; what it reads is kept across a run's calls.
 const cache = { stores: new Map(), layouts: new Map() }
 globalThis[INSTALLED] = (modules, root) => {
   const accounts = installedRecords(modules, root, undefined, cache)

@@ -1,20 +1,17 @@
 import { createRequire } from 'node:module'
 import { posix } from 'node:path'
 
-// Node 24.22.2's and 26.13.0's fs.globSync (internal/fs/glob.js, as it runs without `followSymlinks`, `maxDepth` or
-// an array `exclude`) and path.matchesGlob over a `host`, on the optional minimatch 10 they vendor. Unlike Node's,
-// matching never folds case, whatever the OS: the tree is git's, whose names may differ by case alone.
+// Node 24.22.2's and 26.13.0's fs.globSync (internal/fs/glob.js, without `followSymlinks`, `maxDepth` or an array
+// `exclude`) and path.matchesGlob over a `host`. Matching never folds case: git's names may differ by case alone.
 
 const { join, resolve } = posix
 const require = createRequire(import.meta.url)
 
 const MINIMATCH = 'minimatch'
 const MINIMATCH_MAJOR = '10'
-// Node's createMatcher's, as on Linux.
 const OPTIONS = { nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true, optimizationLevel: 2, platform: 'linux', nocaseMagicOnly: true }
 
 let minimatch
-// minimatch, or a refusal naming `what` needs it where it isn't installed.
 export function loadMinimatch(what) {
   if (minimatch) return minimatch
   const needs = `${what} needs the optional '${MINIMATCH}' ${MINIMATCH_MAJOR} dependency`
@@ -32,13 +29,11 @@ export function loadMinimatch(what) {
 
 const lazyMinimatch = () => loadMinimatch("A glob over a Vfs (stasis.config.json's extra)")
 
-// Throws where globbing a Vfs can't load minimatch, before anything else is done.
 export const checkGlob = () => void lazyMinimatch()
 
 const createMatcher = (pattern) => new (lazyMinimatch().Minimatch)(pattern, OPTIONS)
 
-// What `host` holds at `path`, its last link not followed, as far as the walk asks of lstat's
-// Dirent; null where nothing is.
+// As much of lstat's Dirent as the walk asks for; null where nothing is.
 function lstatOf(host, path) {
   let link
   try {
@@ -162,9 +157,8 @@ class Pattern {
   }
 }
 
-// Node's, but for `exclude`: given each path's absolute path (where Node gives its Dirent with
-// `withFileTypes`), and in #addSubpattern, the path from the root (where Node's lstat takes it, as
-// spelled from the root, from the process's cwd).
+// Node's, but `exclude` is given each absolute path (where Node gives its Dirent with `withFileTypes`), and
+// #addSubpattern stats the path from the root (where Node's lstat takes it from the process's cwd).
 class Glob {
   #root
   #exclude
@@ -229,23 +223,19 @@ class Glob {
     const isFirst = pattern.isFirst()
 
     if (isFirst && pattern.at(0) === '') {
-      // Absolute path, go to root
       this.#addSubpattern('/', pattern.child(new Set().add(1)))
       return
     }
     if (isFirst && pattern.at(0) === '..') {
-      // Start with .., go to parent
       this.#addSubpattern('../', pattern.child(new Set().add(1)))
       return
     }
     if (isFirst && pattern.at(0) === '.') {
-      // Start with ., proceed
       this.#addSubpattern('.', pattern.child(new Set().add(1)))
       return
     }
 
     if (isLast && typeof pattern.at(-1) === 'string') {
-      // Add result if it exists
       const p = pattern.at(-1)
       const found = this.#cache.statSync(join(fullpath, p))
       if (found && (p || isDirectory)) {
@@ -256,8 +246,6 @@ class Glob {
       }
     } else if (isLast && pattern.at(-1) === lazyMinimatch().GLOBSTAR &&
      (path !== '.' || pattern.at(0) === '.' || (last === 0 && stat))) {
-      // If pattern ends with **, add to results
-      // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
       this.#results.add(path)
     }
 
@@ -289,7 +277,6 @@ class Glob {
       const subPatterns = new Set()
       const nSymlinks = new Set()
       for (const index of pattern.indexes) {
-        // For each child, check potential patterns
         const current = pattern.at(index)
         const nextIndex = index + 1
         const next = pattern.at(nextIndex)
@@ -311,28 +298,18 @@ class Glob {
             continue
           }
           if (!fromSymlink && entryIsDirectory) {
-            // If directory, add ** to its potential patterns
             subPatterns.add(index)
           } else if (!fromSymlink && index === last) {
-            // If ** is last, add to results
             this.#results.add(entryPath)
           }
 
-          // Any pattern after ** is also a potential pattern
-          // so we can already test it here
           if (nextMatches && nextIndex === last && !isLast) {
-            // If next pattern is the last one, add to results
             this.#results.add(entryPath)
           } else if (nextMatches && entryIsDirectory) {
-            // Pattern matched, meaning two patterns forward
-            // are also potential patterns
-            // e.g **/b/c when entry is a/b - add c to potential patterns
             subPatterns.add(index + 2)
           }
           if ((nextMatches || pattern.at(0) === '.') &&
            entryIsDirectory && !fromSymlink) {
-            // If pattern after ** matches, or pattern starts with "."
-            // and entry is a directory, add to potential patterns
             subPatterns.add(nextIndex)
           }
 
@@ -341,9 +318,6 @@ class Glob {
           }
 
           if (next === '..' && entryIsDirectory) {
-            // In case pattern is "**/..",
-            // both parent and current directory should be added to the queue
-            // if this is the last pattern, add to results instead
             const parent = join(path, '..')
             if (nextIndex < last) {
               if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
@@ -366,11 +340,8 @@ class Glob {
         }
         if (typeof current === 'string') {
           if (pattern.test(index, entry.name) && index !== last) {
-            // If current pattern matches entry name
-            // the next pattern is a potential pattern
             subPatterns.add(nextIndex)
           } else if (current === '.' && pattern.test(nextIndex, entry.name)) {
-            // If current pattern is ".", proceed to test next pattern
             if (nextIndex === last) {
               this.#results.add(entryPath)
             } else {
@@ -379,8 +350,6 @@ class Glob {
           }
         }
         if (typeof current === 'object' && pattern.test(index, entry.name)) {
-          // If current pattern is a regex that matches entry name (e.g *.js)
-          // add next pattern to potential patterns, or to results if it's the last pattern
           if (index === last) {
             this.#results.add(entryPath)
           } else if (entryIsDirectory) {
@@ -389,23 +358,18 @@ class Glob {
         }
       }
       if (subPatterns.size > 0) {
-        // If there are potential patterns, add to queue
         this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks))
       }
     }
   }
 }
 
-// fs.globSync(pattern, { cwd, exclude }) over `host`, `cwd` absolute: the matches as Node spells them, from `cwd` (or
-// `/`, of an absolute pattern), never walking into a path `exclude` takes by its absolute path. As Node's, such a
-// path is left out where a `**` meets it alone; one the segment after the `**` matches is still a match.
 export const globSync = (host, pattern, { cwd, exclude } = {}) => new Glob(host, pattern, { cwd, exclude }).globSync()
 
-// As Node's matchGlobPattern keeps them: the most recent 250 patterns' matchers.
+// As Node's matchGlobPattern keeps them.
 const MATCHERS_KEPT = 250
 const matchers = new Map()
 
-// path.matchesGlob(path, pattern), never folding case.
 export function matchesGlob(path, pattern) {
   let matcher = matchers.get(pattern)
   if (matcher === undefined) {
