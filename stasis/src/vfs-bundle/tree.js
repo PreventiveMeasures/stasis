@@ -70,10 +70,7 @@ export function projectView(host, root) {
   }
 }
 
-const LIBCS = new Set(['glibc', 'musl', 'unknown'])
-
-// detect-libc's familySync by Node's report alone (it reads /usr/bin/ldd first); 'unknown', which pnpm installs
-// everything for, where that can't tell. The report leaves out the network, whose reverse DNS can stall.
+// detect-libc's familySync by the report alone, 'unknown' (pnpm installs all) where it can't tell; no reverse DNS to stall.
 function reportedLibc() {
   if (process.platform !== 'linux' || !process.report) return 'unknown'
   const { excludeNetwork } = process.report
@@ -99,7 +96,7 @@ const target = ({ os, cpu, libc } = {}) => {
 export function checkTarget(name, { os, cpu, libc }) {
   const invalid = Object.entries({ os, cpu }).find(([, value]) => value !== undefined && (typeof value !== 'string' || value === ''))
   if (invalid) throw new TypeError(`${name}: ${invalid[0]} must be a non-empty string`)
-  if (libc !== undefined && !LIBCS.has(libc)) throw new TypeError(`${name}: libc must be one of 'glibc', 'musl', 'unknown'`)
+  if (libc !== undefined && !['glibc', 'musl', 'unknown'].includes(libc)) throw new TypeError(`${name}: libc must be one of 'glibc', 'musl', 'unknown'`)
 }
 
 export function checkCache(name, cache) {
@@ -145,12 +142,6 @@ function npmRoot(host, cwd, os) {
   return nearest(cwd, (dir) => isFile(join(dir, 'package-lock.json'), host) && isFile(join(dir, 'package.json'), host))
 }
 
-// npm finds a libc only as glibc or musl.
-const npmHost = (npm, given) => {
-  const { libc, ...host } = target(given)
-  return { npm, ...host, ...((libc === 'glibc' || libc === 'musl') && { libc }) }
-}
-
 const noneAbove = (file) => async (names, above) => !(await above()).some((dir) => dir.includes(file))
 
 const PACKAGE_MANAGERS = {
@@ -193,7 +184,11 @@ const PACKAGE_MANAGERS = {
     projects: (view, _npm, given) => findNpmWorkspaces({ project: view, os: target(given).os }),
     installs: 'node_modules',
     lazy: true,
-    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given), cache: given.cache, lazy: given.lazy, production: given.production })),
+    build: (view, npm, file, given) => {
+      const { libc, ...host } = target(given)
+      const found = (libc === 'glibc' || libc === 'musl') && { libc } // npm finds a libc only as glibc or musl
+      return naming(file, buildNpmTree({ project: view, host: { npm, ...host, ...found }, cache: given.cache, lazy: given.lazy, production: given.production }))
+    },
   },
   soldeer: {
     kind: 'sol',
@@ -345,13 +340,11 @@ async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, laz
   return { root, vfs, projects, stats, installed, ...integrities, packageManager, packageManagerVersion: taken, ...lazily }
 }
 
-export function lockfilesManagers(name, lockfiles) {
-  return lockfiles.map((path) => {
-    const found = PACKAGE_MANAGER_NAMES.find((pm) => lockfileOf(pm) === posix.basename(path))
-    if (found === undefined) throw new Error(`${name}: ${CONFIG_FILE}'s lockfiles names ${path}, which is none of ${PACKAGE_MANAGER_NAMES.map(lockfileOf).join(', ')}, the lockfiles a tree is laid out from`)
-    return found
-  })
-}
+export const lockfilesManagers = (name, lockfiles) => lockfiles.map((path) => {
+  const found = PACKAGE_MANAGER_NAMES.find((pm) => lockfileOf(pm) === posix.basename(path))
+  if (found === undefined) throw new Error(`${name}: ${CONFIG_FILE}'s lockfiles names ${path}, which is none of ${PACKAGE_MANAGER_NAMES.map(lockfileOf).join(', ')}, the lockfiles a tree is laid out from`)
+  return found
+})
 
 export function lockfileSpecs(name, project, cwd, lockfiles, os) {
   const managers = lockfilesManagers(name, lockfiles)
@@ -405,9 +398,8 @@ async function settled(promises) {
 }
 
 function installsOf(tree) {
-  const pm = PACKAGE_MANAGERS[tree.packageManager]
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
-  return [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
+  return [...[...tree.projects].map((dir) => join(dir, PACKAGE_MANAGERS[tree.packageManager].installs)), ...files]
 }
 
 const hiding = (name) => (name === undefined ? undefined : (rel) => rel.split('/').includes(name))
@@ -429,11 +421,8 @@ function mountedVfs(owners) {
 
 function statsOf(trees) {
   const stats = {}
-  for (const tree of trees) {
-    for (const [key, value] of Object.entries({ ...tree.stats, installed: tree.stats.installed ?? tree.stats.dependencies, dependencies: undefined })) {
-      if (typeof value === 'number') stats[key] = (stats[key] ?? 0) + value
-    }
-  }
+  const counts = trees.flatMap(({ stats: own }) => Object.entries({ ...own, installed: own.installed ?? own.dependencies, dependencies: undefined }))
+  for (const [key, value] of counts) if (typeof value === 'number') stats[key] = (stats[key] ?? 0) + value
   return stats
 }
 
@@ -595,11 +584,7 @@ const TYPE_BITS = { file: constants.S_IFREG, directory: constants.S_IFDIR, symli
 
 const typePredicates = (type) => ({ isFile: () => type === 'file', isDirectory: () => type === 'directory', isSymbolicLink: () => type === 'symlink' })
 
-const statsFor = (st) => ({ ...typePredicates(st.type), mode: TYPE_BITS[st.type] | st.mode })
-
 const dirent = (name, type) => ({ name, ...typePredicates(type) })
-
-const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 
 // A resolver probes many names and takes a miss as none: building the stack is most of what a miss costs.
 function stackless(make) {
@@ -621,10 +606,6 @@ function lstatOrNull(vfs, p) {
   }
 }
 
-const TREE = 'tree'
-const NONE = 'none'
-const OUTSIDE = 'outside'
-
 // A `host` over `vfs`; with `root` (a real path) and `outside` (a host of the rest), the Vfs's `/` is `root`, serving
 // what it `installs`, a path `hides` takes and a node_modules out of `root` being none. Links are walked as the OS does.
 export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true, touches = () => 0, retouch } = {}) {
@@ -634,14 +615,14 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   const prefix = disk === null || root === '/' ? '/' : `${root}/`
   const towardRoot = (p) => p === root || prefix.startsWith(`${p}/`)
   const zoneOf = (p) => {
-    if (disk === null) return TREE
-    if (!p.startsWith(prefix)) return hasNodeModulesSegment(p) && !towardRoot(p) ? NONE : OUTSIDE
+    if (disk === null) return 'tree'
+    if (!p.startsWith(prefix)) return hasNodeModulesSegment(p) && !towardRoot(p) ? 'none' : 'outside'
     const rel = p.slice(prefix.length)
     for (let at = rel.indexOf('/'); at !== -1; at = rel.indexOf('/', at + 1)) {
-      if (installed.has(rel.slice(0, at))) return TREE
+      if (installed.has(rel.slice(0, at))) return 'tree'
     }
-    if (installed.has(rel)) return TREE
-    return hides?.(rel) ? NONE : OUTSIDE
+    if (installed.has(rel)) return 'tree'
+    return hides?.(rel) ? 'none' : 'outside'
   }
   const installedIn = Map.groupBy(disk === null ? [] : installed, (dir) => join(root, dirname(dir)))
   const inVfs = disk === null ? (p) => p : (p) => `/${p.slice(prefix.length)}`
@@ -653,9 +634,8 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   // `p` is a real path but for its last name; null when it exists and isn't a link.
   const readlink = (p) => {
     const zone = zoneOf(p)
-    if (zone === OUTSIDE) return disk.readlink(p)
-    if (zone === NONE) throw stackless(() => new VfsError('ENOENT', p))
-    const node = lstatOrNull(vfs, inVfs(p))
+    if (zone === 'outside') return disk.readlink(p)
+    const node = zone === 'none' ? null : lstatOrNull(vfs, inVfs(p))
     if (node === null) throw stackless(() => new VfsError('ENOENT', p))
     return node.type === 'symlink' ? vfs.readlink(inVfs(p)) : null
   }
@@ -715,18 +695,18 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
 
   const statCache = memo()
   const statOf = (real) => statCache(real, () => {
-    if (zoneOf(real) === OUTSIDE) return disk.stat(real)
+    if (zoneOf(real) === 'outside') return disk.stat(real)
     const node = lstatOrNull(vfs, inVfs(real))
-    return node !== null && node.type !== 'symlink' ? statsFor(node) : null
+    return node !== null && node.type !== 'symlink' ? { ...typePredicates(node.type), mode: TYPE_BITS[node.type] | node.mode } : null
   })
   const listingOf = (real, p) => {
-    if (zoneOf(real) === TREE) {
+    if (zoneOf(real) === 'tree') {
       if (nodeOf(real).type !== 'directory') throw new VfsError('ENOTDIR', p)
       const dir = inVfs(real)
       return vfs.readdir(dir).map((name) => dirent(name, vfs.lstat(join(dir, name)).type)).toSorted(byName)
     }
     // An outside directory shows the tree's installed paths in place of its own, and nothing that is none.
-    const out = disk.readdir(real).filter((d) => zoneOf(join(real, d.name)) === OUTSIDE)
+    const out = disk.readdir(real).filter((d) => zoneOf(join(real, d.name)) === 'outside')
     for (const name of (installedIn.get(real) ?? []).map((dir) => basename(dir))) {
       const node = lstatOrNull(vfs, inVfs(join(real, name)))
       if (node !== null) out.push(dirent(name, node.type))
@@ -754,9 +734,10 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     readFile(p) {
       const real = realpath(abs(p))
       checkDir(p, real)
-      if (zoneOf(real) === OUTSIDE) return disk.readFile(real)
+      if (zoneOf(real) === 'outside') return disk.readFile(real)
       if (nodeOf(real).type !== 'file') throw new VfsError('EISDIR', p)
-      return asBuffer(vfs.readFile(inVfs(real)))
+      const bytes = vfs.readFile(inVfs(real))
+      return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     },
     readdir(p) {
       const real = realpath(abs(p))

@@ -46,8 +46,7 @@ const packageFormat = ({ host, version }) => (dir) => {
   try { return file !== null && JSON.parse(host.readFile(file).toString('utf8')).type === 'module' ? 'esm' : 'cjs' } catch { return 'cjs' }
 }
 
-// Kept to the top-level statements `roots` reach by any word (more is kept than used, never less), refused where it
-// then requires anything `given` doesn't hold, or by no literal name.
+// Kept to the statements `roots` reach by any word (more than used, never less); refused if it requires what `given` lacks.
 function compiled(main, roots, parameters, given) {
   const source = readFileSync(main, 'utf8')
   const { body } = getParser().parseSync(main, source, { sourceType: 'script' }).program
@@ -86,8 +85,7 @@ function commonjs(main, given, globals = {}) {
 
 const engineMessage = (message) => { try { return JSON.parse(message).message ?? message } catch { return message } }
 
-// One engine per schema: a panic traps out of an instance mid-call, leaving it in a state none was built for. Its
-// panic hook writes to a registry of its own, not the process's PRISMA_WASM_PANIC_REGISTRY.
+// One engine per schema, its panic hook its own: a panic leaves an instance in a state none was built for.
 function schemaEngines(near) {
   const glue = near.resolve('@prisma/prisma-schema-wasm')
   const fs = { readFileSync: memoized((file) => readFileSync(file)) }
@@ -362,7 +360,6 @@ function generateClientFor({ schemaPath, datamodel, generator, dmmf, datasources
   })
   const denied = peer.validateDmmfAgainstDenylists(built.prismaClientDmmf)
   if (denied) throw new Error(`prisma: ${schemaPath} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
-  // fileMap nests directories as objects.
   const flat = (map, at) => Object.entries(map).flatMap(([name, content]) => (typeof content === 'string' || Buffer.isBuffer(content) ? [[at + name, content]] : flat(content, `${at}${name}/`)))
   return new Map(flat(built.fileMap, '').map(([path, content]) => [path, asVersion(content, path, prisma.version, options.generatedFileExtension)]))
 }
@@ -371,8 +368,7 @@ const readingSchema = (path, what) => Promise.try(what).catch((cause) => { throw
 
 const outputOf = (generator, path) => posix.resolve(posix.dirname(generator.sourceFilePath ?? path), generator.output.value)
 
-// The bundle takes what it reaches there as committed, however stale. Not one in node_modules, laid out from the
-// lockfile, nor one no `output` or an env() names, which stasis can't know.
+// The bundle takes what it reaches there as committed, however stale; none in node_modules, nor one env() names.
 function committedOutput(host, generator, path) {
   if (generator.output === null || generator.output.fromEnvVar !== null) return undefined
   const output = outputOf(generator, path)
@@ -408,8 +404,7 @@ function schemaTexts(host, path) {
   return walk(path)
 }
 
-// As getConfig gives them, read without Prisma's parser, which another Prisma's schema needn't satisfy and which needs
-// the optional peer.
+// Read without Prisma's parser, which another Prisma's schema needn't satisfy and which needs the optional peer.
 function generatorBlocks(host, path) {
   let files
   try { files = schemaTexts(host, path) } catch { return [] }
@@ -425,8 +420,6 @@ function generatorBlocks(host, path) {
 // Looked for before any `prisma` is read, which a lazy tree fetches once read.
 const hasSchema = (host) => holding(host, ...configFiles(CONFIG_BASES), ...DEFAULT_SCHEMAS)
 export const schemaProjects = (host, root, projects) => new Set([...projects].filter((project) => hasSchema(host)(posix.join(root, project))))
-
-const reasonOf = (error) => error.message.replace(/^prisma: /u, '')
 
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
 export async function generatePrismaClients({ host, root, projects, strict = true, shared = false }) {
@@ -452,7 +445,7 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
       outputs.push(...await generateSchema({ host, path, prisma, say, skip }))
     } catch (error) {
       if (strict) throw error
-      reasons.set(path, reasonOf(error))
+      reasons.set(path, error.message.replace(/^prisma: /u, ''))
     }
   }
   const dirs = outputs.map(({ dir }) => dir)
@@ -488,8 +481,7 @@ async function generateSchema({ host, path, prisma, say, skip }) {
   return outputs
 }
 
-// What each generator would write and isn't, read from the schemas alone: a project's is the one generation took, else
-// each a supported Prisma would take (7.10.0's prisma7.config.* is another's).
+// Read from the schemas alone: a project's is the one generation took, else each a supported Prisma would take.
 export function expectedOutputs({ host, root, projects, outputs = [], reasons = new Map(), schemas, off }) {
   const generated = new Set(outputs.map(({ dir }) => dir))
   const taken = (dir, version) => {
@@ -535,7 +527,6 @@ export function generatedMiss(expected) {
 
 export function committedWarnings(expected, bundle, root) {
   const skipped = expected.filter(({ path, why }) => path !== undefined && why === SKIPPED && !hasNodeModulesSegment(path))
-  if (skipped.length === 0) return []
   const files = [...bundle.sources.keys()]
   return skipped.filter(({ path }) => {
     const rel = posix.relative(root, path)
@@ -553,9 +544,8 @@ export function reachedProjects(host, root, projects, paths) {
   const reached = new Set(paths.map((path) => nearest(path, (dir) => manifests.has(projectOf(dir)))).filter((dir) => dir !== null).map(projectOf))
   for (const dir of reached) {
     const json = manifests.get(dir)
-    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-      for (const name of isPlainObject(json[field]) ? Object.keys(json[field]) : []) if (byName.has(name)) reached.add(byName.get(name))
-    }
+    const names = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap((field) => (isPlainObject(json[field]) ? Object.keys(json[field]) : []))
+    for (const name of names) if (byName.has(name)) reached.add(byName.get(name))
   }
   return reached
 }

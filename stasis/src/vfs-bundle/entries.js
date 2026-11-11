@@ -15,7 +15,6 @@ const JS = /\.(?:[cm]?[jt]s|[jt]sx)$/u
 const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['import', 'node', 'node-addons', 'module-sync']]
 const FIELD_CONDITIONS = ['commonjs', 'module'].map((format) => resolveConditions(format))
 
-// Its `./` entry, each `exports` subpath but a pattern (for require() and import), then each `bin`.
 function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], typescript = false } = {}) {
   const real = host.realpath(dir)
   const manifest = join(real, 'package.json')
@@ -67,19 +66,17 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
 }
 
 const SKIPPED_DIRS = new Set(['test', 'tests', 'script', 'scripts', 'mock', 'mocks', 'lib', 'node_modules', 'dependencies', 'out', 'cache', 'artifacts', 'build'])
-const isSkippedDir = (name) => SKIPPED_DIRS.has(name.toLowerCase()) || isAutoExcludedDir(name)
 const isEntrySol = (entry) => entry.isFile() && entry.name.endsWith('.sol') && !/\.(?:t|s|test|spec)\.sol$/u.test(entry.name)
 
 function solidityFiles(host, real, rel) {
   const walk = (sub) => host.readdir(join(real, sub)).flatMap((entry) => {
     const path = sub === '.' ? entry.name : `${sub}/${entry.name}`
-    if (entry.isDirectory()) return isSkippedDir(entry.name) ? [] : walk(path)
+    if (entry.isDirectory()) return SKIPPED_DIRS.has(entry.name.toLowerCase()) || isAutoExcludedDir(entry.name) ? [] : walk(path)
     return isEntrySol(entry) ? [path] : []
   })
   return walk(rel).toSorted()
 }
 
-// Its own .sol files, then those under contracts/, then under its source directory; a link to a directory is none.
 function solidityEntries(host, dir) {
   const real = host.realpath(dir)
   const isDirectory = (rel) => !posixPathEscapes(rel) && host.stat(join(real, rel))?.isDirectory() && host.readlink(join(real, rel)) === null

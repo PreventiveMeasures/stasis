@@ -33,7 +33,6 @@ export const checkGlob = () => void lazyMinimatch()
 
 const createMatcher = (pattern) => new (lazyMinimatch().Minimatch)(pattern, OPTIONS)
 
-// As much of lstat's Dirent as the walk asks for; null where nothing is.
 function lstatOf(host, path) {
   let link
   try {
@@ -157,8 +156,7 @@ class Pattern {
   }
 }
 
-// Node's, but `exclude` is given each absolute path (where Node gives its Dirent with `withFileTypes`), and
-// #addSubpattern stats the path from the root (where Node's lstat takes it from the process's cwd).
+// Node's, but `exclude` takes absolute paths, and #addSubpattern stats paths from the root, not the process's cwd.
 class Glob {
   #root
   #exclude

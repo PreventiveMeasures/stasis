@@ -21,8 +21,7 @@ const TSCONFIG = /(?:^|\/)[jt]sconfig[^/]*\.json$/u
 
 const resolvesOutside = (from, target) => target.startsWith('/') || posixPathEscapes(posix.join(posix.dirname(from), target))
 
-// As a checkout under umask 022 makes them: git keeps only a file's executable bit, and GitHub's tarballs are written
-// with git archive's tar.umask 0002.
+// As a checkout under umask 022 makes them: git keeps only the executable bit, and GitHub's tar.umask is 0002.
 const checkoutMode = ({ type, mode }) => (type === 'symlink' ? mode : type === 'directory' || mode & 0o100 ? 0o755 : 0o644)
 
 async function treeEntries(tarball, where) {
@@ -51,17 +50,15 @@ function ancestorsOf(directory) {
   return [...out, undefined]
 }
 
-// Null where one is a symlink out of the subtree. Upstream refuses a tarball whose symlinks climb above its root unless
-// told how far they may: up to the repo's root, as many levels as `directory` is deep, less its tarball's top directory.
+// Upstream refuses symlinks above the tarball's root (its top directory) unless told how far they may climb: to the repo's.
 async function treeFiles(client, { github, tree, directory, where }) {
-  let files
   try {
-    files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where)
+    const files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where)
+    return escapingLink(files) ? null : files
   } catch (error) {
     if (error instanceof ArchiveError) return null // e.g. a symlink out of the subtree
     throw error
   }
-  return escapingLink(files) ? null : files
 }
 
 async function repoFiles(client, { github, sha, where }) {
@@ -83,7 +80,6 @@ function checkRepo(name, { github, sha, tag, directory, path }) {
   if (path && !isValidRepoField('directory', entryPattern(name, path) ? path.replace('*', '_') : path)) throw new Error(`${name}: invalid path: ${JSON.stringify(path)}`)
 }
 
-const PROJECT_FILES = { js: ['package.json'], sol: ['foundry.toml', 'soldeer.toml'] }
 const SYMLINK = '120000'
 
 // Null where one is no plain directory in git (a symlink, or under one); the root's failure is GitHub's.
@@ -96,8 +92,6 @@ async function listingsOf(list, dirs) {
   }
 }
 
-// -> { directory, entries }: a file (no symlink), or those a pattern matches, are entries of the nearest directory at or
-// above them holding one of PROJECT_FILES of their kind, else of the repo's root; anything else is the directory.
 async function splitPath(list, path, where) {
   const pattern = entryPattern(where, path)
   const matches = pattern?.matches ?? ((file) => file === posix.basename(path))
@@ -106,16 +100,13 @@ async function splitPath(list, path, where) {
   const names = (listings?.[0] ?? []).filter((entry) => entry.type === 'blob' && entry.mode !== SYMLINK && matches(entry.path)).map((entry) => entry.path).toSorted()
   if (names.length === 0 && pattern) throw new Error(`${where}: ${JSON.stringify(path)} matches no file`)
   if (names.length === 0) return { directory: path }
-  const files = PROJECT_FILES[names.every((file) => file.endsWith('.sol')) ? 'sol' : 'js']
+  const files = names.every((file) => file.endsWith('.sol')) ? ['foundry.toml', 'soldeer.toml'] : ['package.json']
   const at = listings.findIndex((listing) => listing.some((entry) => files.includes(entry.path) && entry.type === 'blob'))
   const directory = at === -1 ? undefined : above[at]
   const paths = names.map((file) => posix.join(posix.dirname(path), file))
   return { directory, entries: directory === undefined ? paths : paths.map((file) => posix.relative(directory, file)) }
 }
 
-const lister = (client, { github, sha }) => memoized((directory) => client.listRepoDir({ repo: github, sha, directory }))
-
-// `configured`: whether `directory` lists a stasis.config.json, whose `lockfiles` may stand in for the lockfile.
 async function listedPackageManager(list, { directory, where }) {
   const listings = await listingsOf(list, directory ? [directory, ...ancestorsOf(directory)] : [undefined])
   if (listings === null) return { listed: undefined, configured: false }
@@ -125,7 +116,6 @@ async function listedPackageManager(list, { directory, where }) {
   return { listed: listed.length === 1 ? listed[0] : undefined, configured }
 }
 
-// Null unless `directory` holds the lockfile, is installed from itself and stands alone.
 async function subtreeEntries(client, list, { github, directory, packageManager, where }) {
   const names = async (path) => (await list(path)).map((entry) => entry.path)
   let listing
@@ -145,15 +135,13 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
 }
 
-// The repo at `sha`, `tag`'s commit or the default branch's head: `directory` alone where it stands alone for its
-// package manager (given, else told by the listings, else by the tree), else the whole repo.
 async function repoTree(name, { github, sha, tag, directory, path, client, packageManager }, options) {
   checkAhead(name, packageManager, options)
   checkRepo(name, { github, sha, tag, directory, path })
   client ??= createClient({ token: null })
   sha ??= tag === undefined ? (await client.getRepoHead({ repo: github })).oid : (await client.getRepoTag({ repo: github, tag })).oid
   const where = `${name}: ${github}@${sha}`
-  const list = lister(client, { github, sha })
+  const list = memoized((dir) => client.listRepoDir({ repo: github, sha, directory: dir }))
   if (path) {
     const split = await splitPath(list, path, where)
     directory = split.directory
@@ -162,17 +150,11 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
       checkAhead(name, packageManager, options)
     }
   }
-  let found = packageManager
-  // None is checked for where the listings tell one, but stasis.config.json may name the lockfiles in its place.
-  let checked = packageManager
-  if (found === undefined) {
-    const told = await listedPackageManager(list, { directory, where })
-    found = told.listed
-    if (found !== undefined && !told.configured) {
-      checkAhead(name, found, options)
-      checked = found
-    }
-  }
+  const told = packageManager === undefined ? await listedPackageManager(list, { directory, where }) : { listed: packageManager }
+  let found = told.listed
+  // Unchecked where stasis.config.json may name the lockfiles in place of the one listed.
+  const checked = packageManager ?? (told.configured ? undefined : found)
+  if (checked !== packageManager) checkAhead(name, checked, options)
   const open = (files, at) => {
     const vfs = vfsFromEntries(files)
     return { vfs, host: vfsHost(vfs), cwd: posix.resolve('/', at) }
@@ -195,8 +177,7 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
   return { ...opened, client, subtree, sha, where, packageManager: lockfiles === undefined ? found : packageManager, packageManagers, directory, entries: options.entries }
 }
 
-// Nothing is read from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id. The bundle's
-// `repo` names the commit and the directory its paths are from. -> buildVfsBundle's, and `directory`
+// Nothing is read from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id.
 export async function buildGitHubBundle({ github, sha, tag, directory, path, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   checkCache('buildGitHubBundle', options.cache)

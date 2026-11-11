@@ -1,18 +1,16 @@
 import { posix } from 'node:path'
 
-import { Vfs } from '@preventive/vfs'
 import { configuredLockfiles, installsDevDependencies } from './cmd/bundle.js'
 import { checkAhead, defaultEntries } from './vfs-bundle/entries.js'
 import { suggestedRepoEntries } from './vfs-bundle/github.js'
 import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackageManager, loadTree, lockfilesManagers, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
 
-// Static bundles of a project held in a Vfs, from its lockfile alone: nothing touches disk but the tarballs and zips,
-// each held to the lockfile's integrity, and cached only where setCacheDir says.
+// Nothing touches disk but the tarballs and zips, each held to the lockfile's integrity, cached where setCacheDir says.
 
 export { buildVfsBundle } from './cmd/bundle.js'
 export { buildGitHubBundle } from './vfs-bundle/github.js'
 export { setCacheDir } from '@preventive/deptree/pnpm.js'
-export { Vfs }
+export { Vfs } from '@preventive/vfs'
 
 // Reading `vfs` as it is at each call.
 export function createVfsHost(vfs) {
@@ -20,8 +18,7 @@ export function createVfsHost(vfs) {
   return vfsHost(vfs, { cache: false })
 }
 
-// node_modules as the package manager installs it for the machine `os`, `cpu` and `libc` name. The host caches what it
-// reads, so neither Vfs is to change meanwhile.
+// The host caches what it reads, so neither Vfs is to change meanwhile.
 export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, cache } = {}) {
   const name = 'loadNodeModules'
   checkVfs(name, vfs)

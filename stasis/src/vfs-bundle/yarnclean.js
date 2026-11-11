@@ -2,16 +2,14 @@ import { posix } from 'node:path'
 
 import { loadMinimatch } from './glob.js'
 
-// Yarn 1.22.22's .yarnclean (autoclean's sortFilter and matchesFilter, src/util/filter.js), on minimatch: each one in
-// the directory installed or above it cleans whichever package manager's tree, each path matched from the
-// node_modules holding its package, as Yarn hoists it (pnpm's .pnpm/x@1/node_modules/x/README.md as x/README.md).
+// Yarn 1.22.22's .yarnclean (autoclean's sortFilter and matchesFilter), on minimatch, for any package manager's tree:
+// each path matched from the node_modules holding its package, as Yarn hoists it (.pnpm/x@1/node_modules/x/a as x/a).
 
 export const YARNCLEAN = '.yarnclean'
 
 const patternLines = (lines) => lines.filter((line) => !(line === '!' || line[0] === '#' || /^\s*$/u.test(line)))
 
-// `regex` as micromatch's makeRe makes it for Yarn (trimmed, dotfiles and all, case aside), `plain` as its isMatch
-// takes it by default; NONE where the pattern makes no expression.
+// `regex` as micromatch's makeRe makes it for Yarn (trimmed, dot, nocase), `plain` as its isMatch does by default.
 const NONE = /(?!)/u
 function filterOf(line, { makeRe }) {
   const negation = line[0] === '!'
@@ -21,8 +19,7 @@ function filterOf(line, { makeRe }) {
 
 const matches = ({ regex, plain }, loc) => regex.test(loc) || regex.test(`/${loc}`) || regex.test(posix.basename(loc)) || plain.test(loc)
 
-// From the innermost node_modules below `dir` holding it; null for the package manager's own: a dot-named entry of one,
-// or that directory itself.
+// Null for a node_modules itself or a dot-named entry of one: the package manager's own.
 function packagePath(dir, path) {
   const segments = path.slice(dir.length + 1).split('/')
   const tail = segments.slice(segments.lastIndexOf('node_modules') + 1)
@@ -53,8 +50,7 @@ export function yarnclean(host, cwd) {
       for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) holdingKept.add(up)
     }
     for (const { path, loc } of negations.length === 0 ? [] : entries) if (negations.some((filter) => matches(filter, loc))) keep(path)
-    // So is a link to either, wherever it is: pnpm links each package into its store, where Yarn's hoisted layout
-    // holds the package itself.
+    // So is a link to either: pnpm links each package into its store, where Yarn's hoisted layout holds the package.
     const leadsToKept = (path) => {
       try {
         const real = vfs.realpath(path)

@@ -86,19 +86,12 @@ export async function warningsHeld(fn) {
 export async function inRounds(attempt, unpack) {
   for (;;) {
     const reads = { asked: new Set(), read: new Set(), probing: 0, touches: 0 }
-    const held = []
-    let result
-    let failure
-    try {
-      // eslint-disable-next-line no-await-in-loop -- each round reads what the one before unpacked
-      result = await holding(held, () => attempt(reads))
-    } catch (error) {
-      failure = { error }
-    }
+    // eslint-disable-next-line no-await-in-loop -- each round reads what the one before unpacked
+    const round = await warningsHeld(() => attempt(reads))
     if (reads.asked.size === 0) {
-      for (const args of held) console.warn(...args)
-      if (failure !== undefined) throw failure.error
-      return result
+      for (const args of round.warnings) console.warn(...args)
+      if ('error' in round) throw round.error
+      return round.value
     }
     // eslint-disable-next-line no-await-in-loop -- what the next round reads
     await unpack(reads.asked, reads.read)

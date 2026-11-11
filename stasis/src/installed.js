@@ -8,8 +8,7 @@ import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballI
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
-// What the package manager that laid out a node_modules recorded there of each package: npm in its hidden lockfile,
-// pnpm in its lockfile copy, yarn 1 in yarn.lock as .yarn-integrity has it. One missing or unreadable names nothing.
+// What the package manager that laid out a node_modules recorded there; one missing or unreadable names nothing.
 
 function githubCommit(repo, commit) {
   const github = parseGithubRepository(repo)
@@ -46,8 +45,6 @@ const npmCommit = (resolved) => {
 
 const unreadable = (file, cause) => new Error(`${file}: ${cause?.message ?? 'not a lockfile'}`, { cause })
 
-// `parse` of its text past the byte order mark npm, pnpm and yarn read past: undefined where there is none, or, unless
-// `strict`, where it can't be read or parsed.
 function parseLock(file, host, strict, parse) {
   const text = readText(host, file)
   if (text === null && strict && host.stat(file) !== null) throw new Error(`${file}: can't be read`)
@@ -99,8 +96,7 @@ const yarnEntries = (file, host, strict) => parseLock(file, host, strict, (text)
   }))
 })
 
-// The name pnpm 10 to 12 may give `key`'s directory in node_modules/.pnpm (depPathToFilename), and the `_` and 32 hex
-// of its SHA-256 that one cut short (too long or capitalized) ends with.
+// As pnpm 10 to 12's depPathToFilename names `key`'s store directory, and the `_<hash>` one cut short ends with.
 const storeNames = (key) => {
   let name = key.replace(/[\\/:*?"<>|#]/gu, '+')
   if (name.includes('(')) name = name.replace(/\)$/u, '').replace(/\)\(|\(|\)/gu, '_')
@@ -108,7 +104,6 @@ const storeNames = (key) => {
 }
 export const STORE_HASH = /_[\da-f]{32}$/u
 
-// By directory in node_modules/.pnpm (`stored`), and by id (`named`) as a hoisted node_modules holds it.
 function pnpmLocks(file, host, strict) {
   const parsed = parseLock(file, host, strict, (text) => ({ lockfile: parsePnpmLockfile(text).lockfile }))
   if (parsed === undefined) return undefined
@@ -122,8 +117,7 @@ function pnpmLocks(file, host, strict) {
     keyed.set(key, record)
     ids.push([`${name}@${version ?? ''}`, record])
   }
-  // By the name it is installed as at a top-level location: an alias's or an override's too; none where two importers
-  // install different ones.
+  // By the name it is installed as at a top-level location (an alias's or an override's too); none where two differ.
   const top = new Map()
   for (const importer of Object.values(lockfile?.importers ?? {})) {
     for (const [as, key] of [importer.dependencies, importer.devDependencies, importer.optionalDependencies].flatMap((deps) => Object.entries(deps ?? {}))) {
@@ -159,8 +153,7 @@ const MANAGERS = [
       const integrity = readJson(join(dir, 'node_modules', '.yarn-integrity'), host)?.lockfileEntries
       const entries = isPlainObject(integrity) && yarnEntries(join(dir, 'yarn.lock'), host)
       if (!entries) return undefined
-      // Of an entry .yarn-integrity has installed otherwise, what it has (a yarn.lock changed since often moves a git
-      // dependency to another commit of one version).
+      // What .yarn-integrity has of an entry installed otherwise: a changed yarn.lock often moves a git dependency's commit.
       const installedAs = ({ patterns, record }) => patterns.map((pattern) => (Object.hasOwn(integrity, pattern) ? integrity[pattern] : 'none')).find((resolved) => resolved !== record.resolved)
       return byId(entries.map((entry) => {
         const resolved = installedAs(entry)
@@ -221,8 +214,6 @@ export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash }
   return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
 }
 
-// How each npm dependency of `modules` was installed, by its dir: what its install record names, found by its real
-// path and held to the lockfile beside it, else, `locked`, what that lockfile locks.
 export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map() } = {}) {
   const accounts = new Map()
   let top // the bundle root's real path, as each package's is compared with it

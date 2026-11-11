@@ -2,8 +2,7 @@ import { join } from 'node:path'
 
 import { isTomlTable, readToml } from '../loaders/toml.js'
 
-// What `soldeer install` 0.12.0 writes beside the dependencies folder (soldeer-core's update_config_libs and
-// edit_remappings): the remappings.txt it would write goes into the tree; a foundry.toml it would edit is refused.
+// What `soldeer install` 0.12.0 writes beside dependencies/: its remappings.txt goes into the tree; a foundry.toml edit is refused.
 
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?(?:\+[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?$/u
 // A requirement Soldeer takes as exact: a bare version (its `^` made `=`), or one written `=`.
@@ -21,11 +20,8 @@ function textOf(view, path) {
 
 // Rust's `Path::components`, `.` kept only at the start.
 function components(path) {
-  const out = path.startsWith('/') ? ['/'] : []
-  for (const [i, part] of path.split('/').entries()) {
-    if (part !== '' && (part !== '.' || i === 0)) out.push(part)
-  }
-  return out
+  const parts = path.split('/').filter((part, i) => part !== '' && (part !== '.' || i === 0))
+  return path.startsWith('/') ? ['/', ...parts] : parts
 }
 
 // As soldeer's path_matches tells, or null where only Rust's semver could tell.
