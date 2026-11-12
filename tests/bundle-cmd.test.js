@@ -3156,10 +3156,10 @@ cliTest('CLI: --platforms accepts repeats and comma lists, unioned', withTmp(asy
 cliTest('CLI: a --metro bundle fails closed under plain --bundle=load', withTmp(async (t, tmp) => {
   const out = join(tmp, 'metro.br')
   t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
-  // Its code carries no format, being Metro's to build -> a clear error from Node, not a crash.
+  // Its code carries a generic format, being Metro's to build -> a clear error from Node, not a crash.
   const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${out}`, 'src/entry.js'], { cwd: fieldsFixture })
   t.assert.notEqual(load.status, 0)
-  t.assert.match(load.stderr, /cannot execute '.*src\/entry\.js': the bundle carries it with no format, as it carries the code Metro builds from source, which is for Metro, not Node/)
+  t.assert.match(load.stderr, /cannot execute '.*src\/entry\.js': the bundle carries it as 'generic-javascript', as it carries the code Metro builds from source, which is for Metro, not Node/)
 }))
 
 cliTest('CLI: a --metro bundle verifies clean against its own companion lockfile at load (no ERR_ASSERTION)', withTmp(async (t, tmp) => {
@@ -3171,10 +3171,10 @@ cliTest('CLI: a --metro bundle verifies clean against its own companion lockfile
   // the constructor cross-checks every edge; a per-platform edge is a Map on BOTH sides
   // and must compare STRUCTURALLY -- not throw ERR_ASSERTION on identical-but-distinct
   // Maps. The verification passes clean, then it fails closed at the entry (Metro's code,
-  // which Node doesn't run) with the clean no-format error -- never an assertion mismatch.
+  // which Node doesn't run) with the clean generic-format error -- never an assertion mismatch.
   const load = await runCli(['run', '--bundle=load', '--lock=frozen', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.notEqual(load.status, 0)
-  t.assert.match(load.stderr, /the bundle carries it with no format/)
+  t.assert.match(load.stderr, /the bundle carries it as 'generic-javascript'/)
   t.assert.doesNotMatch(load.stderr, /ERR_ASSERTION|mismatches the lockfile/)
 }))
 
@@ -3385,8 +3385,8 @@ test('buildBundle --metro carries a bundled native dep\'s ios/android sources + 
   t.assert.equal(bundle.formats.get('node_modules/rn-native/android/build.gradle'), 'gradle')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/android/src/main/AndroidManifest.xml'), 'xml')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/logo.png'), 'resource:base64')
-  // The JS is Metro's code: no format, as the Metro plugin records it.
-  t.assert.equal(bundle.formats.get('node_modules/rn-native/index.js'), undefined)
+  // The JS is Metro's code: generic, as the Metro plugin records it.
+  t.assert.equal(bundle.formats.get('node_modules/rn-native/index.js'), 'generic-javascript')
   // The base64 payload decodes back to the exact bytes.
   t.assert.deepStrictEqual(Buffer.from(mod.files['ios/logo.png'], 'base64'), PNG_BYTES)
   // A JS-only bundled dep contributes no native surface (only its reached JS).
@@ -4219,9 +4219,9 @@ cliTest('CLI: bundle --metro carries a .tsx dependency without --jsx', withTmp(a
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'node_modules/tsx-dep/src/index.tsx', 'node_modules/tsx-dep/src/inset.ts'],
     'the .tsx dependency must be parsed past its JSX and carried')
-  // Stored verbatim (untransformed), as code Metro builds: no format.
+  // Stored verbatim (untransformed), as code Metro builds: generic.
   t.assert.match(bundle.sources.get('node_modules/tsx-dep/src/index.tsx'), /<View>\{inset\}<\/View>/u)
-  t.assert.equal(bundle.formats.get('node_modules/tsx-dep/src/index.tsx'), undefined)
+  t.assert.equal(bundle.formats.get('node_modules/tsx-dep/src/index.tsx'), 'generic-typescript')
 }))
 
 cliTest('CLI: bundle --metro names an un-carryable target by project-relative paths', withTmp(async (t, tmp) => {
@@ -4497,7 +4497,7 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   t.assert.equal(bundle.formats.get('metro.config.js'), 'commonjs')
   // A typeless package's .js is what Node detects from its syntax.
   t.assert.equal(bundle.formats.get('react-native.config.js'), 'module')
-  t.assert.equal(bundle.formats.get('index.js'), undefined, 'the app code Metro builds keeps no format')
+  t.assert.equal(bundle.formats.get('index.js'), 'generic-javascript', 'the app code Metro builds is generic')
   t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': configs, 'bundle:metro': ['index.js'] })
 
   const aliased = await buildBundle({ ...metro, babelAliases: 'aliases.json' })
@@ -4560,7 +4560,7 @@ test('buildBundle --metro traces its configs as Node runs them, with all they im
     'rn/project.js': 'module',
     'shared.js': 'commonjs',
   })
-  t.assert.equal(bundle.formats.get('node_modules/dual/rn.js'), undefined, 'what only Metro bundles has none')
+  t.assert.equal(bundle.formats.get('node_modules/dual/rn.js'), 'generic-javascript', 'what only Metro bundles is generic')
   // Node's edges under the conditions Node resolves each with, as the Metro plugin's run records them:
   // a require()'s, an import's. Metro's `dual` from shared.js under '*', apart from Node's.
   const required = bundle.imports.get('require, node, node-addons, module-sync')
@@ -4997,10 +4997,11 @@ test('buildBundle --metro refuses an import of a file both graphs reach that Met
   await t.assert.rejects(() => buildBundle(metro), /rn-only from shared\.js resolves under Metro, for the app, and not under Node/u)
 }))
 
-test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does, but the one its name gives it', withTmp(async (t, tmp) => {
+test('buildBundle --metro records the code Metro builds as generic, as the Metro plugin does, but in the format its name gives it', withTmp(async (t, tmp) => {
   // Metro transforms each file from source, whatever Node would load it as: a typeless .js with
-  // import/export, a .ts or a .jsx alike. A .json, .mjs or .cjs keeps the format its name alone gives
-  // it, as Node loads it too, and an asset keeps the format its bytes are stored in.
+  // import/export, a .ts or a .jsx alike, each generic JavaScript or TypeScript. A .json, .mjs or .cjs
+  // keeps the format its name alone gives it, as Node loads it too, and an asset keeps the format its
+  // bytes are stored in.
   jsProject(tmp, {
     'index.js': "import './comp.jsx'\nimport './mod.ts'\nimport './util.mjs'\nimport './lib.cjs'\nimport './data.json'\nimport logo from './logo.png'\nexport default logo\n",
     'comp.jsx': 'export default () => <div />\n',
@@ -5013,7 +5014,9 @@ test('buildBundle --metro records no format for the code Metro builds, as the Me
   const options = { cwd: tmp, entries: ['index.js'], resources: ['png'] }
   const bundle = await buildBundle({ ...options, metro: true, platforms: ['ios', 'android'] })
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'data.json', 'index.js', 'lib.cjs', 'logo.png', 'mod.ts', 'util.mjs'])
-  t.assert.deepStrictEqual(Object.fromEntries(bundle.formats), { 'data.json': 'json', 'lib.cjs': 'commonjs', 'logo.png': 'resource:base64', 'util.mjs': 'module' })
+  t.assert.deepStrictEqual(Object.fromEntries([...bundle.formats].toSorted(([a], [b]) => (a < b ? -1 : 1))), {
+    'comp.jsx': 'generic-javascript', 'data.json': 'json', 'index.js': 'generic-javascript', 'lib.cjs': 'commonjs', 'logo.png': 'resource:base64', 'mod.ts': 'generic-typescript', 'util.mjs': 'module',
+  })
   // --mainFields records each as Node loads it.
   const fields = await buildBundle({ ...options, mainFields: ['main'] })
   t.assert.equal(fields.formats.get('index.js'), 'module')
@@ -5126,8 +5129,8 @@ test('buildBundle --metro carries what Babel and Metro add to the build, as Metr
   // No edge to any from the source, which imports none; theirs among themselves, written in theirs.
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './plain.js': 'plain.js' })
   t.assert.equal(importTarget(bundle, 'node_modules/@babel/runtime/helpers/toPropertyKey.js', './typeof.js'), 'node_modules/@babel/runtime/helpers/typeof.js')
-  // Metro's code: no format.
-  t.assert.equal(bundle.formats.get('node_modules/react/jsx-runtime.js'), undefined)
+  // Metro's code: generic.
+  t.assert.equal(bundle.formats.get('node_modules/react/jsx-runtime.js'), 'generic-javascript')
   // Plain --metro adds none of the rest for a file with no `import()`: the JSX runtime alone, as
   // --jsx adds it to any file; a .tsx file, JSX itself, takes it without --jsx or --metro.
   t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'plain.js'].toSorted())
@@ -5157,9 +5160,9 @@ test('buildBundle --metro carries the file the Metro plugin auto-includes as the
 
   const bundle = await buildBundle(options)
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'lazy.js', ASYNC_REQUIRE, SETUP_ENV].toSorted())
-  // asyncRequire is Metro's code (no format), the app's; setup_env.sh, tagged by the shared classifier,
+  // asyncRequire is Metro's code (generic), the app's; setup_env.sh, tagged by the shared classifier,
   // the bundler's, as the plugin's run is, and executable, as the CLI runs it. No edge to either.
-  t.assert.equal(bundle.formats.get(ASYNC_REQUIRE), undefined)
+  t.assert.equal(bundle.formats.get(ASYNC_REQUIRE), 'generic-javascript')
   t.assert.equal(bundle.formats.get(SETUP_ENV), 'shell')
   t.assert.deepStrictEqual(bundle.reason.bundle, [SETUP_ENV])
   t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), ['index.js', 'lazy.js', ASYNC_REQUIRE].toSorted())
@@ -5369,7 +5372,7 @@ test('buildBundle --metro carries the asset registry the module Metro builds of 
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './img/logo.png': 'img/logo.png' })
   t.assert.equal(bundle.imports.get('*').get('img/logo.png'), undefined, 'no edge from the asset, as the Metro plugin records none')
   t.assert.equal(importTarget(bundle, registry[1], '@react-native/assets-registry/registry'), registry[0])
-  t.assert.equal(bundle.formats.get(registry[1]), undefined, 'Metro\'s code: no format')
+  t.assert.equal(bundle.formats.get(registry[1]), 'generic-javascript', 'Metro\'s code: generic')
   t.assert.ok(registry.every((rel) => bundle.reason['bundle:metro'].includes(rel)))
 
   // Without an asset, none of it.
@@ -5427,7 +5430,7 @@ test('buildBundle --metro resolves a disabled import to metro-runtime\'s empty m
     t.assert.deepStrictEqual(disabledTargets(bundle), [METRO_EMPTY, METRO_EMPTY], JSON.stringify(source))
     // Carried as the file it is, in metro-runtime's own package, and the synthetic one not at all.
     t.assert.equal(bundle.sources.get(METRO_EMPTY), source)
-    t.assert.equal(bundle.formats.get(METRO_EMPTY), undefined)
+    t.assert.equal(bundle.formats.get(METRO_EMPTY), 'generic-javascript')
     t.assert.equal(bundle.modules.get('node_modules/metro-runtime').name, 'metro-runtime')
     t.assert.ok(!bundle.sources.has('.stasis/empty-module.js'))
   }))
@@ -5494,6 +5497,8 @@ test('buildBundle --metro keeps .stasis/empty-module.js where metro-runtime\'s i
     const bundle = await buildBundle(metroOptions(dir))
     t.assert.deepStrictEqual(disabledTargets(bundle), synthetic, JSON.stringify(source))
     t.assert.equal(bundle.sources.get('.stasis/empty-module.js'), '')
+    // Code of Metro's, as metro-runtime's is.
+    t.assert.equal(bundle.formats.get('.stasis/empty-module.js'), 'generic-javascript')
     t.assert.ok(!bundle.sources.has(METRO_EMPTY))
   }))
   // Only Metro resolves to its own: --mainFields keeps the synthetic one beside an empty metro-runtime file.

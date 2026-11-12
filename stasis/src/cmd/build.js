@@ -23,7 +23,7 @@ export { bundleFromLockfile }
 
 // An allowlist, so that a bundle format added later fails closed here rather than in a cryptic esbuild error.
 const BUILDABLE_FORMATS = new Set([
-  'module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript',
+  'module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript', 'generic-javascript', 'generic-typescript',
   'resource', 'resource:base64', 'directory', 'stat:file', 'stat:directory',
 ])
 

@@ -26,6 +26,11 @@ export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...JS_UNRESO
 // As Node spells them, by extname: `Foo.MJS` and a `.mjs` dotfile are none (require loads them as commonjs).
 export const nodeExtFormat = (path) => NODE_EXT_FORMATS.get(extname(path).slice(1))
 
+// The code Metro builds from source: the format its name gives it, else for JS or TS a generic one, its module type
+// being Metro's to decide. As Node spells the extension, as nodeExtFormat does.
+const GENERIC_EXT_FORMATS = new Map([['js', 'generic-javascript'], ['jsx', 'generic-javascript'], ['ts', 'generic-typescript'], ['tsx', 'generic-typescript']])
+export const metroFormat = (path) => nodeExtFormat(path) ?? GENERIC_EXT_FORMATS.get(extname(path).slice(1))
+
 export const pathExt = (filePath) => /\.([^./\\]+)$/.exec(filePath)?.[1].toLowerCase() ?? ''
 
 // Off Windows `\` is no separator but part of a name, and a name holding one is refused rather than taken for another path.

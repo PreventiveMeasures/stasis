@@ -6,12 +6,15 @@ export const NATIVE_BUILD_FORMATS = new Set([
   'java', 'kotlin', 'gradle', 'objc', 'objcpp', 'swift', 'c', 'cpp', 'c-header', 'cpp-header',
   'ruby', 'python', 'cmake', 'podspec', 'podfile', 'podfile-lock', 'gemfile', 'gemfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj',
 ])
+// JS and TS whose module type no Node load decides: the code Metro builds from source, which is Metro's to load.
+export const GENERIC_FORMATS = new Set(['generic-javascript', 'generic-typescript'])
 export const RESOURCE_FORMATS = new Set(['resource', 'resource:base64'])
 export const STAT_FORMATS = new Set(['stat:file', 'stat:directory'])
 export const KNOWN_FORMATS = new Set([
   ...NODE_FORMATS,
   ...SOURCE_LANGUAGE_FORMATS,
   ...NATIVE_BUILD_FORMATS,
+  ...GENERIC_FORMATS,
   ...RESOURCE_FORMATS,
   'patch', // a `.patch` unified diff (pnpm patchedDependencies, patch-package): UTF-8 text applied by a patch step
   'directory',
@@ -28,8 +31,17 @@ export const erasedTypeScriptFormat = (format) =>
 
 const formatKind = (format) => (format === 'directory' || format === 'stat:directory' ? 'directory' : 'file')
 
+// A file Metro builds and Node loads both: the format Node loads it in says what the generic one leaves open.
+const NODE_JS_FORMATS = new Set(['module', 'commonjs', 'module-typescript', 'commonjs-typescript'])
+const yieldsTo = (generic, format) => GENERIC_FORMATS.has(generic) && NODE_JS_FORMATS.has(format)
+
+// Whether `attested` attests an observed `format`: a generic observation is the Node format's too.
+export const attestsFormat = (attested, format) => attested === format || yieldsTo(format, attested)
+
 export function reconcileFormat(format, currentFormat, name) {
   if (format === currentFormat) return format
+  if (yieldsTo(format, currentFormat)) return currentFormat
+  if (yieldsTo(currentFormat, format)) return format
   const stat = isStatFormat(format)
   if (stat !== isStatFormat(currentFormat) && formatKind(format) === formatKind(currentFormat)) return stat ? currentFormat : format
   throw new Error(`format conflict for '${name}' ('${currentFormat}' vs '${format}')`)

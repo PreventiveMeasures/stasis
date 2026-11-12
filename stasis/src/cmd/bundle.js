@@ -20,7 +20,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
+import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -1151,8 +1151,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         reached.add(abs)
         if (restrict !== null && !isTransformInput(abs, info)) metroTaken.add(abs)
         if (info.resource) resourceRels.add(rel)
-        // Under --metro a code file has only the format its name gives it, as the Metro plugin records it.
-        formatsByRel.set(rel, metro && !info.resource ? nodeExtFormat(abs) : info.format)
+        // Under --metro a code file has the format Metro builds it in, as the Metro plugin records it.
+        formatsByRel.set(rel, metro && !info.resource ? metroFormat(abs) : info.format)
         for (const e of info.edges) {
           if (e.builtin || e.dynamic) continue
           let target
@@ -1338,8 +1338,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     put(rel, buf.toString('utf8'), format)
   }
   const realBase = host.realpath(baseDir)
-  // Metro's empty module is carried as the file it is, a code file of Metro's (no format).
-  if (usesEmpty && metroEmpty !== null) reached.add(metroEmpty)
+  // Metro's empty module is carried as the file it is, a code file of Metro's.
+  if (usesEmpty && metroEmpty !== null) {
+    reached.add(metroEmpty)
+    if (formatsByRel.get(toRel(metroEmpty)) === undefined) formatsByRel.set(toRel(metroEmpty), metroFormat(metroEmpty))
+  }
   for (const abs of reached) {
     const rel = toRel(abs)
     // Security: an entry is taken as spelled (and --metro-resolver keeps a path it can't realpath), so a
@@ -1353,7 +1356,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)
     }
-    put(EMPTY_MODULE_PATH, '', metro ? undefined : 'commonjs')
+    put(EMPTY_MODULE_PATH, '', metro ? metroFormat(EMPTY_MODULE_PATH) : 'commonjs')
   }
 
   const packageOf = packageLookup(baseDir, { host })

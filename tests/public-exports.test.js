@@ -262,7 +262,7 @@ test('Bundle.parse and Lockfile.parse accept every documented KNOWN_FORMAT', (t)
   const all = ['module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript',
     'solidity', 'php', 'shell', 'rust', 'teal', 'java', 'kotlin', 'gradle', 'objc', 'objcpp', 'swift', 'c',
     'cpp', 'c-header', 'cpp-header', 'ruby', 'python', 'cmake', 'podspec', 'podfile', 'podfile-lock',
-    'gemfile', 'gemfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj', 'patch', 'resource', 'resource:base64']
+    'gemfile', 'gemfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj', 'generic-javascript', 'generic-typescript', 'patch', 'resource', 'resource:base64']
   for (const format of all) {
     const lockBase = {
       version: 0,

@@ -354,14 +354,17 @@ What only the project's configs reach (below) is the bundler's, not the
 source Metro bundles, and is attributed to `bundle`; a file both reach is
 attributed to both.
 
-The code it carries has no format, as the Metro plugin records it: Metro
+The code it carries is `generic-javascript` (`.js`, `.jsx`) or
+`generic-typescript` (`.ts`, `.tsx`), as the Metro plugin records it: Metro
 transforms each file from source, so how Node would load it (`module` or
 `commonjs`) doesn't apply. A file whose name alone gives its format keeps it:
 `.json` is `json`, `.mjs` `module`, `.cjs` `commonjs` (and `.mts`, `.cts`), each
 whatever it holds or its package declares, so one the build's own Node process
-loads too (a config requiring it) is recorded the same on both sides. Assets keep
-their `resource` formats and native build inputs theirs. Such a bundle is for
-Metro: `stasis run --bundle=load` refuses to run its code under Node.
+loads too (a config requiring it) is recorded the same on both sides. A file
+Metro builds that Node loads too is recorded in the format Node loads it in,
+which says what the generic one leaves open. Assets keep their `resource`
+formats and native build inputs theirs. Such a bundle is for Metro:
+`stasis run --bundle=load` refuses to run its code under Node.
 
 Metro's assets are the extensions in its `assetExts`: its defaults (`png`,
 `jpg`, `svg`, `ttf` and the like) and those the project's `metro.config.js`
@@ -513,8 +516,7 @@ React Native's codegen (`generate-codegen-artifacts.js`) parses them to generate
 the native code a build compiles, and fails where the directory is missing.
 `react-native config` reads them too, for the components they declare. Metro's
 graph needn't reach them: a package's entry is often its compiled `lib/`. They
-carry no format, as Metro's code has none, and as a `--fs` read of one records
-none. The other JS there isn't carried as a spec: codegen never reads it, and a
+are `generic-javascript` or `generic-typescript`, as Metro's code is. The other JS there isn't carried as a spec: codegen never reads it, and a
 package whose `jsSrcsDir` is its root (`'.'`) has its `react-native.config.js`
 and build there, which a build reads as what they are.
 
