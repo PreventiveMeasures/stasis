@@ -407,7 +407,7 @@ EXODUS_STASIS_LOCK=replace stasis github-bundle owner/name/packages/app --lockfi
 ```
 
 ```text
-[stasis] Held 6591 files in 346 packages from owner/name@0123456789abcdef0123456789abcdef01234567/packages/app to owner-name.packages-app.0123456.stasis.lock.json (lock = frozen), left as it is
+[stasis] Held 6591 files in 346 packages from owner/name@0123456789abcdef0123456789abcdef01234567/packages/app to owner-name.packages-app.0123456.stasis.lock.json
 ```
 
 The mode is the environment's alone: a repository's `stasis.config.json`

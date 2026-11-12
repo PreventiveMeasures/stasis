@@ -1377,9 +1377,9 @@ test('stasis github-bundle holds the build to the lockfile there, frozen unless 
   t.assert.deepStrictEqual(Object.keys(reads(broader)).toSorted(), ['src/a.js', 'src/b.js', 'src/c.js'])
   await bundle()
   t.assert.deepStrictEqual(await names(), [NAME, BUNDLE].toSorted())
-  t.assert.deepStrictEqual(said(), [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = frozen), left as it is`, `[stasis] Bundled 2 files in 1 package from ${GITHUB}@${SHA} to ${BUNDLE}`])
+  t.assert.deepStrictEqual(said(), [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`, `[stasis] Bundled 2 files in 1 package from ${GITHUB}@${SHA} to ${BUNDLE}`])
   await bundle({ lockfileOnly: true })
-  t.assert.equal(warn.mock.calls.at(-1).arguments[0], `[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = frozen), left as it is`)
+  t.assert.equal(warn.mock.calls.at(-1).arguments[0], `[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`)
   await bundle({ lockfile: NAME, output: 'other.br' })
   t.assert.equal(await read(), broader, 'left as it is, whether --lockfile names it or not')
   // Of other content: refused, nothing written.
@@ -1402,10 +1402,10 @@ test('stasis github-bundle holds the build to the lockfile there, frozen unless 
   await t.assert.rejects(bundle(), { message: `${NAME} (lock = frozen) doesn't attest src/a.js` })
   await bundle({ lock: 'add' })
   t.assert.equal(await read(), narrower)
-  t.assert.equal(said()[0], `[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = add), left as it is`)
+  t.assert.equal(said()[0], `[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`)
   await bundle({ lock: 'add', lockfileOnly: true })
   t.assert.deepStrictEqual(Object.keys(reads(await read())).toSorted(), ['src/a.js', 'src/b.js'])
-  t.assert.deepStrictEqual(said(), [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = add)`, `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`])
+  t.assert.deepStrictEqual(said(), [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`, `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`])
   // --lockfile's path in place of the default name: written where it isn't there, held to frozen where it is.
   await clean()
   await bundle({ entries: ['src/b.js'], lockfile: 'out/x.lock.json' })
@@ -1682,7 +1682,7 @@ test('stasis github-bundle owner/name/path --lockfile-only writes the lockfile a
   const { stderr: _stderr, ...held } = await again(files)
   t.assert.deepStrictEqual(held, {
     status: 0,
-    said: [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ${name} (lock = frozen), left as it is`, `[stasis] Bundled 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br`],
+    said: [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ${name}`, `[stasis] Bundled 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br`],
     names: ['ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br', name],
   })
   t.assert.equal(await readFile(join(tmp, 'only', name), 'utf8'), written)

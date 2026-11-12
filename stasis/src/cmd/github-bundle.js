@@ -60,7 +60,7 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
   const from = `${options.github}@${bundle.repo.commit}${directory ? `/${directory}` : ''}`
   const summarized = (summary, to) => summary(bundle.sources.size, bundle.modules, from, to)
   console.warn(unpackedSummary(built.stats))
-  if (held) console.warn(`${summarized(heldSummary, label)} (lock = ${mode})${writes ? '' : ', left as it is'}`)
+  if (held) console.warn(summarized(heldSummary, label))
   if (!lockfileOnly) console.warn(summarized(bundledSummary, dest))
   else if (writes) console.warn(summarized(lockedSummary, lockTarget))
 }
