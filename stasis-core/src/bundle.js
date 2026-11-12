@@ -216,13 +216,37 @@ export class Bundle {
   }
 
   serialize() {
+    return JSON.stringify(this.#serialized(), undefined, 2)
+  }
+
+  serializedBytes() {
+    const value = this.#serialized()
+    const dirs = Object.keys(value.modules)
+    if (dirs.length === 0) return Buffer.from(JSON.stringify(value, undefined, 2))
+    const { modules, ...rest } = value
+    const head = JSON.stringify(rest, undefined, 2)
+    assert(head.endsWith('\n}'))
+    const pieces = []
+    const add = (text) => pieces.push(Buffer.from(text))
+    add(head.slice(0, -2))
+    add(',\n  "modules": {\n')
+    for (const [i, dir] of dirs.entries()) {
+      if (i > 0) add(',\n')
+      // `{\n  "indent": {\n<member>\n  }\n}`, the member nested as it is
+      add(JSON.stringify({ indent: { [dir]: modules[dir] } }, undefined, 2).slice(16, -6))
+    }
+    add('\n  }\n}')
+    return Buffer.concat(pieces)
+  }
+
+  #serialized() {
     checkedFileKeys(this.modules, this.formats)
     const { entries, sources, modules, formats, imports, executable } = serializedParts(this, 'bundle', { skipEmpty: true })
     // File contents are written last, after every other key: sources, then modules.
-    return JSON.stringify({
+    return {
       version: VERSION, config: this.config, repo: this.repo, package: this.package, entries, formats, imports, executable,
       reason: mergeReason(this.reason, undefined), sources, modules,
-    }, undefined, 2)
+    }
   }
 
   withReason(consumer, files = [...this.sources.keys()]) {
