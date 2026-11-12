@@ -59,6 +59,14 @@ with scripts off:
 With every devDependency, unless the project's `stasis.config.json` says it is
 installed without them: see [devDependencies](#devdependencies-installdevdependencies).
 
+For no Node in particular: the tree is read, never run, so whatever Node stasis
+runs on and the repo pins, each package's `engines.node` and the root's
+`devEngines.runtime` take it, `engine-strict` or not, and no optional package is
+left out for its `engines.node`. A `nodeVersion` the repo's pnpm settings name
+is still the Node pnpm lays the tree out for. For this machine's os, cpu and
+libc, though: an optional package of another platform is left out, as the
+package manager leaves it out.
+
 Every tarball and zip is held to the lockfile. Beside each npm package's
 tarball, the registry's version document of it is fetched, held to the same
 integrity, for the commit it was published from (`gitHead`). A Soldeer git

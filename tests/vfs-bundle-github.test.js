@@ -686,6 +686,21 @@ test('buildGitHubBundle downloads the whole repo for a lockfile above the direct
 // The package-lock.json npm writes for a root `name` at 1.0.0, and `packages` beside it.
 const npmLock = (name, packages = {}) => `${JSON.stringify({ name, version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': { name, version: '1.0.0' }, ...packages } }, null, 2)}\n`
 
+// A Node no release is, as the repo pins none this one runs on.
+test('buildGitHubBundle lays the tree out for no Node: a repo whose engines take none, engine-strict or not, builds whatever runs it', async (t) => {
+  const manifest = (fields) => json({ name: 'p', version: '1.0.0', main: 'a.js', ...fields })
+  const cases = {
+    'pnpm, engine-strict': ['pnpm', { 'package.json': manifest({ engines: { node: '<1' } }), '.npmrc': 'engine-strict=true\n', 'pnpm-lock.yaml': lockfile('.') }],
+    'yarn 1': ['yarn1', { 'package.json': manifest({ engines: { node: '<1' } }), 'yarn.lock': YARN_LOCK }],
+    'npm, devEngines.runtime': ['npm', { 'package.json': manifest({ devEngines: { runtime: { name: 'node', version: '<1', onFail: 'error' } } }), 'package-lock.json': npmLock('p') }],
+    'npm, engine-strict': ['npm', { 'package.json': manifest({ engines: { node: '<1' } }), '.npmrc': 'engine-strict=true\n', 'package-lock.json': npmLock('p') }],
+  }
+  for (const [what, [packageManager, files]] of Object.entries(cases)) {
+    const { bundle } = await build({ client: fakeClient({ ...files, 'a.js': 'module.exports = 1\n' }), packageManager }) // eslint-disable-line no-await-in-loop -- one repo at a time
+    t.assert.deepStrictEqual([...bundle.entries], ['a.js'], what)
+  }
+})
+
 test('buildGitHubBundle builds with npm, told by its package-lock.json, a directory alone unless the lockfile reaches above it', async (t) => {
   const files = { 'README.md': 'x\n', 'apps/p/package.json': json({ name: 'p', version: '1.0.0', main: 'a.js' }), 'apps/p/package-lock.json': npmLock('p'), 'apps/p/a.js': '' }
   const client = fakeClient(files)

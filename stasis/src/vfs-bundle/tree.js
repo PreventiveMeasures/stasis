@@ -87,10 +87,11 @@ function reportedLibc() {
 let machineLibc
 const currentLibc = () => (machineLibc ??= reportedLibc())
 
-// A libc is detected only for this machine's os; for another, unless given, pnpm matches none ('unknown').
+// No Node: a tree laid out to be read, not run, is for none, which takes every engines.node. A libc is detected only
+// for this machine's os; for another, unless given, pnpm matches none ('unknown').
 const target = ({ os, cpu, libc } = {}) => {
   const forOs = os ?? process.platform
-  return { node: process.versions.node, os: forOs, cpu: cpu ?? process.arch, libc: libc ?? (forOs === process.platform ? currentLibc() : 'unknown') }
+  return { os: forOs, cpu: cpu ?? process.arch, libc: libc ?? (forOs === process.platform ? currentLibc() : 'unknown') }
 }
 
 export function checkTarget(name, { os, cpu, libc }) {
