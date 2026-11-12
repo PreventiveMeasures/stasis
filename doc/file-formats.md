@@ -108,7 +108,9 @@ a directory expands to the files under it, minus the set a sweep leaves out. A
 file the command itself writes (its lockfile or bundle) is never taken, named,
 matched or swept, nor through a symlink or hard link to it. Every file must be a
 recognized source file or have its extension (or extensionless filename) in
-`resources`. Every offender is named in one error before anything is written.
+`resources`, but for `.nvmrc`, `.ruby-version` and `.bundle/config`, which are
+resources with no entry there. Every offender is named in one error before
+anything is written.
 
 An entry starting with `!` excludes instead: whatever its pattern matches is
 left out, named, matched or swept, and a directory it matches is left out with

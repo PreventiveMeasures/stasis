@@ -196,6 +196,21 @@ test('addCommand records a .patch unified diff as `patch` code, stored raw as UT
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['patches/latin1.patch'] }), /not valid UTF-8 \(format 'patch'\)/u)
 }))
 
+test('addCommand carries .nvmrc, .ruby-version and .bundle/config as resources with no `resources` entry', withTmp(async (t, tmp) => {
+  seed(tmp, { bundleFile: 'dist/code.br', resourcesBundleFile: 'dist/res.br' })
+  mkdirSync(join(tmp, '.bundle'), { recursive: true })
+  writeFileSync(join(tmp, '.nvmrc'), '24\n')
+  writeFileSync(join(tmp, '.ruby-version'), '3.3.5\n')
+  writeFileSync(join(tmp, '.bundle', 'config'), 'BUNDLE_PATH: "vendor/bundle"\n')
+  addCommand({ cwd: tmp, entries: ['.nvmrc', '.ruby-version', '.bundle/config'] })
+
+  const res = decode(join(tmp, 'dist/res.br'))
+  for (const rel of ['.nvmrc', '.ruby-version', '.bundle/config']) t.assert.equal(res.formats.get(rel), 'resource', rel)
+  // Only in Bundler's dir: a `config` elsewhere is still undeclared.
+  writeFileSync(join(tmp, 'src', 'config'), 'x\n')
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/config'] }), /src\/config is neither a recognized source file nor a declared resource/u)
+}))
+
 test('addCommand still captures an explicitly-listed .env (manual add is a deliberate choice)', withTmp(async (t, tmp) => {
   // Automated capture skips the whole env family, but an explicit `stasis add` is the user opting
   // in -- basename AND extension family must still be recorded as 'env' code (classifyFormat keeps
@@ -270,8 +285,9 @@ test('addCommand refuses an undeclared file swept in by a directory entry', with
 // A sweep is an automated capture, so it drops the auto-excluded set BEFORE the resources check --
 // including files that classify as code, which nothing else would stop.
 // Every file seedExcluded plants that a sweep of src/ must drop -- by its own name, or because the
-// sweep would have to descend through an excluded dir to reach it. `src/.env` is NOT here: glob's
-// dotfile rule hides it, so it never reaches the filter to be counted.
+// sweep would have to descend through an excluded dir to reach it. `src/.env` and `src/.bundle/config`
+// (Bundler's settings, which can hold a gem source's credentials) are NOT here: glob's dotfile rule
+// hides them, so they never reach the filter to be counted.
 const EXCLUDED = [
   'src/types.d.ts', 'src/nested/legacy.d.mts', // types only, erased at runtime
   'src/web.env', // secrets
@@ -283,7 +299,8 @@ const seedExcluded = (tmp) => {
   mkdirSync(join(tmp, 'src', 'nested'), { recursive: true })
   mkdirSync(join(tmp, 'src', 'examples', '__tests__'), { recursive: true })
   mkdirSync(join(tmp, 'src', '__mocks__'), { recursive: true })
-  for (const rel of [...EXCLUDED, 'src/.env']) writeFileSync(join(tmp, rel), `// ${rel}\n`)
+  mkdirSync(join(tmp, 'src', '.bundle'), { recursive: true })
+  for (const rel of [...EXCLUDED, 'src/.env', 'src/.bundle/config']) writeFileSync(join(tmp, rel), `// ${rel}\n`)
 }
 
 test('addCommand auto-excludes declarations, secrets, native noise, and whole dirs from a sweep', withTmp(async (t, tmp) => {

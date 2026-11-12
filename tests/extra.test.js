@@ -308,6 +308,18 @@ test('bundle takes a default-named bundle it does not write when extra names it'
   }
 }))
 
+test('bundle takes .nvmrc, .ruby-version and .bundle/config from extra with no `resources` entry', withTmp(async (t, tmp) => {
+  seed(tmp, { extra: ['.nvmrc', '.ruby-version', '.bundle/config'] })
+  const write = writer(tmp)
+  write('.nvmrc', '24\n')
+  write('.ruby-version', '3.3.5\n')
+  write('.bundle/config', 'BUNDLE_PATH: "vendor/bundle"\n')
+  const r = runCli(stasisCli, ['bundle', 'src/entry.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  const bundle = decode(join(tmp, 'stasis.code.br'))
+  for (const rel of ['.nvmrc', '.ruby-version', '.bundle/config']) t.assert.equal(bundle.formats.get(rel), 'resource', rel)
+}))
+
 test('bundle validates extra against --resources where given, else the config\'s resources', withTmp(async (t, tmp) => {
   for (const mainFields of [[], ['--mainFields=main']]) {
     seed(tmp, { extra: ['assets/'] })
