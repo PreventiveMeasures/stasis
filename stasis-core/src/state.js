@@ -1553,9 +1553,11 @@ export class State {
       if (!realContained(this.root, absolute)) continue
       // ABOVE the fast path: a child refutes a bit by OMISSION. Re-derived from THIS disk, never forged.
       this.#recordExecutable(file, absolute)
-      // Skip one the root attests (the re-read dominates merge cost), unless carrying a format it LACKS.
+      // Skip one the root attests (the re-read dominates merge cost), unless carrying a format it LACKS, or one its
+      // generic format (Metro's) yields to.
       const format = shard.formats.get(file)
-      if (this.hashes.has(file) && (format === undefined || (this.formats.get(file) ?? this.#lockFormats?.get(file)) !== undefined)) continue
+      const known = this.formats.get(file) ?? this.#lockFormats?.get(file)
+      if (this.hashes.has(file) && (format === undefined || (known !== undefined && !(GENERIC_FORMATS.has(known) && format !== known)))) continue
       const url = pathToFileURL(absolute).toString()
       try {
         if (format === 'directory') {

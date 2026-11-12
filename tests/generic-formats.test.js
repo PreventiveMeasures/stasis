@@ -89,6 +89,16 @@ test('a frozen run takes Metro\'s capture of a file a lockfile written before th
   t.assert.throws(() => new State(dir, { scope: 'full', lock: 'frozen', bundle: 'none' }).addFile(url, { format: 'commonjs' }), /is not attested by the lockfile/u)
 }))
 
+test('mergeShard takes the format a child loads a file in over the root\'s capture of it for Metro', withTmp((t, dir) => {
+  const url = seed(dir, 'module')
+  const root = new State(dir, { scope: 'full', lock: 'replace', bundle: 'add' })
+  root.addFile(url, { format: 'generic-javascript', inferFormat: false })
+  root.mergeShard(serializeShard({ scope: 'full', files: ['shared.js'], formats: new Map([['shared.js', 'module']]), imports: new Map() }))
+  root.write()
+  t.assert.equal(lockOf(dir).formats['shared.js'], 'module')
+  t.assert.equal(root.formats.get('shared.js'), 'module', 'and so the bundle')
+}))
+
 test('mergeShard keeps a child\'s generic format of a .js in a typed package, inferring none', withTmp((t, dir) => {
   seed(dir, 'module')
   const shard = serializeShard({ scope: 'full', files: ['shared.js'], formats: new Map([['shared.js', 'generic-javascript']]), imports: new Map() })
