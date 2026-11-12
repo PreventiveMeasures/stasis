@@ -2081,7 +2081,7 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 
 // `built()` held to the lockfile at `lockAbs` by `mode`: in add, agreeing with it on all both record; in frozen,
 // that too, and it must be there and attest every file built; in none, it must not be there.
-function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, accounts = [] } = {}) {
+export function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, accounts = [] } = {}) {
   if (mode !== 'add' && mode !== 'frozen' && mode !== 'none') return undefined
   const text = readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host)
   if (text === null && mode !== 'frozen') return undefined
