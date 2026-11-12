@@ -119,6 +119,8 @@ test('addCommand classifies the native build-input vocabulary as code (shared wi
   writeFileSync(join(tmp, 'ios', 'RNThing.swift'), 'import Foundation\n')
   writeFileSync(join(tmp, 'ios', 'RNThing.mm'), '@implementation X @end\n')
   writeFileSync(join(tmp, 'ios', 'Podfile'), "pod 'X'\n")
+  writeFileSync(join(tmp, 'Gemfile'), "gem 'cocoapods'\n")
+  writeFileSync(join(tmp, 'Gemfile.lock'), 'GEM\n  specs:\n    cocoapods (1.15.2)\n')
   writeFileSync(join(tmp, 'android', 'build.gradle'), 'apply plugin: "x"\n')
   writeFileSync(join(tmp, 'android', 'AndroidManifest.xml'), '<manifest/>\n')
   writeFileSync(join(tmp, 'gradlew'), '#!/usr/bin/env sh\nexec gradle "$@"\n')
@@ -126,7 +128,7 @@ test('addCommand classifies the native build-input vocabulary as code (shared wi
   writeFileSync(join(tmp, '.env'), 'API_URL=x\n')
   writeFileSync(join(tmp, 'apple-app-site-association'), '{ "applinks": {} }\n')
 
-  const entries = ['ios/RNThing.podspec', 'ios/RNThing.swift', 'ios/RNThing.mm', 'ios/Podfile',
+  const entries = ['ios/RNThing.podspec', 'ios/RNThing.swift', 'ios/RNThing.mm', 'ios/Podfile', 'Gemfile', 'Gemfile.lock',
     'android/build.gradle', 'android/AndroidManifest.xml', 'gradlew', 'ios/gen_headers.py', '.env', 'apple-app-site-association']
   addCommand({ cwd: tmp, entries })
 
@@ -136,6 +138,8 @@ test('addCommand classifies the native build-input vocabulary as code (shared wi
   t.assert.equal(fmt('ios/RNThing.swift'), 'swift')
   t.assert.equal(fmt('ios/RNThing.mm'), 'objcpp')
   t.assert.equal(fmt('ios/Podfile'), 'podfile')
+  t.assert.equal(fmt('Gemfile'), 'gemfile')
+  t.assert.equal(fmt('Gemfile.lock'), 'gemfile-lock')
   t.assert.equal(fmt('android/build.gradle'), 'gradle')
   t.assert.equal(fmt('android/AndroidManifest.xml'), 'xml')
   t.assert.equal(fmt('gradlew'), 'shell')

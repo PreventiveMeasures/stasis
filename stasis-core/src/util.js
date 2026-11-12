@@ -203,6 +203,8 @@ const CODE_EXT_FORMATS = new Map([
 const CODE_NAME_FORMATS = new Map([
   ['podfile', 'podfile'],
   ['podfile.lock', 'podfile-lock'],
+  ['gemfile', 'gemfile'],
+  ['gemfile.lock', 'gemfile-lock'],
   ['cmakelists.txt', 'cmake'],
   ['gradlew', 'shell'],
   ['appfile', 'fastlane'],

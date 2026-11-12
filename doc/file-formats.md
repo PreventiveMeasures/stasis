@@ -422,7 +422,8 @@ name, so a rule copied from one file to the other may not refuse the same files.
   `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`, `teal`);
   native build-input (`java`, `kotlin`, `gradle`, `objc`, `objcpp`, `swift`, `c`,
   `cpp`, `c-header`, `cpp-header`, `ruby`, `python`, `cmake`, `podspec`, `podfile`,
-  `podfile-lock`, `template`, `xml`, `env`, `fastlane`, `pbxproj`); `patch` (a
+  `podfile-lock`, `gemfile`, `gemfile-lock`, `template`, `xml`, `env`, `fastlane`,
+  `pbxproj`); `patch` (a
   `.patch` unified diff — e.g. pnpm `patchedDependencies`, patch-package — a
   UTF-8 text build input applied by a patch step, not runnable by Node); `resource`
   (raw UTF-8) / `resource:base64` (binary); and the filesystem-capture tags
