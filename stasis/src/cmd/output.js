@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-import { compressBundleText } from '@exodus/stasis-core/brotli'
+import { compressBundle, compressBundleText } from '@exodus/stasis-core/brotli'
 
 export function writeFile(abs, data) {
   mkdirSync(dirname(abs), { recursive: true })
@@ -19,6 +19,7 @@ export function writeOutput(cwd, target, data) {
 }
 
 export const writeBundle = (cwd, target, serialized, brotliQuality) => writeOutput(cwd, target, compressBundleText(serialized, brotliQuality))
+export const writeBundleOf = (cwd, target, bundle, brotliQuality) => writeOutput(cwd, target, compressBundle(bundle, brotliQuality))
 
 // `N package(s)`: the non-empty buckets of `modules`, the "." workspace bucket one of them.
 export function packagesLabel(modules) {

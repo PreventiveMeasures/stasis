@@ -31,4 +31,5 @@ export function brotliDecompressStrict(bytes) {
 }
 
 export const compressBundleText = (text, quality) => brotliCompressSync(text, brotliOptions(quality))
+export const compressBundle = (bundle, quality) => brotliCompressSync(bundle.serializedBytes(), brotliOptions(quality))
 export const parseBundleBytes = (bytes) => Bundle.parse(brotliDecompressStrict(bytes).toString('utf8'))
