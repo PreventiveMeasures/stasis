@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -519,8 +519,10 @@ export class State {
   // Callers only pass files that must be attested: an unattested one is a forged/extra entry.
   #assertAttestedFormat(attestation, file, format, what, source) {
     const attested = attestation.get(file)
+    // One written before Metro's code had a format records none for it, which the generic one says.
+    if (attested === undefined && GENERIC_FORMATS.has(format)) return
     assert.ok(attested !== undefined, `${what} format for ${file} is not attested by the ${source}`)
-    assert.equal(format, attested, `${what} format for ${file} mismatches the ${source}`)
+    if (!attestsFormat(attested, format)) assert.equal(format, attested, `${what} format for ${file} mismatches the ${source}`)
   }
 
   assertEntry(url) {
@@ -794,7 +796,8 @@ export class State {
       throw new Error(`addFile: a code file can't be recorded as a resource: ${file}`)
     }
 
-    if (!asResource && inferFormat) {
+    // A generic format is Metro's, which decides the module type itself.
+    if (!asResource && inferFormat && !GENERIC_FORMATS.has(format)) {
       const inferredFormat = nodeExtFormat(file) ??
         (closestType === undefined ? undefined : ext === '.js' ? closestType : ext === '.ts' ? `${closestType}-typescript` : undefined)
       if (inferredFormat !== undefined) {
@@ -854,7 +857,8 @@ export class State {
     if (this.config.writeLockfile && this.#lockFormats !== null && format != null && inAttestedZone) {
       const attested = this.#lockFormats.get(file)
       // A 'stat:*' baseline is not a flip: real content this run UPGRADES the record (#mergedFormats).
-      assert.ok(attested === undefined || attested === format || isStatFormat(attested),
+      // Nor is a generic format against the Node one, either way: the merge keeps the Node one.
+      assert.ok(attested === undefined || attestsFormat(attested, format) || attestsFormat(format, attested) || isStatFormat(attested),
         `format flip for ${file}: lockfile attests '${attested}', observed '${format}' (bytes unchanged) -- re-run with --lock=replace to re-attest`)
     }
 
@@ -872,7 +876,10 @@ export class State {
       else noupsert(this.sources, file, typeof source === 'string' ? source : source.toString())
     }
 
-    if (format) noupsert(this.formats, file, format)
+    // Metro's generic format of a file and the format Node loads it in, in either order, keep Node's.
+    const known = format ? this.formats.get(file) : undefined
+    if (known !== undefined && known !== format && (GENERIC_FORMATS.has(known) || GENERIC_FORMATS.has(format))) this.formats.set(file, reconcileFormat(format, known, file))
+    else if (format) noupsert(this.formats, file, format)
 
     if (!synthetic) this.#recordExecutable(file, absolute)
   }

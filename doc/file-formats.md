@@ -425,16 +425,22 @@ name, so a rule copied from one file to the other may not refuse the same files.
   native build-input (`java`, `kotlin`, `gradle`, `objc`, `objcpp`, `swift`, `c`,
   `cpp`, `c-header`, `cpp-header`, `ruby`, `python`, `cmake`, `podspec`, `podfile`,
   `podfile-lock`, `gemfile`, `gemfile-lock`, `template`, `xml`, `env`, `fastlane`,
-  `pbxproj`); `patch` (a
+  `pbxproj`); Metro's (`generic-javascript`, `generic-typescript`); `patch` (a
   `.patch` unified diff — e.g. pnpm `patchedDependencies`, patch-package — a
   UTF-8 text build input applied by a patch step, not runnable by Node); `resource`
   (raw UTF-8) / `resource:base64` (binary); and the filesystem-capture tags
   `directory`, `stat:file`, `stat:directory` (see "Filesystem captures"). Native
   tags come from the Metro native capture and aren't runnable by Node; `pbxproj`
-  is an Xcode project file added via `stasis add`. The code Metro builds has no
-  format, from the Metro plugin or `stasis bundle --metro`, but a `.json` file's
-  `json`: Metro transforms it from source, and `stasis run --bundle=load` refuses
-  to run it. The loader picks
+  is an Xcode project file added via `stasis add`. The code Metro builds, from
+  the Metro plugin or `stasis bundle --metro`, is `generic-javascript` (`.js`,
+  `.jsx`) or `generic-typescript` (`.ts`, `.tsx`), its module type being Metro's
+  to decide, but a file whose name gives its format keeps it (`.json` `json`,
+  `.mjs` `module`, and so on): Metro transforms it from source, and
+  `stasis run --bundle=load` refuses to run it. One Node loads too is recorded in
+  the format Node loads it in, whichever records it first, and a frozen run
+  takes Metro's capture of it as that one's. A bundle or lockfile written before
+  these formats carries Metro's code with no format, which attests the generic
+  one: a frozen run held to it takes Metro's capture as it did. The loader picks
   module-vs-commonjs and (for `*-typescript`) type-stripping purely from this
   value. Checked like `imports`: a mismatch is fatal, and on disk only the attested
   zone is enforced (`node_modules` files in `node_modules` scope, everything in

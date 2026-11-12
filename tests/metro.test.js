@@ -120,7 +120,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.imports['*']['src/entry.js']['./hello.js'], 'src/hello.js')
   }))
 
-  test('a JSON, .mjs or .cjs module is recorded in the format its name gives it, the rest of Metro\'s code with none', withTmp(async (t, tmp) => {
+  test('a JSON, .mjs or .cjs module is recorded in the format its name gives it, the rest of Metro\'s code generic', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
     writeFileSync(join(tmp, 'src', 'data.json'), '{"a":1}\n')
@@ -141,7 +141,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.formats['src/data.json'], 'json')
     t.assert.equal(lock.formats['src/util.mjs'], 'module')
     t.assert.equal(lock.formats['src/lib.cjs'], 'commonjs')
-    t.assert.equal(lock.formats['src/entry.js'], undefined)
+    t.assert.equal(lock.formats['src/entry.js'], 'generic-javascript')
   }))
 
   test('a dependency Babel or Metro added is no edge, its file still carried, and load runs without one', withTmp(async (t, tmp) => {
@@ -495,8 +495,8 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
     t.assert.equal(decoded.sources['.'].files['src/entry.js'], readFileSync(join(tmp, 'src/entry.js'), 'utf-8'))
     t.assert.equal(decoded.sources['.'].files['src/hello.js'], readFileSync(join(tmp, 'src/hello.js'), 'utf-8'))
-    // Metro builds it from source: no format, though its package is `type: module`.
-    t.assert.equal(decoded.formats['src/entry.js'], undefined)
+    // Metro builds it from source: generic, though its package is `type: module`.
+    t.assert.equal(decoded.formats['src/entry.js'], 'generic-javascript')
   }))
 
   test('bundle=load: the serializer records nothing, and the edges it asserts hold (load lives in the worker transformer)', withTmp(async (t, tmp) => {
@@ -1623,10 +1623,10 @@ process.exit(1)
     for (const f of ['__tests__/Fixture.podspec', '__tests__/RNThingTest.m', '__mocks__/NativeThing.mm', 'jest/setup.podspec']) {
       t.assert.equal(mod.files[f], undefined, `expected test-scaffolding ${f} to be excluded`)
     }
-    // Its codegen sources are, as code with no format, as Metro's code has none.
-    for (const f of ['src/spec/NativeThing.ts', 'src/spec/nested/ThingNativeComponent.js']) {
+    // Its codegen sources are, in the generic format Metro's code has.
+    for (const [f, format] of [['src/spec/NativeThing.ts', 'generic-typescript'], ['src/spec/nested/ThingNativeComponent.js', 'generic-javascript']]) {
       t.assert.ok(mod.files[f]?.startsWith('sha512-'), `codegen source ${f} is attested`)
-      t.assert.equal(lock.formats[`node_modules/react-native-native-lib/${f}`], undefined, f)
+      t.assert.equal(lock.formats[`node_modules/react-native-native-lib/${f}`], format, f)
     }
     t.assert.equal(mod.files['src/spec/.cache/NativeStale.ts'], undefined, 'nor one in a dot directory')
     for (const f of ['src/spec/types.ts', 'src/spec/NativeThing.d.ts', 'src/spec/__tests__/NativeTested.js']) {
@@ -1886,7 +1886,7 @@ process.exit(1)
     const files = lock.modules['node_modules/react-native-native-lib'].files
     // The imported JS is attested via the graph as CODE (not skipped, not double-recorded).
     t.assert.ok(files['src/index.js']?.startsWith('sha512-'), 'imported dep JS attested via the graph')
-    t.assert.equal(lock.formats['node_modules/react-native-native-lib/src/index.js'], undefined)
+    t.assert.equal(lock.formats['node_modules/react-native-native-lib/src/index.js'], 'generic-javascript')
     // The native pass still adds the native build-input surface alongside it.
     t.assert.ok(files['react-native-native-lib.podspec']?.startsWith('sha512-'), 'podspec attested by the native pass')
     t.assert.ok(files['ios/RNThing.m']?.startsWith('sha512-'), 'native source attested by the native pass')

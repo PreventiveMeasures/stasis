@@ -12,7 +12,7 @@ import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 // realReadFileSync throughout: the plugin's own reads, which --fs must not record as the program's.
 import { inScope, realReadFileSync } from '@exodus/stasis-core/state-util'
-import { classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, isPathWithin, metroFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -272,7 +272,7 @@ export class StasisMetro {
     return [...new Set(reached.map((nm) => nm.dir))].filter((root) => looksNative(root, diskHost))
   }
 
-  // In the format nativeInputs gives (none for a codegen source, as Metro's code has none, so none is inferred).
+  // In the format nativeInputs gives (a codegen source's generic, as Metro's code has, so none is inferred).
   #captureNativeTree(root) {
     for (const { file, source, action, format } of nativeInputs(root, diskHost, { resources: this.#resources, skip: (f) => this.#seen.has(f) })) {
       this.#seen.add(file)
@@ -354,15 +354,15 @@ export class StasisMetro {
     }
   }
 
-  // Capture `path` once, as the `kind` classifyExtension gives it: code with only the format its name gives
-  // (nodeExtFormat), as Metro transforms it from source. From disk: addFile re-reads it to assert the bytes.
+  // Capture `path` once, as the `kind` classifyExtension gives it: code in the format Metro builds it in
+  // (metroFormat), as Metro transforms it from source. From disk: addFile re-reads it to assert the bytes.
   // -> whether it was new
   #captureRead(path, kind, isEntry = false) {
     if (this.#seen.has(path)) return false
     this.#seen.add(path)
     const source = realReadFileSync(path)
     if (kind === 'code') assertCodeUtf8('StasisMetro', path, source)
-    const format = kind === 'code' ? nodeExtFormat(path) : undefined
+    const format = kind === 'code' ? metroFormat(path) : undefined
     const resource = kind === 'resource'
     this.#state.addFile(pathToFileURL(path).toString(), { source, format, isEntry, resource, inferFormat: false, reason: 'metro' })
     return true

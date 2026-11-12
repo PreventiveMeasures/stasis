@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { State } from './state.js'
 import { installFsHooks } from './fs.js'
 import { inScope } from './state-util.js'
-import { NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
+import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
 
 // Snapshot off the namespace so `--fs` can't redirect stasis's own capture/shard reads.
 const { mkdtempSync, opendirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = fs
@@ -32,6 +32,10 @@ function refuseNonNodeFormat(format, url) {
   if (format === 'directory') {
     throw new Error(`[stasis] cannot import a directory listing ('directory'): a captured fs.readdirSync result is not executable JavaScript. Read it with fs.readdirSync instead (${url})`)
   }
+  if (GENERIC_FORMATS.has(format)) {
+    throw new Error(`[stasis] cannot execute '${url}': the bundle carries it as '${format}', as it carries the code Metro builds from source, which is for Metro, not Node`)
+  }
+  // As an older bundle carries the code Metro builds.
   if (format === undefined) {
     throw new Error(`[stasis] cannot execute '${url}': the bundle carries it with no format, as it carries the code Metro builds from source, which is for Metro, not Node`)
   }
@@ -405,10 +409,12 @@ function resolve(specifier, context, nextResolve) {
       if (!parentURL && state.config.full && !forkedChild) state.assertEntry(url)
       format = state.getFormat(url)
     }
-    // Friendlier error at resolve time; the load gate is the load-bearing one.
-    if (format != null && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
+    // Friendlier error at resolve time; the load gate is the load-bearing one. Metro's code resolves as a file of
+    // no format did, its load refused.
+    const generic = GENERIC_FORMATS.has(format)
+    if (format != null && !generic && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
     assertInfraMatchesBundle(url)
-    return { url, format, importAttributes: undefined, shortCircuit: true }
+    return { url, format: generic ? undefined : format, importAttributes: undefined, shortCircuit: true }
   }
 
   const res = nextResolve(specifier)

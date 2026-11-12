@@ -3,7 +3,7 @@ import { basename, dirname, join, posix, relative, sep } from 'node:path'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isNativeArtifact, nameFormat, pathExt, toPosix, upsert } from '@exodus/stasis-core/util'
+import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isNativeArtifact, metroFormat, nameFormat, pathExt, toPosix, upsert } from '@exodus/stasis-core/util'
 
 // The native build inputs of a React Native app's packages, shared by the Metro plugin's capture and `stasis bundle
 // --metro` so the two carry the same files. `fs` is a host: readdir(dir) -> Dirent[] (throws where `dir` isn't one),
@@ -119,7 +119,7 @@ const isCodegenSpec = (name) => /^(?:Native.+|.+NativeComponent)/u.test(name) &&
 
 // Each native build input of the package at `root`, walked whole (a podspec may compile `cpp/` beside `ios/`) but
 // build output, prebuilt binaries, an off-platform top-level dir, symlinks and what the shared classifier skips; and
-// its codegen specs, as code with no format. -> yields { file, source, action: 'code' | 'resource', format }
+// its codegen specs, as code Metro's format names. -> yields { file, source, action: 'code' | 'resource', format }
 export function* nativeInputs(root, fs, { resources = new Set(), skip = () => false } = {}) {
   yield* walk(root, true)
   for (const dir of codegenSources(root, fs)) yield* sources(dir)
@@ -129,7 +129,7 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
       if (ent.isSymbolicLink() || ent.name.startsWith('.') || ent.name === 'node_modules' || ent.name.startsWith('__tests')) continue
       const file = join(dir, ent.name)
       if (ent.isDirectory()) yield* sources(file)
-      else if (ent.isFile() && isCodegenSpec(ent.name) && !skip(file)) yield { file, source: fs.readFile(file), action: 'code', format: undefined }
+      else if (ent.isFile() && isCodegenSpec(ent.name) && !skip(file)) yield { file, source: fs.readFile(file), action: 'code', format: metroFormat(file) }
     }
   }
   function* walk(dir, atRoot) {

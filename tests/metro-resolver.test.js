@@ -252,8 +252,8 @@ test('buildBundle --metro --metro-resolver carries a .tsx dependency without --j
     [...bundle.sources.keys()].toSorted(),
     ['node_modules/safe-area-like/src/index.tsx', 'src/entry.js'],
   )
-  // The .tsx source is scanned and carried, as code Metro builds: no format.
-  t.assert.equal(bundle.formats.get('node_modules/safe-area-like/src/index.tsx'), undefined)
+  // The .tsx source is scanned and carried, as code Metro builds: generic.
+  t.assert.equal(bundle.formats.get('node_modules/safe-area-like/src/index.tsx'), 'generic-typescript')
 })
 
 test('CLI: bundle --metro --metro-resolver carries a .tsx dep without --jsx and stasis build transforms it', ifMetro, withTmp((t, tmp) => {
