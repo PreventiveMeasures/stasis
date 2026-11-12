@@ -436,24 +436,26 @@ if (command === '-v' || command === '--version') {
   })
   if (argv.length !== 1) misused('Error: stasis validate takes one bundle')
   if (values.lockfile !== undefined && values['no-lockfile']) misused('Error: --lockfile and --no-lockfile: give one')
-  // The repository is read with GITHUB_TOKEN where it is set; its trees and the packages fetched are
-  // cached where `stasis audit` caches, each held to its id or integrity as it is read.
+  // The repository is read with githubToken's token and the packages with withNpmToken's, as
+  // `stasis github-bundle` reads them; its trees and the packages fetched are cached where
+  // `stasis audit` caches, each held to its id or integrity as it is read.
   const { createClient } = await import('@preventive/upstream/github.js')
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
+  const { githubToken, withNpmToken } = await import('../src/cmd/tokens.js')
   const { ValidateError, exitCodeOf, validate, printValidationReport } = await import('../src/validate.js')
   let report
   try {
     // Its dependencies alone only with --only-deps, and held to no lockfile only with --no-lockfile: a
     // bundle with no repository or commit to read its own code or its lockfile of is refused otherwise.
-    report = await validate(resolve(argv[0]), {
-      client: createClient({ token: process.env.GITHUB_TOKEN || null }),
+    report = await withNpmToken(undefined, () => validate(resolve(argv[0]), {
+      client: createClient({ token: githubToken() }),
       github: values.github,
       sha: values.sha,
       directory: values.directory,
       own: !values['only-deps'],
       lockfile: values['no-lockfile'] ? false : values.lockfile?.map((path) => resolve(path)) ?? true,
-    })
+    }))
   } catch (cause) {
     if (cause instanceof ValidateError) misused(`Error: ${cause.message}`)
     refuse(`Error: ${cause.message}`)

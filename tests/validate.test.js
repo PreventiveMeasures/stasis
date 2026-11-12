@@ -20,6 +20,8 @@ import { parseFileWithKind } from '../stasis/src/parse.js'
 import { HttpError, ValidateError, configuredLockfiles, exitCodeOf, installedNpmPackages, lockedNpmPackages, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
 import { patchIntegrity } from '../stasis/src/installed.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
+import { NPM_TOKEN_VARS } from '../stasis/src/cmd/tokens.js'
+import { NOT_UTF8_NPMRC, NPM_TOKEN, tokenHome } from './tokens.helper.js'
 import { fakeClient, json, lockfile as pnpmLockfile } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -1380,6 +1382,38 @@ test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-un
   const missing = run('--only-deps', '--no-lockfile', join(tmp, 'missing.stasis.code.br'))
   t.assert.deepStrictEqual([missing.status, missing.stderr], [3, `Error: File not found: ${join(tmp, 'missing.stasis.code.br')}\n`])
   t.assert.equal(run().status, 3)
+}))
+
+// How each token is chosen is githubToken's and withNpmToken's (tokens.test.js); here, that validate reads with them.
+test("stasis validate reads GitHub with GITHUB_TOKEN, else ~/.audit/config.json's token, and npm with its npmToken, else ~/.npmrc's, as github-bundle does", withTmp(async (t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, `globalThis.fetch = async (input, init) => {
+  process.stderr.write(\`sent \${new URL(input).host} \${new Headers(init?.headers).get('authorization')}\\n\`)
+  return new Response('{"message":"Not Found"}', { status: 404, headers: { 'content-type': 'application/json' } })
+}\n`)
+  const ownFile = join(tmp, 'own.stasis.code.br')
+  writeBundle(ownFile, { modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }]]) })
+  // A private package, which the npm client sends a token for (only a scoped one is private).
+  const deps = join(tmp, 'deps.stasis.code.br')
+  writeBundle(deps, { modules: new Map([['node_modules/@scope/q', { name: '@scope/q', version: '1.0.0', files: { 'index.js': 'q\n' } }]]) })
+  const npmrc = `//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n`
+  const [audited, npmrcOnly, notUtf8, empty] = await Promise.all([{ npmrc, audit: { token: 'gh-audit', npmToken: 'npm-audit' } }, { npmrc }, { npmrc: NOT_UTF8_NPMRC }, {}].map((files) => tokenHome(t, files)))
+  const env = { ...process.env, XDG_CACHE_HOME: join(tmp, 'cache') }
+  for (const name of ['CI', 'GITHUB_TOKEN', ...NPM_TOKEN_VARS]) delete env[name]
+  // What `stasis validate ...args`, with `home` the user's and `more` in its environment, sent each host for authorization.
+  const sent = (home, args, more = {}) => {
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'validate', ...args], { encoding: 'utf8', env: { ...env, HOME: home, ...more } })
+    return [r.status, [...new Set(r.stderr.split('\n').filter((line) => line.startsWith('sent ')))]]
+  }
+  const repo = ['--github=o/r', `--sha=${commit}`, ownFile]
+  t.assert.deepStrictEqual(sent(audited, repo), [3, ['sent api.github.com Bearer gh-audit']])
+  t.assert.deepStrictEqual(sent(audited, repo, { GITHUB_TOKEN: 'gh-env' }), [3, ['sent api.github.com Bearer gh-env']], "GITHUB_TOKEN's first")
+  t.assert.deepStrictEqual(sent(empty, repo), [3, ['sent api.github.com null']], 'anonymous without either')
+  const registry = ['--only-deps', '--no-lockfile', deps]
+  t.assert.deepStrictEqual(sent(audited, registry), [2, ['sent registry.npmjs.org Bearer npm-audit']])
+  t.assert.deepStrictEqual(sent(npmrcOnly, registry), [2, [`sent registry.npmjs.org Bearer ${NPM_TOKEN}`]], "~/.npmrc's without .audit's")
+  t.assert.deepStrictEqual(sent(audited, registry, { NPM_TOKEN: 'npm-env' }), [2, ['sent registry.npmjs.org Bearer npm-env']], "the environment's first")
+  t.assert.deepStrictEqual(sent(notUtf8, registry), [3, []], 'an ~/.npmrc that is not valid UTF-8 is refused before anything is fetched')
 }))
 
 // A Prisma Client a repository's schema generates, as `generated` gives it: its files from its output.

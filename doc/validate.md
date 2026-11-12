@@ -376,10 +376,14 @@ A repository renamed or transferred, which GitHub's API answers with a redirect
 (`301 Moved Permanently`), is followed to the name it has now, asked once by
 the id GitHub redirects to; what is read is held to the commit's and tree's ids
 all the same, and the report tells the name it was moved from.
-A private scoped npm package is fetched with `PREVENTIVE_MEASURES_NPM_TOKEN`,
-`STASIS_NPM_TOKEN` or `NPM_TOKEN`, as upstream reads them. Trees and tarballs
-are cached where `stasis audit` caches, each held to its id or integrity as it
-is read.
+A private (scoped) npm package is fetched with the first of
+`PREVENTIVE_MEASURES_NPM_TOKEN`, `STASIS_NPM_TOKEN` and `NPM_TOKEN` that is
+set. Where none is, it falls back to the token `~/.npmrc` gives npm's own
+registry on a line that is exactly `//registry.npmjs.org/:_authToken=npm_…`
+(the last, where there are several), as
+[github-bundle](github-bundle.md#dependencies) does; an `~/.npmrc` that is not valid
+UTF-8 is refused. Trees and tarballs are cached where `stasis audit` caches,
+each held to its id or integrity as it is read.
 
 ## API
 
