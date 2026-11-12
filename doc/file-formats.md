@@ -438,6 +438,16 @@ name, so a rule copied from one file to the other may not refuse the same files.
   `full`).
 - `executable` lists the recorded files carrying a POSIX execute bit (see
   "Executable files"); the key is omitted when none do.
+- `repo` (optional, right after `config`) records where a
+  [`stasis github-bundle`](github-bundle.md#local-lockfile) build was built, as
+  the bundle beside it does, with the same fields and checks (see `repo` under
+  `stasis.code.br`). Only `github-bundle` writes one, and holds a build to the
+  one a lockfile it loads records: each field it records must be the build's
+  (`github` in any case). [`stasis validate`](validate.md) reads own code of
+  the repository and commit it records, as of a bundle's. `stasis bundle` and
+  `stasis run` neither read one nor write one, nor look one up: a lockfile they
+  write records none, nor does one `stasis extract` writes of a bundle, nor a
+  merge of two.
 - File and module maps are sorted by the project's `sortPaths` rule (files in a
   dir before sub-dirs; `*` first, `node_modules` last).
 
@@ -734,7 +744,8 @@ than ship it, and reading one is refused as well.
   Unknown keys and invalid values are rejected on both serialize and parse. A
   `Bundle` freezes the value it holds, so changing it means assigning a new one,
   which is validated. The field is **purely informational**: it is never attested,
-  never written to the lockfile, and ignored by every verification. Adding to an
+  never written to the lockfile but by `stasis github-bundle` (see `repo` under
+  `stasis.lock.json`), and ignored by every verification. Adding to an
   existing bundle (`stasis add`, `stasis bundle --add`, `stasis run` with
   `bundle = add`) never overwrites its `repo`: only the fields that agree between
   the existing bundle and the new build survive, and none if `github` differs or

@@ -195,6 +195,17 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
   built.bundle.repo = { ...repo, ...(isValidRepoField('directory', at) && { directory: at }) }
   // Onto buildVfsBundle's own, not a copy, which would read its lockfile, built only when read.
   built.directory = tree.directory
+  // The lockfile records the repo too, as the bundle does: a GitHub build's alone does.
+  const { get } = Object.getOwnPropertyDescriptor(built, 'lockfile')
+  Object.defineProperty(built, 'lockfile', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const lockfile = get.call(this)
+      if (lockfile !== undefined) lockfile.repo = built.bundle.repo
+      return lockfile
+    },
+  })
   return built
 }
 
