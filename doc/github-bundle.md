@@ -29,8 +29,8 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
 | `--no-lazy` | Fetch and unpack every package the tree installs before the build. Without it, a pnpm or npm tree is lazy: only the packages the build reads are fetched and unpacked. See [Lazy](#lazy---no-lazy). |
 | `--generate=prisma` / `--no-generate` | Generate every project's Prisma Client first, saying what can't be generated; or none. Without either, those of the projects the entries reach are generated, silently. See [Prisma](#prisma). |
-| `--lockfile=path` | Also write a `stasis.lock.json` of a JS bundle, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) does. |
-| `--lockfile-only` | Write the lockfile alone, no bundle, as [`stasis bundle --lockfile-only`](bundle.md#companion-lockfile---lockfile) does: to `--lockfile`'s path, or without it to the bundle's default name with `.stasis.lock.json` for `.stasis.code.br` (see [Output](#output)). Not with `--output` or `--brotli-quality`; refused before anything is fetched. |
+| `--lockfile=path` | The [local lockfile](#local-lockfile) of a JS bundle, in place of the default name: written where it isn't there, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) writes one; where it is, the build is held to it and, under the default `frozen`, it is left as it is. |
+| `--lockfile-only` | Write the [local lockfile](#local-lockfile) alone, no bundle, as [`stasis bundle --lockfile-only`](bundle.md#companion-lockfile---lockfile) does: at `--lockfile`'s path, or without it the bundle's default name with `.stasis.lock.json` for `.stasis.code.br`. Where it is there, the build is held to it and, under the default `frozen`, nothing is written. Not with `--output` or `--brotli-quality`; refused before anything is fetched. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
 | [`stasis bundle`'s options](bundle.md) | For the entries: `--conditions`, `--mainFields`, `--metro --platforms`, `--jsx`, `--flow`, `--typescript`, `--tsconfig`, `--resources`, `--define`, `--package-json`, `--scope`, `--brotli-quality`, and `--mapping`/`--manifests` for Solidity. Not `--metro-resolver`, `--cargo*` or `--add`. |
 
@@ -360,13 +360,6 @@ or `owner-name.<directory>.<commit's first 7>.stasis.code.br` with
 `_`, and a directory too deep to fit the name in 255 characters is cut, with a
 hash of it appended. `--output=-` streams to stdout.
 
-`--lockfile-only` without `--lockfile` writes the lockfile under that name in
-place of the bundle, `.stasis.lock.json` for `.stasis.code.br`:
-
-```sh
-stasis github-bundle owner/name/packages/app --lockfile-only   # writes owner-name.packages-app.0123456.stasis.lock.json alone
-```
-
 On stderr it says how many of the packages installed it unpacked, the files
 written and their size, and the tarballs fetched for them (pnpm and npm), then
 what it bundled:
@@ -382,7 +375,44 @@ package installed.
 
 A JS build is held to the `stasis.lock.json` at the repository's root by its
 lock mode, as [`stasis bundle`](bundle.md#companion-lockfile---lockfile) holds
-one.
+one, and to the [local lockfile](#local-lockfile).
+
+## Local lockfile
+
+The local lockfile is `--lockfile`'s path, or else the bundle's default name
+with `.stasis.lock.json` for `.stasis.code.br`, whatever `--output` says:
+`owner-name[.<directory>].<commit's first 7>.stasis.lock.json` in the working
+directory. Its name carries the commit, so a build of another commit is held to
+none.
+
+Where it isn't there, `--lockfile` and `--lockfile-only` write it, and nothing
+is written without either. Where it is, a JS build is held to it by the lock
+mode `EXODUS_STASIS_LOCK` gives, `frozen` without it:
+
+| Mode | Behavior |
+| - | - |
+| `frozen` (default) | It must agree with the build on every file both record, and attest every file built. It is left as it is: `--lockfile` and `--lockfile-only` write nothing. |
+| `add` | It must agree with the build on every file both record. `--lockfile` and `--lockfile-only` write the one built over it. |
+| `replace` | It isn't read. `--lockfile` and `--lockfile-only` write the one built over it. |
+| `ignore` | It isn't read. `--lockfile` and `--lockfile-only` are refused, there or not. |
+| `none` | It must not be there. `--lockfile` and `--lockfile-only` are refused, there or not. |
+
+A build refused writes nothing. One held to it says so on stderr, before what
+it bundled or locked:
+
+```sh
+stasis github-bundle owner/name/packages/app --lockfile-only   # writes owner-name.packages-app.0123456.stasis.lock.json alone
+stasis github-bundle owner/name/packages/app                   # the bundle, held to it: same commit, frozen
+EXODUS_STASIS_LOCK=replace stasis github-bundle owner/name/packages/app --lockfile-only   # writes it anew
+```
+
+```text
+[stasis] Held 6591 files in 346 packages from owner/name@0123456789abcdef0123456789abcdef01234567/packages/app to owner-name.packages-app.0123456.stasis.lock.json (lock = frozen), left as it is
+```
+
+The mode is the environment's alone: a repository's `stasis.config.json`
+pinning `lock: frozen` pins its own `stasis.lock.json`, not the local one.
+Unlike `stasis bundle`'s under `frozen`, the bundle isn't loaded beside it.
 
 ## Prisma
 

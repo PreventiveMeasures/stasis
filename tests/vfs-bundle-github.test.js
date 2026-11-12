@@ -1352,6 +1352,76 @@ test('stasis github-bundle --lockfile-only writes the lockfile alone, the one it
   t.assert.deepStrictEqual((await readdir(tmp)).toSorted(), ['beside.br', 'beside.lock.json', 'only.lock.json'])
 })
 
+test('stasis github-bundle holds the build to the lockfile there, frozen unless EXODUS_STASIS_LOCK says otherwise, and writes one only where asked', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-held-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const warn = t.mock.method(console, 'warn', () => {})
+  const said = () => warn.mock.calls.slice(-2).map((call) => call.arguments[0])
+  const repo = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': "require('./b.js')\n", 'src/b.js': 'module.exports = 1\n', 'src/c.js': 'module.exports = 3\n' }
+  const NAME = 'ExodusOSS-example.aaaaaaa.stasis.lock.json'
+  const BUNDLE = 'ExodusOSS-example.aaaaaaa.stasis.code.br'
+  const bundle = ({ files = repo, entries = ['src/a.js'], lock, ...options } = {}) => githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client: fakeClient(files), entries, env: lock === undefined ? {} : { EXODUS_STASIS_LOCK: lock }, ...options })
+  const names = async () => (await readdir(tmp)).toSorted()
+  const read = (name = NAME) => readFile(join(tmp, name), 'utf8')
+  const clean = async () => Promise.all((await readdir(tmp)).map((name) => rm(join(tmp, name), { recursive: true })))
+  const reads = (lock) => Lockfile.parse(lock).modules.get('.').files
+  // None there: the bundle alone, unless --lockfile-only or --lockfile asks for one.
+  await bundle()
+  t.assert.deepStrictEqual(await names(), [BUNDLE], 'no lockfile written without --lockfile or --lockfile-only')
+  await clean()
+  // One there, of more than the build reads: held to, frozen, and left as it is, with --lockfile-only too.
+  await bundle({ entries: ['src/a.js', 'src/c.js'], lockfileOnly: true })
+  const broader = await read()
+  t.assert.deepStrictEqual(Object.keys(reads(broader)).toSorted(), ['src/a.js', 'src/b.js', 'src/c.js'])
+  await bundle()
+  t.assert.deepStrictEqual(await names(), [NAME, BUNDLE].toSorted())
+  t.assert.deepStrictEqual(said(), [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = frozen), left as it is`, `[stasis] Bundled 2 files in 1 package from ${GITHUB}@${SHA} to ${BUNDLE}`])
+  await bundle({ lockfileOnly: true })
+  t.assert.equal(warn.mock.calls.at(-1).arguments[0], `[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = frozen), left as it is`)
+  await bundle({ lockfile: NAME, output: 'other.br' })
+  t.assert.equal(await read(), broader, 'left as it is, whether --lockfile names it or not')
+  // Of other content: refused, nothing written.
+  await clean()
+  await bundle({ files: { ...repo, 'src/b.js': 'module.exports = 2\n' }, lockfileOnly: true })
+  const other = await read()
+  await Promise.all([{}, { lockfileOnly: true }, { lockfile: NAME }, { lock: 'add' }].map((options) =>
+    t.assert.rejects(bundle(options), { message: `${NAME}: content mismatch for 'src/b.js'` }, JSON.stringify(options))))
+  t.assert.deepStrictEqual(await names(), [NAME])
+  t.assert.equal(await read(), other)
+  // In replace, not read: written anew where asked.
+  await bundle({ lock: 'replace' })
+  t.assert.equal(await read(), other, 'not written without --lockfile or --lockfile-only')
+  await bundle({ lock: 'replace', lockfileOnly: true })
+  t.assert.notEqual(await read(), other)
+  // Of less than the build reads: refused frozen; in add, held to and written anew where asked.
+  await clean()
+  await bundle({ entries: ['src/b.js'], lockfileOnly: true })
+  const narrower = await read()
+  await t.assert.rejects(bundle(), { message: `${NAME} (lock = frozen) doesn't attest src/a.js` })
+  await bundle({ lock: 'add' })
+  t.assert.equal(await read(), narrower)
+  t.assert.equal(said()[0], `[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = add), left as it is`)
+  await bundle({ lock: 'add', lockfileOnly: true })
+  t.assert.deepStrictEqual(Object.keys(reads(await read())).toSorted(), ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual(said(), [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME} (lock = add)`, `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA} to ${NAME}`])
+  // --lockfile's path in place of the default name: written where it isn't there, held to frozen where it is.
+  await clean()
+  await bundle({ entries: ['src/b.js'], lockfile: 'out/x.lock.json' })
+  const x = await read('out/x.lock.json')
+  await t.assert.rejects(bundle({ lockfile: 'out/x.lock.json' }), { message: `${join('out', 'x.lock.json')} (lock = frozen) doesn't attest src/a.js` })
+  await bundle({ lockfile: 'out/x.lock.json', lockfileOnly: true, entries: ['src/b.js'] })
+  t.assert.equal(await read('out/x.lock.json'), x)
+  // In none, one there is refused; in ignore, not read. Neither writes one, refused before anything is fetched.
+  await clean()
+  await bundle({ lockfileOnly: true })
+  await t.assert.rejects(bundle({ lock: 'none' }), { message: `${NAME} is there, which lock = none refuses` })
+  await bundle({ lock: 'ignore', files: { ...repo, 'src/b.js': 'module.exports = 2\n' } })
+  const none = fakeClient({})
+  await Promise.all(['none', 'ignore'].flatMap((lock) => [[{ lockfileOnly: true }, '--lockfile-only'], [{ lockfile: 'x.json' }, '--lockfile']].map(([options, flag]) =>
+    t.assert.rejects(githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client: none, entries: ['src/a.js'], env: { EXODUS_STASIS_LOCK: lock }, ...options }), { message: `githubBundleCommand: ${flag}: lock = ${lock} writes no lockfile` }))))
+  t.assert.deepStrictEqual(none.calls, [])
+})
+
 test('stasis github-bundle names its output after the repo and commit by default', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-name-'))
   t.after(() => rm(tmp, { recursive: true, force: true }))
@@ -1554,6 +1624,24 @@ test('stasis github-bundle owner/name/path --lockfile-only writes the lockfile a
   const written = await readFile(join(tmp, 'only', name), 'utf8')
   t.assert.equal(written, await readFile(join(tmp, 'both', 'x.lock.json'), 'utf8'), 'the lockfile written beside the bundle')
   t.assert.deepStrictEqual([...Lockfile.parse(written).entries], ['src/a.js'])
+  // Run again where it is: the build held to it, frozen, and it left as it is.
+  const again = async (repo) => {
+    const { status, stderr } = await githubBundleCli([`${GITHUB}/packages/api`, `--sha=${SHA}`], { nodeArgs: [`--import=${FAKE_REPO}`], cwd: join(tmp, 'only'), env: { ...process.env, EXODUS_STASIS_LOCK: '', STASIS_TEST_REPO: JSON.stringify(repo), XDG_CACHE_HOME: join(tmp, 'cache') } })
+    return { status, stderr, said: stderr.trim().split('\n').slice(-2), names: (await readdir(join(tmp, 'only'))).toSorted() }
+  }
+  const { stderr: _stderr, ...held } = await again(files)
+  t.assert.deepStrictEqual(held, {
+    status: 0,
+    said: [`[stasis] Held 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ${name} (lock = frozen), left as it is`, `[stasis] Bundled 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br`],
+    names: ['ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br', name],
+  })
+  t.assert.equal(await readFile(join(tmp, 'only', name), 'utf8'), written)
+  await rm(join(tmp, 'only', 'ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br'))
+  // Of content other than the lockfile's: refused, the bundle not written.
+  const changed = await again({ ...files, 'packages/api/src/b.js': 'module.exports = 2\n' })
+  t.assert.equal(changed.status, 1)
+  t.assert.deepStrictEqual(changed.names, [name])
+  t.assert.match(changed.stderr, new RegExp(`${name.replaceAll('.', '\\.')}: content mismatch for 'src/b\\.js'`, 'u'))
 })
 
 test("stasis github-bundle fetches with ~/.audit/config.json's token where GITHUB_TOKEN is not set", async (t) => {

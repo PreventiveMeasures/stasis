@@ -34,6 +34,7 @@ export function unpackedSummary({ unpacked, installed, dependencies, files, byte
 const summary = (verb) => (count, modules, from, dest) => `[stasis] ${verb} ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
 export const bundledSummary = summary('Bundled')
 export const lockedSummary = summary('Locked')
+export const heldSummary = summary('Held')
 
 // Why --lockfile-only can't be taken with these output options, or null where it can; `brotliQuality`
 // counts as given, parsed or not. `named`: a lockfile left out is named by the command, so only an empty one is refused.
