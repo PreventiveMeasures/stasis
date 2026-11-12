@@ -16,7 +16,7 @@ would leave [broken at load](bundle.md#resolution) (`./b` from `a/c.ts`, for
 `a/b.ts`) is built with it. One that builds without it is unchanged.
 
 ```sh
-stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
@@ -30,7 +30,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | `--no-lazy` | Fetch and unpack every package the tree installs before the build. Without it, a pnpm or npm tree is lazy: only the packages the build reads are fetched and unpacked. See [Lazy](#lazy---no-lazy). |
 | `--generate=prisma` / `--no-generate` | Generate every project's Prisma Client first, saying what can't be generated; or none. Without either, those of the projects the entries reach are generated, silently. See [Prisma](#prisma). |
 | `--lockfile=path` | Also write a `stasis.lock.json` of a JS bundle, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) does. |
-| `--lockfile-only` | With `--lockfile`: write that lockfile alone, no bundle, as [`stasis bundle --lockfile-only`](bundle.md#companion-lockfile---lockfile) does. Not with `--output` or `--brotli-quality`; refused before anything is fetched. |
+| `--lockfile-only` | Write the lockfile alone, no bundle, as [`stasis bundle --lockfile-only`](bundle.md#companion-lockfile---lockfile) does: to `--lockfile`'s path, or without it to the bundle's default name with `.stasis.lock.json` for `.stasis.code.br` (see [Output](#output)). Not with `--output` or `--brotli-quality`; refused before anything is fetched. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
 | [`stasis bundle`'s options](bundle.md) | For the entries: `--conditions`, `--mainFields`, `--metro --platforms`, `--jsx`, `--flow`, `--typescript`, `--tsconfig`, `--resources`, `--define`, `--package-json`, `--scope`, `--brotli-quality`, and `--mapping`/`--manifests` for Solidity. Not `--metro-resolver`, `--cargo*` or `--add`. |
 
@@ -359,6 +359,13 @@ or `owner-name.<directory>.<commit's first 7>.stasis.code.br` with
 `--directory` (or the one `owner/name/path` gives), its `/` made `-`. Each character outside `[A-Za-z0-9._-]` is made
 `_`, and a directory too deep to fit the name in 255 characters is cut, with a
 hash of it appended. `--output=-` streams to stdout.
+
+`--lockfile-only` without `--lockfile` writes the lockfile under that name in
+place of the bundle, `.stasis.lock.json` for `.stasis.code.br`:
+
+```sh
+stasis github-bundle owner/name/packages/app --lockfile-only   # writes owner-name.packages-app.0123456.stasis.lock.json alone
+```
 
 On stderr it says how many of the packages installed it unpacked, the files
 written and their size, and the tarballs fetched for them (pnpm and npm), then

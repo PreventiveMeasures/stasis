@@ -36,9 +36,10 @@ export const bundledSummary = summary('Bundled')
 export const lockedSummary = summary('Locked')
 
 // Why --lockfile-only can't be taken with these output options, or null where it can; `brotliQuality`
-// counts as given, parsed or not.
-export function lockfileOnlyError({ lockfile, output, add = false, brotliQuality }) {
-  if (!lockfile) return '--lockfile-only requires --lockfile=path'
+// counts as given, parsed or not. `named`: a lockfile left out is named by the command, so only an empty one is refused.
+export function lockfileOnlyError({ lockfile, output, add = false, brotliQuality, named = false }) {
+  if (named && lockfile === '') return "--lockfile can't be empty: give a path, or leave it out for the default name"
+  if (!lockfile && !named) return '--lockfile-only requires --lockfile=path'
   if (output !== undefined) return "--lockfile-only can't be combined with --output (no bundle is written)"
   if (add) return "--lockfile-only can't be combined with --add (no bundle is merged into)"
   if (brotliQuality !== undefined) return "--lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"

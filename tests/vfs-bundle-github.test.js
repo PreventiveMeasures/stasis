@@ -12,6 +12,7 @@ import { pack } from '@preventive/archive/tar.js'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { LOCK_FILE } from '@exodus/stasis-core/util'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
 import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
@@ -1325,11 +1326,22 @@ test('stasis github-bundle --lockfile-only writes the lockfile alone, the one it
   t.assert.equal(warn.mock.calls.at(-1).arguments[0], `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA} to only.lock.json`)
   await bundle({ lockfile: 'beside.lock.json', output: 'beside.br' })
   t.assert.equal(await readFile(join(tmp, 'only.lock.json'), 'utf8'), await readFile(join(tmp, 'beside.lock.json'), 'utf8'))
+  // Without --lockfile, named as the bundle would be, .stasis.lock.json for .stasis.code.br.
+  await bundle({ lockfileOnly: true })
+  t.assert.deepStrictEqual((await readdir(tmp)).toSorted(), ['ExodusOSS-example.aaaaaaa.stasis.lock.json', 'beside.br', 'beside.lock.json', 'only.lock.json'])
+  t.assert.equal(await readFile(join(tmp, 'ExodusOSS-example.aaaaaaa.stasis.lock.json'), 'utf8'), await readFile(join(tmp, 'only.lock.json'), 'utf8'))
+  t.assert.equal(warn.mock.calls.at(-1).arguments[0], `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA} to ExodusOSS-example.aaaaaaa.stasis.lock.json`)
+  await rm(join(tmp, 'ExodusOSS-example.aaaaaaa.stasis.lock.json'))
+  // A Solidity bundle has none, which is said as of --lockfile.
+  const soldeer = fakeClient({})
+  await t.assert.rejects(githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'soldeer', client: soldeer, entries: ['src'], lockfileOnly: true }), /^Error: buildGitHubBundle: --lockfile is only valid for JS bundles$/u)
+  t.assert.deepStrictEqual(soldeer.calls, [])
   // Refused before anything is fetched.
   const none = fakeClient({})
   const refused = [
-    [{}, '--lockfile-only requires --lockfile=path'],
+    [{ lockfile: '' }, "--lockfile can't be empty: give a path, or leave it out for the default name"],
     [{ lockfile: 'x.json', output: 'x.br' }, "--lockfile-only can't be combined with --output (no bundle is written)"],
+    [{ output: 'x.br' }, "--lockfile-only can't be combined with --output (no bundle is written)"],
     [{ lockfile: 'x.json', brotliQuality: 3 }, "--lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"],
   ]
   await Promise.all(refused.map(([options, message]) => t.assert.rejects(
@@ -1370,6 +1382,16 @@ test('stasis github-bundle names its output after the repo and commit by default
   const deep = (leaf) => githubBundleFile({ github: longest, directory: `${'segment/'.repeat(120)}${leaf}`, commit: SHA })
   t.assert.equal(deep('a').length, 255)
   t.assert.notEqual(deep('a'), deep('b'), 'directories alike in what fits of them are told apart')
+  // The lockfile --lockfile-only writes without --lockfile: the same name, .stasis.lock.json for .stasis.code.br, fit
+  // in 255 too, with 89 left for the directory.
+  t.assert.equal(githubBundleFile({ github: GITHUB, directory: 'packages/app', commit: SHA }, LOCK_FILE), 'ExodusOSS-example.packages-app.aaaaaaa.stasis.lock.json')
+  t.assert.equal(githubBundleFile({ github: GITHUB, commit: SHA }, LOCK_FILE), 'ExodusOSS-example.aaaaaaa.stasis.lock.json')
+  const lockFits = `${'d'.repeat(44)}/${'d'.repeat(44)}`
+  t.assert.equal(githubBundleFile({ github: longest, directory: lockFits, commit: SHA }, LOCK_FILE), `${'o'.repeat(39)}-${'n'.repeat(100)}.${'d'.repeat(44)}-${'d'.repeat(44)}.aaaaaaa.stasis.lock.json`)
+  t.assert.equal(githubBundleFile({ github: longest, directory: lockFits, commit: SHA }, LOCK_FILE).length, 255)
+  const lockCut = githubBundleFile({ github: longest, directory: `${lockFits}d`, commit: SHA }, LOCK_FILE)
+  t.assert.equal(lockCut.length, 255)
+  t.assert.match(lockCut, new RegExp(`^o{39}-n{100}\\.${'d'.repeat(44)}-d{35}_[0-9a-f]{8}\\.aaaaaaa\\.stasis\\.lock\\.json$`, 'u'))
 })
 
 test('stasis github-bundle names the output of a directory after it, wherever the bundle is rooted', async (t) => {
@@ -1419,7 +1441,7 @@ async function githubBundleCli(args, { nodeArgs = [], cwd, env } = {}) {
   return { status, stderr: Buffer.concat(stderr).toString('utf8') }
 }
 
-test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, --generate or --no-generate, and --lockfile-only with --lockfile alone', async (t) => {
+test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, --generate or --no-generate, and --lockfile-only with no --output, --brotli-quality or empty --lockfile', async (t) => {
   const usage = async (args) => {
     const { status, stderr } = await githubBundleCli(args)
     return { status, error: stderr.split('\n')[0] }
@@ -1439,8 +1461,9 @@ test('stasis github-bundle requires the repo, as owner/name[/path] or --github, 
     [[GITHUB, '--no-generate', '--generate=prisma', 'a.js'], 'Error: github-bundle takes --generate or --no-generate, not both'],
     // --no-generate taken alone, and refused for what follows it.
     [[GITHUB, '--no-generate', `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
-    [[GITHUB, '--lockfile-only', 'a.js'], 'Error: github-bundle: --lockfile-only requires --lockfile=path'],
+    [[GITHUB, '--lockfile=', '--lockfile-only', 'a.js'], "Error: github-bundle: --lockfile can't be empty: give a path, or leave it out for the default name"],
     [[GITHUB, '--lockfile=x.json', '--lockfile-only', '--output=x.br', 'a.js'], "Error: github-bundle: --lockfile-only can't be combined with --output (no bundle is written)"],
+    [[GITHUB, '--lockfile-only', '--output=x.br', 'a.js'], "Error: github-bundle: --lockfile-only can't be combined with --output (no bundle is written)"],
     [[GITHUB, '--lockfile=x.json', '--lockfile-only', '--brotli-quality=3', 'a.js'], "Error: github-bundle: --lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"],
   ]
   const results = await Promise.all(cases.map(([args]) => usage(args)))
@@ -1499,6 +1522,38 @@ test('stasis github-bundle owner/name/path bundles as --github=owner/name --dire
   t.assert.deepStrictEqual(rootFile, root, "a file, from the root's package.json")
   t.assert.deepStrictEqual(rootSlash, root, 'the root, with a / after it')
   t.assert.deepStrictEqual([pattern.names, Bundle.parse(brotliDecompressSync(pattern.bytes).toString('utf8')).entries], [given.names, new Set(['src/a.js', 'src/b.js'])])
+})
+
+test('stasis github-bundle owner/name/path --lockfile-only writes the lockfile alone, named as the bundle would be', async (t) => {
+  const files = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'pnpm-lock.yaml': lockfile('.', 'packages/api'),
+    'packages/api/package.json': json({ name: 'api', version: '1.0.0', main: 'src/a.js' }),
+    'packages/api/src/a.js': "module.exports = require('./b.js')\n",
+    'packages/api/src/b.js': 'module.exports = 1\n',
+  }
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-cli-lockfile-only-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const run = async (dir, args) => {
+    const out = join(tmp, dir)
+    await mkdir(out)
+    const { status, stderr } = await githubBundleCli(args, { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), XDG_CACHE_HOME: join(tmp, 'cache') } })
+    t.assert.equal(status, 0, stderr)
+    return { names: (await readdir(out)).toSorted(), said: stderr.trim().split('\n').at(-1) }
+  }
+  const [only, both] = await Promise.all([
+    // The entries the directory's package.json names.
+    run('only', [`${GITHUB}/packages/api`, '--lockfile-only', `--sha=${SHA}`]),
+    run('both', [`${GITHUB}/packages/api`, '--lockfile=x.lock.json', `--sha=${SHA}`]),
+  ])
+  const name = 'ExodusOSS-example.packages-api.aaaaaaa.stasis.lock.json'
+  t.assert.deepStrictEqual(only.names, [name], 'no bundle written')
+  t.assert.equal(only.said, `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA}/packages/api to ${name}`)
+  t.assert.deepStrictEqual(both.names, ['ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br', 'x.lock.json'])
+  const written = await readFile(join(tmp, 'only', name), 'utf8')
+  t.assert.equal(written, await readFile(join(tmp, 'both', 'x.lock.json'), 'utf8'), 'the lockfile written beside the bundle')
+  t.assert.deepStrictEqual([...Lockfile.parse(written).entries], ['src/a.js'])
 })
 
 test("stasis github-bundle fetches with ~/.audit/config.json's token where GITHUB_TOKEN is not set", async (t) => {
