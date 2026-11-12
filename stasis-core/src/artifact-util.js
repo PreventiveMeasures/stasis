@@ -153,7 +153,7 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
   return carried
 }
 
-const RECORD_METADATA = { integrity: normalizeModuleIntegrity, repo: normalizeModuleRepo, patch: normalizeModulePatch }
+const RECORD_METADATA = { integrity: normalizeModuleIntegrity, patch: normalizeModulePatch, repo: normalizeModuleRepo }
 const DIR_FIELDS = Object.keys(DIR_METADATA)
 const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
 const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]

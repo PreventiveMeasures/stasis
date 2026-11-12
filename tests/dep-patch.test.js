@@ -27,7 +27,7 @@ const lockOf = (modules) => new Lockfile({ config: { scope: 'node_modules' }, mo
 test('a dependency record\'s integrity and patch: written, read back, and refused where invalid or of no npm dependency', (t) => {
   const record = dep({ integrity: TARBALL, repo: { github: 'o/dep' }, patch: PATCHED })
   const written = JSON.parse(bundleOf({ 'node_modules/dep': record }).serialize())
-  t.assert.deepStrictEqual(Object.keys(written.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'integrity', 'repo', 'patch', 'files'])
+  t.assert.deepStrictEqual(Object.keys(written.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'integrity', 'patch', 'repo', 'files'])
   const parsed = Bundle.parse(JSON.stringify(written)).modules.get('node_modules/dep')
   t.assert.deepStrictEqual([parsed.integrity, { ...parsed.patch }], [TARBALL, PATCHED])
   const lock = JSON.parse(Lockfile.fromBundle(bundleOf({ 'node_modules/dep': record }), () => TARBALL).serialize())

@@ -525,7 +525,7 @@ than ship it, and reading one is refused as well.
   recording none of the package, as a split bundle's other half records it,
   else its other artifacts, else as that record names it.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
-  a `repo`, after `ecosystem` and `integrity`: the GitHub repository its own
+  a `repo`, after `ecosystem`, `integrity` and `patch`: the GitHub repository its own
   manifest names, `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,
   with the fields and checks of the bundle's own `repo` (see `repo` below), except
   that `github` is required: a `directory` or `commit` places nothing without the
@@ -616,7 +616,7 @@ than ship it, and reading one is refused as well.
   audit` asks it for its advisories rather than looking one up, and for a record
   with none, the one its bundled `package.json` names by the same rules (see the
   `stasis` README).
-- An npm dependency record may carry `patch`, after `repo`: the patch pnpm
+- An npm dependency record may carry `patch`, after `integrity`: the patch pnpm
   installed it with (`patchedDependencies`), as `{ "integrity": "sha256-…" }` of
   its hash. A build from a lockfile alone records the one deptree applies, one
   from disk the one `node_modules/.pnpm/lock.yaml` names; npm and yarn patch
@@ -626,7 +626,7 @@ than ship it, and reading one is refused as well.
   mismatch (none vs …)`). One with neither tells nothing of either. It is held
   as `integrity` is, and [`stasis validate`](validate.md#patched-dependencies)
   holds it to the lockfile.
-- A dependency record may carry `vendored`, after `repo` and `patch`: the
+- A dependency record may carry `vendored`, after `patch` and `repo`: the
   packages copied into the dependency (Next.js compiles ~140 into
   `dist/compiled`) whose files the bundle carries, by the directory each one's
   own `package.json` is in, with that `package.json`'s `name` and, where it
