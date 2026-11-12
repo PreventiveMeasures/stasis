@@ -121,7 +121,7 @@
     "@exodus/stasis-core": "1.0.0-beta.17",
     "@exodus/stasis-plugins": "1.0.0-beta.17",
     "@preventive/archive": "^1.4.0",
-    "@preventive/deptree": "^1.4.1",
+    "@preventive/deptree": "^1.5.0",
     "@preventive/lockfile": "^1.3.0",
     "@preventive/rn": "1.0.0-alpha.6",
     "@preventive/upstream": "^1.6.0",
