@@ -29,7 +29,8 @@ export function githubBundleFile({ github, directory, commit }, suffix = BUNDLE_
 // Run `stasis github-bundle`. Of `env`, only GITHUB_TOKEN and EXODUS_STASIS_LOCK are read.
 // The local lockfile is `lockfile`, else the one named as the bundle would be, `.stasis.lock.json` for
 // `.stasis.code.br`. One there holds the build, by EXODUS_STASIS_LOCK's mode, frozen without it: it must attest the
-// build, and is left as it is. One not there is written, where `lockfile` or `lockfileOnly` asks for it.
+// build, and the repo it records the build's, and is left as it is. One not there is written, where `lockfile` or
+// `lockfileOnly` asks for it, recording the repo as the bundle does.
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
   const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, brotliQuality, named: true }) : null
   if (lockfileOnlyRefused !== null) throw new Error(`githubBundleCommand: ${lockfileOnlyRefused}`)
@@ -47,7 +48,7 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
   // Before anything is written: the build, and the lockfile it writes, take what the one there alone attests. Of
   // a build of none (a Solidity one), it holds nothing.
   const present = existsSync(lockAbs)
-  const held = present && heldToLockfile(() => built.lockfile, lockAbs, label, mode, { bundle, accounts: built.accounts }) !== undefined
+  const held = present && heldToLockfile(() => built.lockfile, lockAbs, label, mode, { bundle, accounts: built.accounts, repo: bundle.repo }) !== undefined
   const writes = locks && !(present && mode === 'frozen')
   // Built before anything is written, as `stasis bundle` builds it.
   const lockData = writes ? built.lockfile.serialize() : undefined

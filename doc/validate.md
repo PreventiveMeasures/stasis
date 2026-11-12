@@ -11,9 +11,9 @@ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-
 
 | Flag | Meaning |
 | - | - |
-| `--github` | The repository its own code and its lockfile are read of, in place of the one the bundle's `repo` names. |
-| `--sha` | The commit, in place of the bundle's `repo.commit`. |
-| `--directory` | The directory in the repository it was built in, in place of the bundle's `repo.directory`. |
+| `--github` | The repository its own code and its lockfile are read of, in place of the one the bundle's (or a lockfile's) `repo` names. |
+| `--sha` | The commit, in place of the bundle's (or a lockfile's) `repo.commit`. |
+| `--directory` | The directory in the repository it was built in, in place of the bundle's (or a lockfile's) `repo.directory`. |
 | `--only-deps` | Check the dependencies alone: own code is skipped, and the repository's tree is not read. The patches the bundle holds are checked all the same, where a repository and commit are known (below). |
 | `--lockfile=path` | Hold the dependencies to this lockfile, on disk, in place of the repository's. Give it twice for a bundle with both npm packages and crates. |
 | `--no-lockfile` | Hold the dependencies to no lockfile: each tarball to its registry's integrity alone. |
@@ -126,8 +126,10 @@ stasis validate --only-deps --no-lockfile app.stasis.code.br
 
 A `stasis.lock.json` is validated as a bundle is, each file by the integrity it
 records: of the repository's bytes (or as a CRLF checkout has them), and of the
-package's. A lockfile records no repository: give `--github` and `--sha`. A
-listing of the repository's tree, which gives git's blob ids alone, leaves its
+package's. One [`stasis github-bundle`](github-bundle.md#local-lockfile) writes
+records the repository, commit and directory, as the bundle does, and is
+validated of them; one written otherwise records none: give `--github` and
+`--sha`. A listing of the repository's tree, which gives git's blob ids alone, leaves its
 own code unverified; a vendored crate's `.cargo-checksum.json`, held to the
 crate by its bytes, is left out.
 

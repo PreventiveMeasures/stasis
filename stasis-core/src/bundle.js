@@ -117,7 +117,8 @@ const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecos
 export class Bundle {
   static VERSION = VERSION
 
-  // Informational, not attested, never in a lockfile; validated on every assignment, and frozen.
+  // Informational, not attested; validated on every assignment, and frozen. In a lockfile of a GitHub build's alone
+  // (Lockfile#repo), never one of a bundle's.
   #repo
   get repo() {
     return this.#repo

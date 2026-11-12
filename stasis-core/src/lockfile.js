@@ -1,4 +1,4 @@
-import { assert, assertScope, duplicateKeyError, flatFileKeys, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, parseBuckets, parseEntries, parseExecutable, parseFormats, parseImports, serializedParts } from './artifact-util.js'
+import { assert, assertScope, duplicateKeyError, flatFileKeys, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeRepo, parseBuckets, parseEntries, parseExecutable, parseFormats, parseImports, serializedParts } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -12,9 +12,21 @@ export class Lockfile {
 
   version = VERSION
 
-  constructor({ config = { scope: 'full' }, entries, modules, imports, formats, executable } = {}) {
+  // Where a GitHub build's (`stasis github-bundle`'s) was built, as a bundle's `repo`; validated on every
+  // assignment, and frozen. Only github-bundle writes one, and holds a build to it; `stasis validate` reads own code
+  // of it. Neither `stasis bundle` nor `stasis run` reads one: a merge, or a lockfile of a bundle, carries none.
+  #repo
+  get repo() {
+    return this.#repo
+  }
+  set repo(repo) {
+    this.#repo = normalizeRepo(repo, 'lockfile repo')
+  }
+
+  constructor({ config = { scope: 'full' }, entries, modules, imports, formats, executable, repo } = {}) {
     assertScope(config.scope, 'lockfile')
     this.config = config
+    this.repo = repo
     this.entries = entries ?? new Set()
     this.modules = modules ?? new Map()
     // conditions -> parent -> specifier -> resolved file, and file -> format: null only on an in-memory construct.
@@ -50,13 +62,13 @@ export class Lockfile {
     const imports = parseImports(json.imports)
     const formats = parseFormats(json.formats)
     const executable = parseExecutable(json.executable, { what: 'lockfile', files: flatKeys, formats, scope: json.config.scope })
-    return new Lockfile({ config: json.config, entries, modules, imports, formats, executable })
+    return new Lockfile({ config: json.config, entries, modules, imports, formats, executable, repo: json.repo })
   }
 
   serialize() {
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
     const { entries, sources, modules, imports, formats, executable } = serializedParts(this, 'lockfile', { metadata: LOCK_METADATA })
-    const store = { version: this.version, config: this.config, entries, sources, modules, imports, formats, executable }
+    const store = { version: this.version, config: this.config, repo: this.repo, entries, sources, modules, imports, formats, executable }
     return JSON.stringify(store, undefined, 2) + '\n'
   }
 

@@ -20,7 +20,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf } from '@exodus/stasis-core/util'
+import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -2080,8 +2080,9 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 }
 
 // `built()` held to the lockfile at `lockAbs` by `mode`: in add, agreeing with it on all both record; in frozen,
-// that too, and it must be there and attest every file built; in none, it must not be there.
-export function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, accounts = [] } = {}) {
+// that too, and it must be there and attest every file built; in none, it must not be there. With `repo` (a GitHub
+// build's), the repo it records, where it records one, must be that; without, one it records is no matter.
+export function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, accounts = [], repo } = {}) {
   if (mode !== 'add' && mode !== 'frozen' && mode !== 'none') return undefined
   const text = readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host)
   if (text === null && mode !== 'frozen') return undefined
@@ -2096,6 +2097,9 @@ export function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, b
   } catch (cause) {
     throw new Error(`${label}: not a valid stasis lockfile`, { cause })
   }
+  if (repo !== undefined && lock.repo !== undefined && !repoAttested(lock.repo, repo)) {
+    throw new Error(`${label} records the repo ${repoLabel(lock.repo)}, and the build is of ${repoLabel(repo)}`)
+  }
   const merged = lock.mergeAgreeing(fresh, label, { held: true })
   heldToAccounts(lock.modules, accounts, `${label}: `)
   // What it alone records of a package no account tells the install of is the build's too: kept.
@@ -2108,6 +2112,10 @@ export function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, b
   }
   return fresh
 }
+
+// Each field `recorded` has is `repo`'s: `github` in any case, as GitHub takes it.
+const repoAttested = (recorded, repo) => Object.entries(recorded).every(([key, value]) => (key === 'github' ? sameGithub(value, repo.github) : value === repo[key]))
+const repoLabel = ({ github = '?', commit = '?', directory }) => `${github}@${commit}${directory ? `/${directory}` : ''}`
 
 // That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis run
 // --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths it names.

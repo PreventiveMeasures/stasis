@@ -37,7 +37,9 @@ test('buildGitHubBundle builds a repo at a commit and stamps `repo` itself', asy
   const { bundle, lockfile: lock } = await build({ client, entries: ['src/a.js'] })
   t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
   t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
-  t.assert.doesNotMatch(lock.serialize(), /ExodusOSS/u)
+  // The lockfile records it too, as the bundle does: a GitHub build's alone.
+  t.assert.deepStrictEqual({ ...lock.repo }, { github: GITHUB, directory: '', commit: SHA })
+  t.assert.deepStrictEqual({ ...Lockfile.parse(lock.serialize()).repo }, { github: GITHUB, directory: '', commit: SHA })
   t.assert.deepStrictEqual(client.calls, [['getRepoTarball', GITHUB, SHA]])
 })
 
@@ -1420,6 +1422,54 @@ test('stasis github-bundle holds the build to the lockfile there, frozen unless 
   await Promise.all(['none', 'ignore'].flatMap((lock) => [[{ lockfileOnly: true }, '--lockfile-only'], [{ lockfile: 'x.json' }, '--lockfile']].map(([options, flag]) =>
     t.assert.rejects(githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client: none, entries: ['src/a.js'], env: { EXODUS_STASIS_LOCK: lock }, ...options }), { message: `githubBundleCommand: ${flag}: lock = ${lock} writes no lockfile` }))))
   t.assert.deepStrictEqual(none.calls, [])
+})
+
+test('stasis github-bundle records the repo in the lockfile it writes, and holds the build to the repo one there records', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-lock-repo-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  t.mock.method(console, 'warn', () => {})
+  const repo = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' }
+  const NAME = 'ExodusOSS-example.aaaaaaa.stasis.lock.json'
+  const bundle = ({ files = repo, lock, ...options } = {}) => githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client: fakeClient(files), entries: ['src/a.js'], env: lock === undefined ? {} : { EXODUS_STASIS_LOCK: lock }, ...options })
+  const parsed = async (name = NAME) => Lockfile.parse(await readFile(join(tmp, name), 'utf8'))
+  await bundle({ lockfileOnly: true })
+  const written = await parsed()
+  t.assert.deepStrictEqual({ ...written.repo }, { github: GITHUB, directory: '', commit: SHA }, 'as the bundle records it')
+  // Recording another: refused, in add too; in replace, not read, and written anew with the build's.
+  const recording = async (repoField, name = NAME) => {
+    const lock = await parsed()
+    lock.repo = repoField
+    await writeFile(join(tmp, name), lock.serialize())
+  }
+  const other = 'b'.repeat(40)
+  await recording({ github: GITHUB, directory: '', commit: other })
+  const refused = `${NAME} records the repo ${GITHUB}@${other}, and the build is of ${GITHUB}@${SHA}`
+  for (const options of [{}, { lockfileOnly: true }, { lock: 'add' }]) await t.assert.rejects(bundle(options), { message: refused }, JSON.stringify(options)) // eslint-disable-line no-await-in-loop -- one lockfile, read by each
+  await rm(join(tmp, 'x.lock.json'), { force: true })
+  await bundle({ lockfile: 'x.lock.json' })
+  await recording({ github: GITHUB, commit: other }, 'x.lock.json')
+  await t.assert.rejects(bundle({ lockfile: 'x.lock.json' }), { message: `x.lock.json records the repo ${GITHUB}@${other}, and the build is of ${GITHUB}@${SHA}` }, "--lockfile's path's too")
+  await recording({ github: GITHUB, directory: 'packages/app', commit: SHA })
+  await t.assert.rejects(bundle(), { message: `${NAME} records the repo ${GITHUB}@${SHA}/packages/app, and the build is of ${GITHUB}@${SHA}` }, 'another directory')
+  await recording({ github: 'ExodusOSS/other', directory: '', commit: SHA })
+  await t.assert.rejects(bundle(), { message: `${NAME} records the repo ExodusOSS/other@${SHA}, and the build is of ${GITHUB}@${SHA}` }, 'another repo')
+  await bundle({ lock: 'replace', lockfileOnly: true })
+  t.assert.deepStrictEqual({ ...(await parsed()).repo }, { github: GITHUB, directory: '', commit: SHA })
+  // Recording the build's, but in another case, or part of it, or none: held to as ever, and frozen, left as it is.
+  for (const recorded of [{ github: GITHUB.toUpperCase(), directory: '', commit: SHA }, { github: GITHUB }, undefined]) {
+    await recording(recorded) // eslint-disable-line no-await-in-loop -- one lockfile, rewritten for each
+    await bundle({ lockfileOnly: true }) // eslint-disable-line no-await-in-loop -- one lockfile, read by each
+    const kept = (await parsed()).repo // eslint-disable-line no-await-in-loop -- one lockfile, read after each
+    t.assert.deepStrictEqual(kept && { ...kept }, recorded, JSON.stringify(recorded))
+  }
+  // The stasis.lock.json the repo commits: held to (lock = add), the repo it records no matter, as of any but the local one.
+  await rm(join(tmp, NAME))
+  await bundle({ lockfileOnly: true })
+  const committed = await parsed()
+  committed.repo = { github: 'ExodusOSS/other', commit: other }
+  await rm(join(tmp, NAME))
+  await bundle({ files: { ...repo, 'stasis.lock.json': committed.serialize() }, lockfileOnly: true })
+  t.assert.deepStrictEqual({ ...(await parsed()).repo }, { github: GITHUB, directory: '', commit: SHA })
 })
 
 test('stasis github-bundle names its output after the repo and commit by default', async (t) => {

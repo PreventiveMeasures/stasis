@@ -414,6 +414,21 @@ The mode is the environment's alone: a repository's `stasis.config.json`
 pinning `lock: frozen` pins its own `stasis.lock.json`, not the local one.
 Unlike `stasis bundle`'s under `frozen`, the bundle isn't loaded beside it.
 
+The lockfile it writes records the repository, commit and directory, as the
+bundle does (its [`repo`](file-formats.md#stasislockjson)), so
+[`stasis validate`](validate.md) validates it with no `--github` or `--sha`. One
+it is held to that records a `repo` must record the build's: each field it
+records (`github` in any case), or the build is refused:
+
+```text
+owner-name.0123456.stasis.lock.json records the repo owner/name@<another commit>, and the build is of owner/name@0123456789abcdef0123456789abcdef01234567
+```
+
+One recording none, as one an earlier stasis wrote, is held to as ever, and,
+frozen, left recording none. The `stasis.lock.json` the repository commits
+can't record the commit it is in: a `repo` it records is no matter, as to
+`stasis bundle` and `stasis run`.
+
 ## Prisma
 
 A JS bundle first writes, for each project whose schema has a `prisma-client`
@@ -549,7 +564,8 @@ To generate none for a repo, whoever bundles it:
 - `buildGitHubBundle` takes `path` in place of `directory`, as the command
   takes `owner/name/path`: a directory, or a file (see
   [A file's project](#a-files-project)). It returns the `directory` it bundled
-  beside `buildVfsBundle`'s `bundle`, `lockfile`, `stats`, `packageManager`,
+  beside `buildVfsBundle`'s `bundle`, `lockfile` (recording the bundle's `repo`
+  too, where `buildVfsBundle`'s records none), `stats`, `packageManager`,
   `packageManagers` and `root`: `packageManagers` the package manager of each
   tree laid out, and `packageManager` the one, undefined where
   `stasis.config.json`'s [`lockfiles`](#several-lockfiles-lockfiles) lay out
