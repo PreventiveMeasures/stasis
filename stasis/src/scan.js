@@ -169,7 +169,7 @@ export class Scan {
 
   // classifyExtension gives 'resource' only for a non-code name.
   #isResource(file) {
-    return this.resources.size > 0 && classifyExtension(file, this.resources) === 'resource'
+    return classifyExtension(file, this.resources) === 'resource'
   }
 
   walk(entries) {

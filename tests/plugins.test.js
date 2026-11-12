@@ -123,6 +123,17 @@ test('classifyExtension: an extensionless file matches a filename entry by basen
   t.assert.equal(classifyExtension('proj/AUTHORS', resources), 'unknown')
 })
 
+test('classifyExtension: .nvmrc, .ruby-version and .bundle/config are resources with no allowlist entry', (t) => {
+  const none = new Set()
+  for (const path of ['.nvmrc', 'app/.nvmrc', '.ruby-version', 'ios/.ruby-version', '.bundle/config', 'ios/.bundle/config', '.Bundle/CONFIG']) {
+    t.assert.equal(classifyExtension(path, none), 'resource', path)
+  }
+  // A bare `config` is one only in Bundler's dir.
+  for (const path of ['config', 'lib/config', 'x.bundle/config', '.bundle/config.yml', '.nvmrc.bak']) {
+    t.assert.equal(classifyExtension(path, none), 'unknown', path)
+  }
+})
+
 test('classifyExtension: anything else classifies as "unknown"', (t) => {
   const resources = parseResourcesOption('X', ['png'])
   t.assert.equal(classifyExtension('foo.svg', resources), 'unknown',

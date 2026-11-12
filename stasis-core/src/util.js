@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { ARCHIVE_ALGORITHM, CONFIG_FILE, NODE_FORMATS, isLockfileName } from './artifact-util.js'
@@ -154,7 +154,15 @@ export function classifyExtension(filePath, resources) {
   return inResources(filePath, resources) ? 'resource' : 'unknown'
 }
 
-export const inResources = (path, resources) => resources.has(pathExt(path) || basename(path).toLowerCase())
+// Resources with no `resources` entry: the toolchain versions a build reads and Bundler's settings, `.bundle/config`
+// keyed by its dir too, as a bare `config` is too common a name.
+const IMPLICIT_RESOURCE_NAMES = new Set(['.nvmrc', '.ruby-version'])
+function isImplicitResource(path) {
+  const base = basename(path).toLowerCase()
+  return IMPLICIT_RESOURCE_NAMES.has(base) || (base === 'config' && basename(dirname(path)).toLowerCase() === '.bundle')
+}
+
+export const inResources = (path, resources) => resources.has(pathExt(path) || basename(path).toLowerCase()) || isImplicitResource(path)
 
 // Non-deterministic across installs, so the native capture skips them; also matched on a dir (`*.framework`).
 const NATIVE_ARTIFACT_EXTS = new Set([
@@ -203,6 +211,8 @@ const CODE_EXT_FORMATS = new Map([
 const CODE_NAME_FORMATS = new Map([
   ['podfile', 'podfile'],
   ['podfile.lock', 'podfile-lock'],
+  ['gemfile', 'gemfile'],
+  ['gemfile.lock', 'gemfile-lock'],
   ['cmakelists.txt', 'cmake'],
   ['gradlew', 'shell'],
   ['appfile', 'fastlane'],

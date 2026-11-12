@@ -1491,6 +1491,8 @@ process.exit(1)
     writeFileSync(join(root, 'ios', 'gen_headers.py'), 'print(1)\n')
     writeFileSync(join(root, 'ios', 'Podfile'), "pod 'RNThing', :path => '.'\n")
     writeFileSync(join(root, 'ios', 'Podfile.lock'), 'PODS:\n  - RNThing (3.1.0)\n')
+    writeFileSync(join(root, 'Gemfile'), "source 'https://rubygems.org'\ngem 'cocoapods', '~> 1.15'\n")
+    writeFileSync(join(root, 'Gemfile.lock'), 'GEM\n  specs:\n    cocoapods (1.15.2)\n')
     writeFileSync(join(root, 'ios', 'RNThing-Info.plist'), '<?xml version="1.0"?>\n<plist><dict/></plist>\n')
     writeFileSync(join(root, 'ios', 'PrivacyInfo.xcprivacy'), '<?xml version="1.0"?>\n<plist><dict/></plist>\n')
     writeFileSync(join(root, 'ios', 'RNThing.xcscheme'), '<?xml version="1.0"?>\n<Scheme/>\n')
@@ -1574,7 +1576,7 @@ process.exit(1)
     'ios/RNThing.h', 'ios/RNThing.m', 'ios/RNThing.mm', 'ios/RNThing.swift',
     'ios/util.c', 'ios/util.cpp', 'ios/util.cc', 'ios/util.cxx', 'ios/legacy.c++',
     'ios/util.hpp', 'ios/util.hh', 'ios/util.hxx', 'ios/legacy.h++', 'ios/gen_headers.py',
-    'ios/Podfile', 'ios/Podfile.lock',
+    'ios/Podfile', 'ios/Podfile.lock', 'Gemfile', 'Gemfile.lock',
     'ios/RNThing-Info.plist', 'ios/PrivacyInfo.xcprivacy', 'ios/RNThing.xcscheme', 'gradlew',
     'ios/Main.storyboard', 'ios/RNThing.entitlements',
     'apple-app-site-association', 'fastlane/Appfile', 'fastlane/Fastfile',
@@ -1685,6 +1687,8 @@ process.exit(1)
     t.assert.equal(nlfmt('ios/gen_headers.py'), 'python')
     t.assert.equal(nlfmt('ios/Podfile'), 'podfile') // matched by basename (no extension)
     t.assert.equal(nlfmt('ios/Podfile.lock'), 'podfile-lock') // basename, not the generic .lock ext
+    t.assert.equal(nlfmt('Gemfile'), 'gemfile') // matched by basename (no extension)
+    t.assert.equal(nlfmt('Gemfile.lock'), 'gemfile-lock') // basename, not the generic .lock ext
     t.assert.equal(nlfmt('gradlew'), 'shell') // the Gradle wrapper, matched by basename
     t.assert.equal(nlfmt('ios/RNThing-Info.plist'), 'xml')
     t.assert.equal(nlfmt('ios/PrivacyInfo.xcprivacy'), 'xml')
