@@ -636,10 +636,19 @@ than ship it, and reading one is refused as well.
   with none, the one its bundled `package.json` names by the same rules (see the
   `stasis` README).
 - An npm dependency record may carry `patch`, after `integrity`: the patch pnpm
-  installed it with (`patchedDependencies`), as `{ "integrity": "sha256-…" }` of
-  its hash. A build from a lockfile alone records the one deptree applies, one
+  installed it with (`patchedDependencies`), as `{ "integrity": "sha256-…",
+  "file": "patches/name@version.patch" }`, the `integrity` of its hash and
+  `file` where it is, from the bundle root (`../` leading it where it is
+  above). A build from a lockfile alone records the one deptree applies, one
   from disk the one `node_modules/.pnpm/lock.yaml` names; npm and yarn patch
-  nothing. A record with an `integrity` and no `patch` is of a package
+  nothing. Its `file` is the one the lockfile names, else, as pnpm 11's names
+  its hash alone, the one `pnpm-workspace.yaml`'s `patchedDependencies` name
+  for it. Where a build, `stasis run` or `stasis add` records one, a patch with
+  no file found, or whose file's text is not of the hash, is refused; holding a
+  record to the install (`--bundle=load`) reads no file. The patch itself is not bundled: [`extra`](#stasisconfigjson) adds
+  it. Two records of one patch agree on its `file` where both record one, as on
+  its `integrity`: one recording another is refused (`patch mismatch`), never
+  replaced, and a merge takes it of the side that records one. A record with an `integrity` and no `patch` is of a package
   installed unpatched, the two being recorded of one install: it disagrees
   with a record of a patch, and with an install that applied one (`patch
   mismatch (none vs …)`). One with neither tells nothing of either. It is held

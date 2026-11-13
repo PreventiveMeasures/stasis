@@ -4,8 +4,9 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballIntegrityOf, toPosix, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { hexIntegrity, isNpmDependency, isPlainObject, memoized, relativeEscapes, tarballIntegrityOf, toPosix, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
+import { parseYaml } from '@preventive/lockfile/yaml.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
 // What the package manager that laid out a node_modules recorded there; one missing or unreadable names nothing.
@@ -25,6 +26,10 @@ export const resolutionCommit = (resolution) => {
   if (resolution?.type === 'git') return githubCommit(resolution.repo, resolution.commit)
   return resolution?.type === 'tarball' ? githubTarball(resolution.tarball ?? '') : undefined
 }
+
+// As pnpm hashes a patch: a sha256 in hex of its text with its CRLFs as LFs, or as it is.
+export const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text].map((one) => hash('sha256', one)))
+export const isPatchOf = (text, patchHash) => patchHashes(text).has(patchHash)
 
 export const patchIntegrity = (patchHash) => (/^[\da-f]{64}$/u.test(patchHash ?? '') ? hexIntegrity('sha256', patchHash) : undefined)
 
@@ -104,15 +109,44 @@ const storeNames = (key) => {
 }
 export const STORE_HASH = /_[\da-f]{32}$/u
 
+// Of the lockfile `file` and the `patchers` (`[selector, { hash, path }]`) it locks: the file each hash's patch is in.
+function patchLocator(file, patchers, host) {
+  // node_modules/.pnpm/lock.yaml copies the pnpm-lock.yaml beside node_modules, its paths from there.
+  const base = basename(file) === 'lock.yaml' ? resolve(file, '../../..') : dirname(file)
+  const settings = join(base, 'pnpm-workspace.yaml')
+  const named = memoized(() => {
+    const patches = parseLock(settings, host, true, parseYaml)?.patchedDependencies
+    return isPlainObject(patches) ? patches : {}
+  })
+  // Every file named for the hash held to it; of two of one text, the first named, as deptree records it.
+  return memoized((patchHash) => {
+    const [first] = patchers.filter(([, patch]) => patch.hash === patchHash).map(([selector, patch]) => {
+      const refused = (why) => new Error(`${file} patches ${selector} with ${patchHash}: ${why}`)
+      // pnpm 11's lockfile names a patch by its hash alone, its file in pnpm-workspace.yaml.
+      const path = patch.path ?? named()[selector]
+      if (typeof path !== 'string') throw refused(`neither it nor ${settings} names the patch's file`)
+      const at = resolve(base, path)
+      const text = readText(host, at)
+      if (text === null) throw refused(`${at} can't be read`)
+      if (!isPatchOf(text, patchHash)) throw refused(`${at} is a patch of another hash`)
+      return at
+    })
+    return first
+  })
+}
+
 function pnpmLocks(file, host, strict) {
   const parsed = parseLock(file, host, strict, (text) => ({ lockfile: parsePnpmLockfile(text).lockfile }))
   if (parsed === undefined) return undefined
   const { lockfile } = parsed
+  // Of its patches alone: the cache keeps a run's locators, which must not hold the lockfile.
+  const patchers = Object.entries(lockfile?.patchedDependencies ?? {})
+  const patchAt = patchers.length === 0 ? undefined : patchLocator(file, patchers, host)
   const stored = new Map()
   const keyed = new Map()
   const ids = []
   for (const [key, { name, version, resolution, patchHash }] of Object.entries(lockfile?.packages ?? {})) {
-    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity, patchHash }
+    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity, patchHash, ...(patchHash !== undefined && { patchAt }) }
     for (const store of storeNames(key)) stored.set(store, record)
     keyed.set(key, record)
     ids.push([`${name}@${version ?? ''}`, record])
@@ -214,9 +248,11 @@ export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash }
   return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
 }
 
-export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map() } = {}) {
+// With `locate`, a patch's record carries its file, from `root`: found and held to its hash, else refused.
+export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map(), locate = false } = {}) {
   const accounts = new Map()
   let top // the bundle root's real path, as each package's is compared with it
+  const rootReal = () => (top ??= resolve(host.realpath(resolve(root))))
   const layoutAt = (dir) => upsert(layouts, dir, () => layoutOf(dir, host))
   for (const [dir, info] of modules) {
     // An untagged bucket under node_modules is npm's too (an artifact from before the tag).
@@ -235,7 +271,7 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
       ;[layout, at] = [upsert(stores, store, () => storeOf(store, host)), [name]]
     } else {
       try {
-        top ??= resolve(host.realpath(resolve(root)))
+        rootReal()
       } catch {
         return accounts
       }
@@ -253,13 +289,17 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
     const differs = locks && lockDiffers(info.version, record, locked, none)
     if (differs) throw new Error(`${lockfile} doesn't lock ${dir} as installed (${differs}): install from it again`)
     const told = record ?? locked
-    if (told !== undefined && !told.ambiguous) accounts.set(dir, { ...installedMetadata(dir, info.ecosystem, told), ...(record === undefined && { locked: true }) })
+    if (told === undefined || told.ambiguous) continue
+    const metadata = installedMetadata(dir, info.ecosystem, told)
+    // A record of the lockfile alone is held to, never recorded: its patch is not looked for.
+    if (locate && record !== undefined && metadata.patch) metadata.patch.file = toPosix(relative(rootReal(), told.patchAt(told.patchHash)))
+    accounts.set(dir, { ...metadata, ...(record === undefined && { locked: true }) })
   }
   return accounts
 }
 
 export function pinInstalled(bundle, root, host = diskHost) {
-  const accounts = installedRecords(bundle.modules, root, host)
+  const accounts = installedRecords(bundle.modules, root, host, { locate: true })
   for (const [dir, { locked, ...metadata }] of accounts) if (!locked) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...metadata })
   return accounts
 }

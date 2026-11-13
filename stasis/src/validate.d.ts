@@ -24,7 +24,7 @@ export interface PlanPackage { ecosystem: string; name: string; version: string;
 export interface ValidationPlan { files: number; own: PlanFile[]; packages: PlanPackage[]; patches: Map<string, string> }
 // A parsed bundle (Bundle.parse's, or parseFileWithKind's artifact).
 export interface PlannedBundle {
-  modules: Map<string, { name?: string; version?: string; ecosystem?: string; integrity?: string; repo?: { github: string; directory?: string; commit?: string }; patch?: { integrity: string }; files: Record<string, unknown> }>
+  modules: Map<string, { name?: string; version?: string; ecosystem?: string; integrity?: string; repo?: { github: string; directory?: string; commit?: string }; patch?: { integrity: string; file?: string }; files: Record<string, unknown> }>
   formats?: Map<string, string>
 }
 export function validationPlan(bundle: PlannedBundle, options?: { lockfile?: boolean }): ValidationPlan

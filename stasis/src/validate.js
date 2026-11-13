@@ -18,7 +18,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { nameAt, STORE_HASH, resolutionCommit } from './installed.js'
+import { isPatchOf, nameAt, patchHashes, STORE_HASH, resolutionCommit } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -78,7 +78,7 @@ export function validationPlan(bundle, { lockfile = false } = {}) {
       if (lockfile && rel === CARGO_CHECKSUM && ecosystem === 'cargo') continue
       const file = lockfile ? { path, dir, rel, format, integrity: content } : { path, dir, rel, format, bytes: () => (format === 'resource:base64' ? Buffer.from(content, 'base64') : utf8.encode(content)) }
       if (ecosystem !== undefined) {
-        if (!packages.has(key)) packages.set(key, { ecosystem, name: info.name ?? '', version: info.version ?? '', files: [], recorded: new Map(), integrities: new Map(), repos: new Map() })
+        if (!packages.has(key)) packages.set(key, { ecosystem, name: info.name ?? '', version: info.version ?? '', files: [], recorded: new Map(), patchFiles: new Map(), integrities: new Map(), repos: new Map() })
         packages.get(key).files.push(file)
       } else if (path !== EMPTY_MODULE_PATH || content !== (lockfile ? EMPTY_INTEGRITY : '')) {
         if (!lockfile && (format === 'patch' || path.endsWith('.patch'))) patches.set(path, content)
@@ -89,6 +89,7 @@ export function validationPlan(bundle, { lockfile = false } = {}) {
     if (pkg === undefined) continue
     // In hex, as pnpm's and Cargo's lockfiles spell them.
     if (info.patch) pkg.recorded.set(dir, integrityHex(info.patch.integrity))
+    if (info.patch?.file) pkg.patchFiles.set(dir, info.patch.file)
     if (info.integrity) pkg.integrities.set(dir, ecosystem === 'cargo' ? integrityHex(info.integrity) : info.integrity)
     if (info.repo) pkg.repos.set(dir, info.repo)
   }
@@ -141,9 +142,7 @@ export function fetchFailure(error) {
   return 'failed'
 }
 
-// As pnpm hashes a patch: a sha256 in hex of its text with its CRLFs as LFs, or as it is.
-const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text].map(sha256))
-export const isPatchOf = (text, hash) => patchHashes(text).has(hash)
+export { isPatchOf }
 
 // git quotes a path as C writes a string, bytes past ASCII in octal; null where it is quoted otherwise.
 const ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 }
@@ -398,22 +397,28 @@ function patchesOf(plan) {
     for (const hash of patchHashes(text)) if (!byHash.has(hash)) byHash.set(hash, held)
     if (!byName.has(name)) byName.set(name, held)
   }
-  return { byHash, byName }
+  return { byHash, byName, byPath: plan.patches }
 }
 
 // A bundle's patch is own code: refused where the repository holds it otherwise (`verdicts`).
-async function patchOf(held, pkg, files, locked, verdicts, recorded) {
+async function patchOf(held, pkg, files, locked, verdicts, recorded, recordedFile) {
   const lock = locked?.of(pkg.name, pkg.version)
   const hash = lock === undefined ? recorded : lock?.hash
   let patch
   let text
+  // Where it is found, from the bundle root, as a record's `file` names it.
+  let file
   try {
-    const bundled = hash !== undefined ? held.byHash.get(hash) : lock === undefined && held.byName.get(pnpmPatchName(pkg.name, pkg.version))
+    // Of the bundle's of its hash, the one its copies record, where it holds that.
+    const own = hash !== undefined && held.byPath.get(recordedFile)
+    const bundled = own && isPatchOf(own, hash) ? { path: recordedFile, text: own }
+      : hash !== undefined ? held.byHash.get(hash) : lock === undefined && held.byName.get(pnpmPatchName(pkg.name, pkg.version))
     if (bundled) {
       patch = { ...(hash !== undefined && { hash }), path: bundled.path, from: 'bundle' }
-      text = bundled.text
+      ;({ text, path: file } = bundled)
     } else if (lock?.path) {
       patch = { hash, path: lock.path, from: locked.from }
+      file = lock.file
       text = await locked.read(lock.path)
       // Held to the hash the lockfile names it by, as the bundle's are found by it.
       if (!isPatchOf(text, hash)) throw new PatchError('patch-mismatch')
@@ -422,7 +427,7 @@ async function patchOf(held, pkg, files, locked, verdicts, recorded) {
       const found = lock ? await locked.locate?.(lock) : undefined
       if (!found) return hash === undefined ? { patched: null } : { patch: { hash, error: 'patch-not-found' }, patched: null }
       patch = { hash, path: found.path, from: locked.from }
-      ;({ text } = found)
+      ;({ text, file } = found)
     }
     let unverified = false
     if (patch.from === 'bundle') {
@@ -431,7 +436,7 @@ async function patchOf(held, pkg, files, locked, verdicts, recorded) {
       unverified = verdict !== 'matched'
       patch.verified = !unverified
     }
-    return { patch, patched: patchedFiles(files, parsePatch(text)), unverified }
+    return { patch, patched: patchedFiles(files, parsePatch(text)), unverified, file }
   } catch (error) {
     return { patch: { ...patch, error: error instanceof PatchError ? error.code : 'patch-unreadable' }, patched: null }
   }
@@ -527,19 +532,23 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     let published
     let patch
     let patched
+    let patchFile
     let unverifiedPatch = false
     try {
       if (pinned) candidates = []
       else if (lock?.from === 'local') candidates = await Promise.all(lock.directories.map((dir) => locked.tree(dir)))
       else {
         published = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity ?? recordedIntegrity)
-        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedPatch) : {})
+        ;({ patch, patched, unverified: unverifiedPatch = false, file: patchFile } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedPatch, dirs.map((dir) => pkg.patchFiles.get(dir)).find(Boolean)) : {})
         candidates = patched && !unverifiedPatch ? [patched, published] : [published]
       }
     } catch (error) {
       const reason = fetchFailure(error)
       return reason === 'integrity-mismatch' ? fails(reason) : unverified(reason)
     }
+    // A copy recording where its patch is records where validation finds it.
+    const elsewhere = patchFile === undefined ? undefined : dirs.map((dir) => pkg.patchFiles.get(dir)).find((file) => file !== undefined && file !== patchFile)
+    if (elsewhere !== undefined) return fails('patch-file-mismatch', { at: elsewhere, patch: { ...patch, recorded: true } })
     const checksum = (file) => pkg.ecosystem === 'cargo' && file.rel === CARGO_CHECKSUM
     const matches = (file, bytes, candidate) => (checksum(file) ? checksumOf(bytes, candidate) : candidate.has(file.rel) && isFile(file, candidate.get(file.rel)))
     // Each installed copy apart, as one may be patched and another not.
@@ -767,7 +776,7 @@ function readLockfile(name, read) {
       const known = paths.get(hash)
       paths.set(hash, { path: known?.path ?? path, selectors: [...(known?.selectors ?? []), selector] })
     }
-    return { entries, locals, aliases, directoryAliases, patches: { hashes, paths } }
+    return { entries, locals, aliases, directoryAliases, patches: { hashes, paths }, importers: new Set(Object.keys(lockfile?.importers ?? {})) }
   }
   if (name === 'Cargo.lock') {
     for (const pkg of Object.values(parseCargoLock(text).packages)) add(pkg.name, pkg.version, lockedFrom(pkg.source?.startsWith('git+'), CRATES_IO.has(pkg.source), pkg.checksum))
@@ -834,9 +843,13 @@ export function lockedBy(lockfiles) {
     const other = same.find((one) => one.at === at)
     if (other !== undefined) throw new ValidateError('lockfile-ambiguous', `${other.path} and ${path} both lock ${ecosystem} packages: give one`)
     const locks = lockOf(path, text)
-    // npm's locks each location from its directory: the bundle's root from there is one of its importers on disk.
-    const within = locks.importers === undefined || from !== 'local' || locks.importers.has(root) ? root : ''
-    const one = { ...locks, path, from, read, tree, git, root: within, at, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] }
+    // Given on disk, a lockfile's place in the repository isn't known: the bundle's root from its directory is the
+    // longest tail of `root` that is one of its importers, else its own.
+    const tails = root.split('/').map((_, start, parts) => parts.slice(start).join('/'))
+    const within = locks.importers === undefined || from !== 'local' ? root : tails.find((tail) => locks.importers.has(tail)) ?? ''
+    // The bundle's root, in its paths' terms, as a recorded patch's `file` is from there.
+    const bundleDir = posix.join(posix.dirname(path), within)
+    const one = { ...locks, path, from, read, tree, git, root: within, at, bundleDir, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] }
     by.set(ecosystem, [...same, one])
     all.push(one)
     given.set(one, lockfile)
@@ -884,16 +897,22 @@ export function lockedBy(lockfiles) {
         if (hash === null) found = null
         if (hash == null) continue
         const { path, selectors = [] } = npm.patches.paths.get(hash) ?? {}
-        if (path) return { hash, path: posix.join(posix.dirname(npm.path), path) }
+        const at = path && posix.join(posix.dirname(npm.path), path)
+        if (at) return { hash, path: at, file: posix.relative(npm.bundleDir, at) }
         return { hash, names: [...new Set([...selectors.map((selector) => `${selector.replace('/', '__')}.patch`), pnpmPatchName(name, version)])] }
       }
       return found
     },
     async locate({ hash, names = [] }) {
-      for (const path of [...new Set(npms.flatMap((npm) => npm.patchDirs))].flatMap((dir) => names.map((name) => pathIn(dir, name)))) {
-        // eslint-disable-next-line no-await-in-loop -- the first of them that is there
-        const text = await Promise.try(() => this.read(path)).catch(() => null)
-        if (text !== null && isPatchOf(text, hash)) return { path, text }
+      const tried = new Set()
+      for (const npm of npms) {
+        for (const path of npm.patchDirs.flatMap((dir) => names.map((name) => pathIn(dir, name)))) {
+          if (tried.has(path)) continue
+          tried.add(path)
+          // eslint-disable-next-line no-await-in-loop -- the first of them that is there
+          const text = await Promise.try(() => this.read(path)).catch(() => null)
+          if (text !== null && isPatchOf(text, hash)) return { path, text, file: posix.relative(npm.bundleDir, path) }
+        }
       }
       return null
     },

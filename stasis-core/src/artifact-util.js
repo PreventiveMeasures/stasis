@@ -95,7 +95,9 @@ const normalizeModuleRepo = blockMetadata('repo', REPO_FIELDS, 'github',
   (dir, ecosystem) => dependencyEcosystem(dir, ecosystem) !== undefined, "dependency's")
 
 const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{43}=$/u, sha512: /^sha512-[A-Za-z\d+/]{86}==$/u }
-const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v) }
+// From the bundle root, `..` leading it alone: pnpm names a patch from the lockfile's directory, which may be above it.
+const PATCH_FILE = /^(?:\.\.\/)*(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+(?:\/(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+)*$/u
+const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v), file: (v) => typeof v === 'string' && v.length <= 4096 && PATCH_FILE.test(v) }
 
 export function sha512Of(integrity) {
   const found = new Set((integrity ?? '').split(/\s+/u).filter((token) => token.startsWith('sha512-')).map((token) => token.split('?')[0]))
@@ -178,8 +180,14 @@ export const moduleInfo = (info) => {
   return record
 }
 
-// How a record's package was installed: two records of one bucket must agree on it.
-export const ATTESTED_METADATA = ['integrity', 'patch']
+// How a record's package was installed, which two records of one bucket must agree on: of a patch, its text's
+// integrity, and the `file` it was found at where both record one.
+const AGREE = {
+  integrity: (a, b) => a === b,
+  patch: (a, b) => a?.integrity === b?.integrity && (a?.file === undefined || b?.file === undefined || a.file === b.file),
+}
+export const ATTESTED_METADATA = Object.keys(AGREE)
+export const sameAttested = (field, a, b) => AGREE[field](a, b)
 
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
@@ -188,8 +196,9 @@ export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Objec
 export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
 
 const agree = (field, record, other, what) => {
+  if (sameAttested(field, record[field], other[field])) return
   const [ours, theirs] = [record[field], other[field]].map((value) => JSON.stringify(value) ?? 'none')
-  if (ours !== theirs) assert(false, `${what} ${field} mismatch (${ours} vs ${theirs})`)
+  assert(false, `${what} ${field} mismatch (${ours} vs ${theirs})`)
 }
 
 // What `record` attests must be `other`'s: `other` recording none of it is a mismatch too.
@@ -197,11 +206,33 @@ export function assertAttested(record, other, what) {
   for (const field of ATTESTED_METADATA) if (attestedOf(record, field) !== undefined) agree(field, record, other, what)
 }
 
+// `record`'s block (a patch) with what `other`'s, which agrees with it, records and it lacks (a patch's `file`).
+const filledBlock = (field, record, other) => {
+  const [ours, theirs] = [record[field], other[field]]
+  if (![ours, theirs].every((block) => block !== null && typeof block === 'object')) return undefined
+  return Object.keys(theirs).some((key) => ours[key] === undefined) ? Object.freeze({ ...theirs, ...ours }) : undefined
+}
+
+// What `record` and `other` both record agrees, and `record` takes what of it it lacks: nothing it records is replaced.
+export function withFilledOf(record, other, what = 'module') {
+  let filled
+  for (const field of ATTESTED_METADATA) {
+    if (record[field] === undefined || other[field] === undefined) continue
+    agree(field, record, other, what)
+    const block = filledBlock(field, record, other)
+    if (block) (filled ??= {})[field] = block
+  }
+  return filled === undefined ? record : moduleInfo({ ...record, ...filled })
+}
+
 export function withMetadataOf(record, other, what = 'module') {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
-    if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) agree(field, record, other, what)
-    else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
+    if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) {
+      agree(field, record, other, what)
+      const filled = filledBlock(field, record, other)
+      if (filled) (added ??= {})[field] = filled
+    } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
   for (const field of DIR_FIELDS) {
     if (other[field] === undefined || Object.keys(other[field]).every((sub) => Object.hasOwn(record[field] ?? {}, sub))) continue

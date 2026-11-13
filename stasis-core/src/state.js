@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
+import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -282,7 +282,7 @@ export class State {
       bundles.set(dir, known === undefined ? info : mergeModuleMaps(new Map([[dir, known]]), new Map([[dir, info]]), 'bundle').get(dir))
       // A later bundle's files (a sidecar's) of what it attests alike are absorbed, not this run's.
       const baseline = files.get(dir)
-      if (baseline && ATTESTED_METADATA.every((field) => record?.[field] === undefined || JSON.stringify(record[field]) === JSON.stringify(info[field]))) for (const rel of Object.keys(info.files)) baseline.add(rel)
+      if (baseline && ATTESTED_METADATA.every((field) => record?.[field] === undefined || sameAttested(field, record[field], info[field]))) for (const rel of Object.keys(info.files)) baseline.add(rel)
     }
     // One attesting none of what the record took already (a sidecar's, after its parent's) adds no
     // file to it where its files are the record's too: the value was recorded without them.
@@ -297,9 +297,10 @@ export class State {
   // Not what a lockfile alone locks (what an install would lay out, not what one did), nor onto a record
   // absorbed, whose other files this run may not have read: of a file this run adds, an install record tells.
   #recordInstalled() {
-    const accounts = installedAccounts(this.modules, this.root)
+    const accounts = installedAccounts(this.modules, this.root, { locate: true })
     heldToAccounts(this.modules, accounts)
-    for (const [dir, account] of accounts) if (!account.locked && !this.#absorbed.dirs.has(dir)) this.modules.set(dir, withMetadataOf(this.modules.get(dir), account))
+    // Onto an absorbed record, what attests nothing alone (a patch's file), its other files perhaps not this run's.
+    for (const [dir, account] of accounts) if (!account.locked) this.modules.set(dir, (this.#absorbed.dirs.has(dir) ? withFilledOf : withMetadataOf)(this.modules.get(dir), account))
     for (const [dir, files] of this.#absorbed.files) {
       const [module, account] = [this.modules.get(dir), accounts.get(dir)]
       const added = account && !account.locked ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))

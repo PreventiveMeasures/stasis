@@ -565,7 +565,8 @@ const githubRoot = (url) => {
 export function pinFromTree(bundle, root, tree) {
   if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
   const { root: from, installed, packageManager } = tree
-  const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
+  const fromRoot = (path) => posix.relative(root, posix.join(from, path))
+  const byDir = new Map(installed.map((pkg) => [fromRoot(pkg.path), pkg]))
   const integrities = tree.integrities?.()
   const locked = ({ integrity, checksum }) => (PACKAGE_MANAGERS[packageManager].kind !== 'js' ? archiveIntegrity('soldeer', checksum) : (integrities?.has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
   const accounts = new Map()
@@ -574,6 +575,8 @@ export function pinFromTree(bundle, root, tree) {
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
     const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash })
+    // deptree read it at the path pnpm's settings name, from the lockfile's directory, and held it to its hash.
+    if (pinned.patch) pinned.patch.file = fromRoot(pkg.patch.path)
     bundle.modules.set(dir, { ...info, ...pinned })
     accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
   }
