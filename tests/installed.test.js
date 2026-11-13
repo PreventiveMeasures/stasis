@@ -506,6 +506,17 @@ test("pnpm: a patch's file is the one its lockfile names, else (pnpm 11) the set
   await t.assert.rejects(bundled(dir, 'stale', { env: { ...process.env, EXODUS_STASIS_LOCK: 'frozen' } }), /stasis\.lock\.json: module '[^']+reg' patch mismatch \(.*"file":"patches\/old\.patch"\} vs .*"file":"patches\/own\.patch"\}\)/u)
 }))
 
+test("pnpm: of two patches of one text, each file is held to it, the first named recorded, as deptree records it", withTmp(async (t, dir) => {
+  writePnpmProject(dir, ['reg', 'twin'].map((name) => ({ name, key: `${name}@1.0.0(patch_hash=${PATCH})`, store: `${name}@1.0.0_patch_hash=${PATCH}`, resolution: `{integrity: ${SRI}}`, patch: PATCH })))
+  relock(dir, (text) => text)
+  mkdirSync(join(dir, 'patches'))
+  for (const name of ['reg', 'twin']) writeFileSync(join(dir, 'patches', `${name}@1.0.0.patch`), PATCH_TEXT)
+  await bundled(dir, 'twins')
+  t.assert.deepStrictEqual(npmRecords(dir, 'twins'), { reg: [SRI, PATCHED], twin: [SRI, PATCHED] })
+  rmSync(join(dir, 'patches', 'twin@1.0.0.patch'))
+  await t.assert.rejects(build(dir), new RegExp(`lock\\.yaml patches twin@1\\.0\\.0 with ${PATCH}: .*patches/twin@1\\.0\\.0\\.patch can't be read$`, 'u'))
+}))
+
 test("pnpm: a patch's file outside the bundle root is recorded from it", withTmp(async (t, dir) => {
   const project = join(dir, 'project')
   mkdirSync(project)

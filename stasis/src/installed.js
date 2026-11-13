@@ -118,17 +118,20 @@ function patchLocator(file, patchers, host) {
     const patches = parseLock(settings, host, true, parseYaml)?.patchedDependencies
     return isPlainObject(patches) ? patches : {}
   })
+  // Every file named for the hash held to it; of two of one text, the first named, as deptree records it.
   return memoized((patchHash) => {
-    const selectors = patchers.filter(([, patch]) => patch.hash === patchHash)
-    // pnpm 11's lockfile names a patch by its hash alone, its file in pnpm-workspace.yaml.
-    const path = selectors.map(([selector, patch]) => patch.path ?? named()[selector]).find((one) => typeof one === 'string')
-    const refused = (why) => new Error(`${file} patches ${selectors.map(([selector]) => selector).join(', ')} with ${patchHash}: ${why}`)
-    if (path === undefined) throw refused(`neither it nor ${settings} names the patch's file`)
-    const at = resolve(base, path)
-    const text = readText(host, at)
-    if (text === null) throw refused(`${at} can't be read`)
-    if (!isPatchOf(text, patchHash)) throw refused(`${at} is a patch of another hash`)
-    return at
+    const [first] = patchers.filter(([, patch]) => patch.hash === patchHash).map(([selector, patch]) => {
+      const refused = (why) => new Error(`${file} patches ${selector} with ${patchHash}: ${why}`)
+      // pnpm 11's lockfile names a patch by its hash alone, its file in pnpm-workspace.yaml.
+      const path = patch.path ?? named()[selector]
+      if (typeof path !== 'string') throw refused(`neither it nor ${settings} names the patch's file`)
+      const at = resolve(base, path)
+      const text = readText(host, at)
+      if (text === null) throw refused(`${at} can't be read`)
+      if (!isPatchOf(text, patchHash)) throw refused(`${at} is a patch of another hash`)
+      return at
+    })
+    return first
   })
 }
 
