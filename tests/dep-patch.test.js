@@ -273,4 +273,11 @@ test("validate: a patch's recorded file is the one it finds the patch in, from t
   const holding = (written) => Object.assign(written.sources['.'].files, { 'vendor/dep.patch': PATCH })
   t.assert.equal((await depOf(recording('vendor/dep.patch', holding), named)).patch.path, 'vendor/dep.patch')
   t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch', holding), named)).reason, 'patch-file-mismatch')
+  // Of two the bundle holds of one text, the one recorded.
+  const both = (written) => Object.assign(written.sources['.'].files, { 'vendor/dep.patch': PATCH, 'patches/dep@1.0.0.patch': PATCH })
+  for (const file of ['vendor/dep.patch', 'patches/dep@1.0.0.patch']) {
+    // eslint-disable-next-line no-await-in-loop -- one recording at a time
+    const { reason, patch } = await depOf(recording(file, both), named)
+    t.assert.deepStrictEqual([reason, patch.path], ['patch-unverified', file])
+  }
 })

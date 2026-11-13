@@ -397,11 +397,11 @@ function patchesOf(plan) {
     for (const hash of patchHashes(text)) if (!byHash.has(hash)) byHash.set(hash, held)
     if (!byName.has(name)) byName.set(name, held)
   }
-  return { byHash, byName }
+  return { byHash, byName, byPath: plan.patches }
 }
 
 // A bundle's patch is own code: refused where the repository holds it otherwise (`verdicts`).
-async function patchOf(held, pkg, files, locked, verdicts, recorded) {
+async function patchOf(held, pkg, files, locked, verdicts, recorded, recordedFile) {
   const lock = locked?.of(pkg.name, pkg.version)
   const hash = lock === undefined ? recorded : lock?.hash
   let patch
@@ -409,7 +409,10 @@ async function patchOf(held, pkg, files, locked, verdicts, recorded) {
   // Where it is found, from the bundle root, as a record's `file` names it.
   let file
   try {
-    const bundled = hash !== undefined ? held.byHash.get(hash) : lock === undefined && held.byName.get(pnpmPatchName(pkg.name, pkg.version))
+    // Of the bundle's of its hash, the one its copies record, where it holds that.
+    const own = hash !== undefined && held.byPath.get(recordedFile)
+    const bundled = own && isPatchOf(own, hash) ? { path: recordedFile, text: own }
+      : hash !== undefined ? held.byHash.get(hash) : lock === undefined && held.byName.get(pnpmPatchName(pkg.name, pkg.version))
     if (bundled) {
       patch = { ...(hash !== undefined && { hash }), path: bundled.path, from: 'bundle' }
       ;({ text, path: file } = bundled)
@@ -536,7 +539,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       else if (lock?.from === 'local') candidates = await Promise.all(lock.directories.map((dir) => locked.tree(dir)))
       else {
         published = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity ?? recordedIntegrity)
-        ;({ patch, patched, unverified: unverifiedPatch = false, file: patchFile } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedPatch) : {})
+        ;({ patch, patched, unverified: unverifiedPatch = false, file: patchFile } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedPatch, dirs.map((dir) => pkg.patchFiles.get(dir)).find(Boolean)) : {})
         candidates = patched && !unverifiedPatch ? [patched, published] : [published]
       }
     } catch (error) {
