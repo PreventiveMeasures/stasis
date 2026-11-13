@@ -158,13 +158,15 @@ const CHANGED = '*'
 // `owner/name`, its commit and directory where recorded: `owner/name@0123abc (packages/x)`.
 const repoLabel = ({ github, commit, directory }) => `${github ?? '?'}${commit ? `@${commit.slice(0, 7)}` : ''}${directory ? ` (${directory})` : ''}`
 
+const patchLabel = (patch) => (patch ? `${patch.integrity}${patch.file ? ` (${patch.file})` : ''}` : 'none')
+
 function describeModuleChange({ name, versionChange, nameChange, repoChange, integrityChange, patchChange }) {
   const segs = []
   if (versionChange) segs.push(`${versionChange.from} -> ${versionChange.to}`)
   if (nameChange) segs.push(`name ${nameChange.from} -> ${nameChange.to}`)
   if (repoChange) segs.push(`repo ${repoLabel(repoChange.from)} -> ${repoLabel(repoChange.to)}`)
   if (integrityChange) segs.push(`integrity ${integrityChange.from ?? 'none'} -> ${integrityChange.to ?? 'none'}`)
-  if (patchChange) segs.push(`patch ${patchChange.from?.integrity ?? 'none'} -> ${patchChange.to?.integrity ?? 'none'}`)
+  if (patchChange) segs.push(`patch ${patchLabel(patchChange.from)} -> ${patchLabel(patchChange.to)}`)
   return `${name ? `${name} ` : ''}${segs.join(', ')}`
 }
 

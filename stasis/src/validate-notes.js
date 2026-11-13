@@ -32,6 +32,7 @@ export const PACKAGE_REASONS = {
   'patch-not-locked': 'records a patch its lockfile doesn\'t patch it with',
   'patch-not-recorded': 'records an integrity and no patch, where its lockfile patches it',
   'patch-conflict': 'its copies record different patches, or one of them none, where pnpm patches every copy with one',
+  'patch-file-mismatch': 'records its patch in another file than the one it is found in',
 }
 
 // Why a patch wasn't applied, told after `its patch` and its path.

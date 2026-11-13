@@ -335,6 +335,9 @@ A copy that records its patch ([`patch`](file-formats.md#stasiscodebr)) is
 held to its files patched with it. Its version fails where its copies record
 different patches (`patch-conflict`), or the npm lockfile read locks another or
 none (`patch-not-locked`); with none read, the recorded hash picks the patch.
+One that records the patch's `file` fails where that is not the file the patch
+is found in, from the bundle's root (`patch-file-mismatch`): the bundle's, or
+that the lockfile names or its hash picks in a patches directory.
 
 A copy that records an [`integrity`](file-formats.md#stasiscodebr) and no
 patch records it installed unpatched, and is held to its files as published:

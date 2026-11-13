@@ -76,7 +76,7 @@ function heldToInstall(baseDir, artifacts) {
   }
   return (existing, added, companion) => {
     for (const [dir, account] of installedAccounts(added.modules, baseDir, { locate: true })) {
-      if (!account.locked) added.modules.set(dir, withFilledOf(withAttestedOf(added.modules.get(dir), existing?.modules.get(dir) ?? companion?.modules.get(dir) ?? known.get(dir) ?? account), account))
+      if (!account.locked) added.modules.set(dir, withFilledOf(withAttestedOf(added.modules.get(dir), existing?.modules.get(dir) ?? companion?.modules.get(dir) ?? known.get(dir) ?? account), account, `module '${dir}' (recorded vs installed)`))
     }
     return added
   }

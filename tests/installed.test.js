@@ -500,6 +500,10 @@ test("pnpm: a patch's file is the one its lockfile names, else (pnpm 11) the set
   writeFileSync(lockPath, JSON.stringify(locked))
   await bundled(dir, 'frozen', { env: { ...process.env, EXODUS_STASIS_LOCK: 'frozen' } })
   t.assert.deepStrictEqual(npmRecords(dir, 'frozen').reg, [SRI, OWN])
+  // One recording another file is refused, never replaced.
+  locked.modules[reg].patch.file = 'patches/old.patch'
+  writeFileSync(lockPath, JSON.stringify(locked))
+  await t.assert.rejects(bundled(dir, 'stale', { env: { ...process.env, EXODUS_STASIS_LOCK: 'frozen' } }), /stasis\.lock\.json: module '[^']+reg' patch mismatch \(.*"file":"patches\/old\.patch"\} vs .*"file":"patches\/own\.patch"\}\)/u)
 }))
 
 test("pnpm: a patch's file outside the bundle root is recorded from it", withTmp(async (t, dir) => {

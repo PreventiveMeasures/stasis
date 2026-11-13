@@ -181,10 +181,13 @@ export const moduleInfo = (info) => {
 }
 
 // How a record's package was installed, which two records of one bucket must agree on: of a patch, its text's
-// integrity, not the `file` it was found at.
-const ATTESTS = { integrity: (v) => v, patch: (v) => v?.integrity }
-export const ATTESTED_METADATA = Object.keys(ATTESTS)
-export const sameAttested = (field, a, b) => ATTESTS[field](a) === ATTESTS[field](b)
+// integrity, and the `file` it was found at where both record one.
+const AGREE = {
+  integrity: (a, b) => a === b,
+  patch: (a, b) => a?.integrity === b?.integrity && (a?.file === undefined || b?.file === undefined || a.file === b.file),
+}
+export const ATTESTED_METADATA = Object.keys(AGREE)
+export const sameAttested = (field, a, b) => AGREE[field](a, b)
 
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
@@ -203,16 +206,23 @@ export function assertAttested(record, other, what) {
   for (const field of ATTESTED_METADATA) if (attestedOf(record, field) !== undefined) agree(field, record, other, what)
 }
 
-// `record`'s attested block (a patch) with what of `other`'s agreeing one attests nothing (its `file`), where it lacks it.
+// `record`'s block (a patch) with what `other`'s, which agrees with it, records and it lacks (a patch's `file`).
 const filledBlock = (field, record, other) => {
   const [ours, theirs] = [record[field], other[field]]
-  if (![ours, theirs].every((block) => block !== null && typeof block === 'object') || !sameAttested(field, ours, theirs)) return undefined
+  if (![ours, theirs].every((block) => block !== null && typeof block === 'object')) return undefined
   return Object.keys(theirs).some((key) => ours[key] === undefined) ? Object.freeze({ ...theirs, ...ours }) : undefined
 }
 
-export function withFilledOf(record, other) {
-  const filled = Object.fromEntries(ATTESTED_METADATA.map((field) => [field, filledBlock(field, record, other)]).filter(([, block]) => block))
-  return Object.keys(filled).length === 0 ? record : moduleInfo({ ...record, ...filled })
+// What `record` and `other` both record agrees, and `record` takes what of it it lacks: nothing it records is replaced.
+export function withFilledOf(record, other, what = 'module') {
+  let filled
+  for (const field of ATTESTED_METADATA) {
+    if (record[field] === undefined || other[field] === undefined) continue
+    agree(field, record, other, what)
+    const block = filledBlock(field, record, other)
+    if (block) (filled ??= {})[field] = block
+  }
+  return filled === undefined ? record : moduleInfo({ ...record, ...filled })
 }
 
 export function withMetadataOf(record, other, what = 'module') {

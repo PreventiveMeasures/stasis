@@ -71,10 +71,10 @@ test('a merge keeps one side\'s integrity or patch, and refuses two that differ 
     ['the first\'s integrity', { integrity: TARBALL }, {}, { integrity: TARBALL }],
     ['the second\'s integrity', {}, { integrity: TARBALL }, { integrity: TARBALL }],
     ['both\'s', { integrity: TARBALL, patch: PATCHED }, { integrity: TARBALL, patch: PATCHED }, { integrity: TARBALL, patch: PATCHED }],
-    // A patch's file is where it was found, which attests nothing: the side that records one gives it.
+    // A patch's file is where it was found: the side that records one gives it, and two that differ are refused.
     ['the first\'s patch file', { patch: FILED }, { patch: PATCHED }, { patch: FILED }],
     ['the second\'s patch file', { integrity: TARBALL, patch: PATCHED }, { integrity: TARBALL, patch: FILED }, { integrity: TARBALL, patch: FILED }],
-    ['two files of one patch', { patch: FILED }, { patch: { ...PATCHED, file: 'elsewhere.patch' } }, { patch: FILED }],
+    ['two files of one patch', { patch: FILED }, { patch: { ...PATCHED, file: 'elsewhere.patch' } }, /module 'node_modules\/dep' patch mismatch \(.*"file":"patches\/dep@1\.0\.0\.patch"\} vs .*"file":"elsewhere\.patch"\}\)/u],
     ['a file of another patch', { patch: FILED }, { patch: { integrity: patchIntegrity('0'.repeat(64)), file: FILED.file } }, /module 'node_modules\/dep' patch mismatch/u],
     ['two patches', { patch: PATCHED }, { patch: { integrity: patchIntegrity('0'.repeat(64)) } }, /module 'node_modules\/dep' patch mismatch/u],
     ['two integrities', { integrity: TARBALL }, { integrity: OTHER_TARBALL }, /module 'node_modules\/dep' integrity mismatch/u],
@@ -93,12 +93,13 @@ test('a merge keeps one side\'s integrity or patch, and refuses two that differ 
   }
 })
 
-test("a record takes what of an agreeing patch attests nothing, its file, where it lacks it, and no more", (t) => {
+test("a record takes its patch's file of an agreeing record where it lacks one; another patch or file is refused, never replaced", (t) => {
   const record = moduleInfo(dep({ integrity: TARBALL, patch: PATCHED }))
   t.assert.deepStrictEqual({ ...withFilledOf(record, { patch: FILED }).patch }, FILED)
-  t.assert.equal(withFilledOf(record, { patch: { integrity: patchIntegrity('0'.repeat(64)), file: FILED.file } }), record, 'not of another patch')
-  t.assert.equal(withFilledOf(moduleInfo(dep({ patch: FILED })), { patch: { ...PATCHED, file: 'elsewhere.patch' } }).patch.file, FILED.file, 'nor over its own')
-  t.assert.equal(withFilledOf(record, { integrity: OTHER_TARBALL }), record, 'nor of what attests')
+  t.assert.equal(withFilledOf(moduleInfo(dep({ patch: FILED })), { patch: PATCHED }).patch.file, FILED.file, 'its own kept')
+  t.assert.throws(() => withFilledOf(record, { patch: { integrity: patchIntegrity('0'.repeat(64)), file: FILED.file } }, 'dep'), /^Error: dep patch mismatch/u)
+  t.assert.throws(() => withFilledOf(moduleInfo(dep({ patch: FILED })), { patch: { ...PATCHED, file: 'elsewhere.patch' } }, 'dep'), /dep patch mismatch \(.*patches\/dep@1\.0\.0\.patch.* vs .*elsewhere\.patch/u)
+  t.assert.throws(() => withFilledOf(record, { integrity: OTHER_TARBALL }, 'dep'), /dep integrity mismatch/u)
 })
 
 // An app requiring dep, installed; a run capturing dep's `files` (and its entry, with no parent); dep's record edited.
@@ -241,3 +242,30 @@ for (const lazy of [false, true]) {
     t.assert.deepStrictEqual([report.status, report.packages.find((pkg) => pkg.name === 'dep').patch], ['valid', { hash: HASH, path: 'patches/dep@1.0.0.patch', from: 'local', recorded: true, applied: true }])
   })
 }
+
+test("validate: a patch's recorded file is the one it finds the patch in, from the bundle root, else the version fails", async (t) => {
+  const { bundle } = await buildVfsBundle({ vfs: vfsOf(PROJECT), packageManager: 'pnpm', entries: ['src/a.js'], scope: 'full', cache })
+  const fetch = async (ecosystem, name) => new Map(Object.entries(PACKAGES[name].files).map(([path, text]) => [path, new TextEncoder().encode(text)]))
+  const recording = (file, edit = () => {}) => {
+    const written = JSON.parse(bundle.serialize())
+    for (const info of Object.values(written.modules)) if (info.patch) info.patch.file = file
+    edit(written)
+    return validationPlan(Bundle.parse(JSON.stringify(written)))
+  }
+  const depOf = async (plan, lockfile) => (await validateBundle(plan, { reason: 'skipped' }, { fetch, locked: lockedBy([lockfile]) })).packages.find((pkg) => pkg.name === 'dep')
+  const named = { path: 'pnpm-lock.yaml', text: PNPM_LOCK, from: 'local', read: async (path) => PROJECT[path] }
+  t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), named)).status, 'valid')
+  t.assert.deepStrictEqual(await depOf(recording('patches/other.patch'), named), { ecosystem: 'npm', name: 'dep', version: '1.0.0', files: 1, status: 'invalid', reason: 'patch-file-mismatch', at: 'patches/other.patch', patch: { hash: HASH, path: 'patches/dep@1.0.0.patch', from: 'local', recorded: true } })
+  // The lockfile a directory above the bundle's root: its path from there.
+  const above = { ...named, path: 'repo/pnpm-lock.yaml', root: 'app', read: async (path) => PROJECT[path.replace(/^repo\//u, '')] }
+  t.assert.equal((await depOf(recording('../patches/dep@1.0.0.patch'), above)).status, 'valid')
+  t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), above)).reason, 'patch-file-mismatch')
+  // pnpm 11's, named by its hash alone: the file of that hash in a patches directory.
+  const byHash = { ...named, text: PNPM_LOCK.replace(`    hash: ${HASH}\n    path: patches/dep@1.0.0.patch\n`, '').replace('dep@1.0.0:\n\nimporters', `dep@1.0.0: ${HASH}\n\nimporters`) }
+  t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), byHash)).status, 'valid')
+  t.assert.equal((await depOf(recording('dep.patch'), byHash)).reason, 'patch-file-mismatch')
+  // One the bundle holds (`extra`), by its path in the bundle.
+  const holding = (written) => Object.assign(written.sources['.'].files, { 'vendor/dep.patch': PATCH })
+  t.assert.equal((await depOf(recording('vendor/dep.patch', holding), named)).patch.path, 'vendor/dep.patch')
+  t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch', holding), named)).reason, 'patch-file-mismatch')
+})

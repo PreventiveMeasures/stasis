@@ -646,9 +646,9 @@ than ship it, and reading one is refused as well.
   for it. Where a build, `stasis run` or `stasis add` records one, a patch with
   no file found, or whose file's text is not of the hash, is refused; holding a
   record to the install (`--bundle=load`) reads no file. The patch itself is not bundled: [`extra`](#stasisconfigjson) adds
-  it. `file` attests nothing: two records of one patch agree whatever their
-  `file`, and a merge takes it of the side that records one, the first's where
-  both do. A record with an `integrity` and no `patch` is of a package
+  it. Two records of one patch agree on its `file` where both record one, as on
+  its `integrity`: one recording another is refused (`patch mismatch`), never
+  replaced, and a merge takes it of the side that records one. A record with an `integrity` and no `patch` is of a package
   installed unpatched, the two being recorded of one install: it disagrees
   with a record of a patch, and with an install that applied one (`patch
   mismatch (none vs …)`). One with neither tells nothing of either. It is held
