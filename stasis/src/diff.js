@@ -1,4 +1,4 @@
-import { ATTESTED_METADATA, extSetsEqual, moduleFileKey, REPO_FIELDS, sameGithub, sortPaths, upsert } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, extSetsEqual, moduleFileKey, REPO_FIELDS, sameAttested, sameGithub, sortPaths, upsert } from '@exodus/stasis-core/util'
 
 // Two parsed artifacts compared by module and file, never reading disk: each file as an SRI digest, a bundle's bytes
 // re-hashed by the injected `hash`.
@@ -62,7 +62,7 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
     // A dependency's repo picks the GitHub advisories audit asks, so a change to it is one to review.
     if (!reposAgree(l.repo, r.repo)) changes.repoChange = { from: l.repo, to: r.repo }
     for (const field of ATTESTED_METADATA) {
-      if (JSON.stringify(l[field]) !== JSON.stringify(r[field])) changes[`${field}Change`] = { from: l[field], to: r[field] }
+      if (!sameAttested(field, l[field], r[field])) changes[`${field}Change`] = { from: l[field], to: r[field] }
     }
     if (Object.keys(changes).length > 0) modulesChanged.push({ dir, name: r.name ?? l.name, ...changes })
 

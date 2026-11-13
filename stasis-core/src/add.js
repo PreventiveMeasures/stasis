@@ -75,7 +75,7 @@ function heldToInstall(baseDir, artifacts) {
     heldToAccounts(attested, installedAccounts(attested, baseDir), `${path}: `)
   }
   return (existing, added, companion) => {
-    for (const [dir, account] of installedAccounts(added.modules, baseDir)) {
+    for (const [dir, account] of installedAccounts(added.modules, baseDir, { locate: true })) {
       if (!account.locked) added.modules.set(dir, withAttestedOf(added.modules.get(dir), existing?.modules.get(dir) ?? companion?.modules.get(dir) ?? known.get(dir) ?? account))
     }
     return added

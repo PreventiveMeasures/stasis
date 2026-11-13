@@ -18,7 +18,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { nameAt, STORE_HASH, resolutionCommit } from './installed.js'
+import { isPatchOf, nameAt, patchHashes, STORE_HASH, resolutionCommit } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -141,9 +141,7 @@ export function fetchFailure(error) {
   return 'failed'
 }
 
-// As pnpm hashes a patch: a sha256 in hex of its text with its CRLFs as LFs, or as it is.
-const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text].map(sha256))
-export const isPatchOf = (text, hash) => patchHashes(text).has(hash)
+export { isPatchOf }
 
 // git quotes a path as C writes a string, bytes past ASCII in octal; null where it is quoted otherwise.
 const ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 }

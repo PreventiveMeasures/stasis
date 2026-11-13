@@ -573,7 +573,9 @@ export function pinFromTree(bundle, root, tree) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash })
+    // deptree read the patch at the path pnpm's settings name, from the lockfile's directory, and held it to its hash.
+    const patchFile = pkg.patch && posix.relative(root, posix.join(from, pkg.patch.path))
+    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash, patchFile })
     bundle.modules.set(dir, { ...info, ...pinned })
     accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
   }

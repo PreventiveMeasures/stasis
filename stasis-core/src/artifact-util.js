@@ -95,7 +95,14 @@ const normalizeModuleRepo = blockMetadata('repo', REPO_FIELDS, 'github',
   (dir, ecosystem) => dependencyEcosystem(dir, ecosystem) !== undefined, "dependency's")
 
 const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{43}=$/u, sha512: /^sha512-[A-Za-z\d+/]{86}==$/u }
-const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v) }
+// From the bundle root, `..` leading it alone: pnpm names a patch from the lockfile's directory, which may be above it.
+const isPatchFile = (v) => {
+  if (typeof v !== 'string' || v.length > 4096 || v.includes('\\') || v.includes('\0')) return false
+  const segments = v.split('/')
+  const up = segments.findIndex((segment) => segment !== '..')
+  return up !== -1 && segments.slice(up).every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+}
+const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v), file: isPatchFile }
 
 export function sha512Of(integrity) {
   const found = new Set((integrity ?? '').split(/\s+/u).filter((token) => token.startsWith('sha512-')).map((token) => token.split('?')[0]))
@@ -187,9 +194,13 @@ export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Objec
 // A record of an integrity and no patch attests the patch null (installed unpatched); undefined: it tells nothing.
 export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
 
+// A patch's text is its integrity's; its `file`, where it was found, attests nothing.
+export const sameAttested = (field, a, b) => (field === 'patch' ? a?.integrity === b?.integrity : a === b)
+
 const agree = (field, record, other, what) => {
+  if (sameAttested(field, record[field], other[field])) return
   const [ours, theirs] = [record[field], other[field]].map((value) => JSON.stringify(value) ?? 'none')
-  if (ours !== theirs) assert(false, `${what} ${field} mismatch (${ours} vs ${theirs})`)
+  assert(false, `${what} ${field} mismatch (${ours} vs ${theirs})`)
 }
 
 // What `record` attests must be `other`'s: `other` recording none of it is a mismatch too.
@@ -200,8 +211,10 @@ export function assertAttested(record, other, what) {
 export function withMetadataOf(record, other, what = 'module') {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
-    if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) agree(field, record, other, what)
-    else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
+    if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) {
+      agree(field, record, other, what)
+      if (field === 'patch' && record.patch?.file === undefined && other.patch?.file !== undefined) (added ??= {}).patch = other.patch
+    } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
   for (const field of DIR_FIELDS) {
     if (other[field] === undefined || Object.keys(other[field]).every((sub) => Object.hasOwn(record[field] ?? {}, sub))) continue

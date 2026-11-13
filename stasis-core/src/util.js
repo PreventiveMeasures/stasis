@@ -13,7 +13,8 @@ export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORIT
 
 // Where another package (stasis's run-installed.js) registers the reader of how packages were installed.
 export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
-export const installedAccounts = (modules, root) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root)) || new Map()
+// With `locate`, where they are recorded: a patch's carries its file, found and held to its hash, else refused.
+export const installedAccounts = (modules, root, options) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root, options)) || new Map()
 
 // JS_UNRESOLVED_EXTS (.js/.ts type/syntax-dependent, .jsx/.tsx transformed) classify as null, not a format.
 const NODE_EXT_FORMATS = new Map([

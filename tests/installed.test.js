@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -432,20 +433,25 @@ test('of two lockfiles beside a node_modules, a package is held to the one whose
   await t.assert.rejects(build(dir), both, 'neither record there')
 }))
 
+const PATCH_TEXT = 'diff --git a/index.js b/index.js\n--- a/index.js\n+++ b/index.js\n@@ -1 +1 @@\n-module.exports = 1\n+module.exports = 2\n'
+const PATCH = createHash('sha256').update(PATCH_TEXT).digest('hex')
+const PATCHED = { integrity: `sha256-${Buffer.from(PATCH, 'hex').toString('base64')}`, file: 'patches/reg@1.0.0.patch' }
+const patchedProject = (dir) => writePnpmProject(dir, [
+  { name: 'reg', key: `reg@1.0.0(patch_hash=${PATCH})`, store: `reg@1.0.0_patch_hash=${PATCH}`, resolution: `{integrity: ${SRI}}`, patch: PATCH },
+  { name: 'plain', key: 'plain@1.0.0', store: 'plain@1.0.0', resolution: `{integrity: ${SRI}}` },
+])
+// By name: a State's bucket is where the package is, the field resolver's where it is linked.
+const npmRecords = (dir, label) => Object.fromEntries(Object.values(modulesOf(dir, label)).filter(({ ecosystem }) => ecosystem === 'npm').map((info) => [info.name, [info.integrity, info.patch]]))
+
 test('pnpm and npm: the tarball and patch a package was installed with are recorded, by its directory, and held to the lockfile beside it', withTmp(async (t, dir) => {
-  const [OTHER, PATCH] = [`sha512-${'B'.repeat(85)}A==`, 'c'.repeat(64)]
-  writePnpmProject(dir, [
-    { name: 'reg', key: `reg@1.0.0(patch_hash=${PATCH})`, store: `reg@1.0.0_patch_hash=${PATCH}`, resolution: `{integrity: ${SRI}}`, patch: PATCH },
-    { name: 'plain', key: 'plain@1.0.0', store: 'plain@1.0.0', resolution: `{integrity: ${SRI}}` },
-  ])
+  const OTHER = `sha512-${'B'.repeat(85)}A==`
+  patchedProject(dir)
+  mkdirSync(join(dir, 'patches'))
+  writeFileSync(join(dir, 'patches', 'reg@1.0.0.patch'), PATCH_TEXT)
   const installed = readFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), 'utf8')
   writeFileSync(join(dir, 'pnpm-lock.yaml'), installed)
   await bundledEach(dir)
-  for (const [label] of BUILDS) {
-    // By name: a State's bucket is where the package is, the field resolver's where it is linked.
-    const byName = Object.fromEntries(Object.values(modulesOf(dir, label)).filter(({ ecosystem }) => ecosystem === 'npm').map((info) => [info.name, [info.integrity, info.patch]]))
-    t.assert.deepStrictEqual(byName, { reg: [SRI, { integrity: `sha256-${Buffer.from(PATCH, 'hex').toString('base64')}` }], plain: [SRI, undefined] }, label)
-  }
+  for (const [label] of BUILDS) t.assert.deepStrictEqual(npmRecords(dir, label), { reg: [SRI, PATCHED], plain: [SRI, undefined] }, label)
   for (const [lockfile, differs] of [
     [installed.replace(`plain@1.0.0':\n    resolution: {integrity: ${SRI}}`, `plain@1.0.0':\n    resolution: {integrity: ${OTHER}}`), `installed with ${SRI}; it locks ${OTHER}`],
     [installed.replaceAll(PATCH, 'd'.repeat(64)), 'it locks none there'],
@@ -456,4 +462,48 @@ test('pnpm and npm: the tarball and patch a package was installed with are recor
   }
   npmProject(join(dir, 'npm'), { lock: { reg: { integrity: OTHER } }, hidden: { reg: { integrity: SRI } } })
   await t.assert.rejects(build(join(dir, 'npm')), new RegExp(`package-lock\\.json doesn't lock npm/node_modules/reg as installed \\(installed with ${SRI}; it locks ${OTHER}\\): install from it again$`, 'u'))
+}))
+
+test("pnpm: a patch's file is the one its lockfile names, else (pnpm 11) the settings', held to its hash; none found stops the build", withTmp(async (t, dir) => {
+  patchedProject(dir)
+  const lockfile = join(dir, 'node_modules', '.pnpm', 'lock.yaml')
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), readFileSync(lockfile, 'utf8'))
+  const refused = (why) => new RegExp(`lock\\.yaml patches reg@1\\.0\\.0 with ${PATCH}: ${why}$`, 'u')
+  await t.assert.rejects(build(dir), refused(".*patches/reg@1\\.0\\.0\\.patch can't be read"))
+  mkdirSync(join(dir, 'patches'))
+  writeFileSync(join(dir, 'patches', 'reg@1.0.0.patch'), `${PATCH_TEXT}\n`)
+  await t.assert.rejects(build(dir), refused('.*patches/reg@1\\.0\\.0\\.patch is a patch of another hash'))
+  writeFileSync(join(dir, 'patches', 'reg@1.0.0.patch'), PATCH_TEXT.replaceAll('\n', '\r\n'))
+  await bundled(dir, 'crlf')
+  t.assert.deepStrictEqual(npmRecords(dir, 'crlf').reg, [SRI, PATCHED], 'pnpm hashes its text with its CRLFs as LFs')
+  // pnpm 11's lockfile names a patch by its hash alone, its file in pnpm-workspace.yaml.
+  for (const file of [lockfile, join(dir, 'pnpm-lock.yaml')]) writeFileSync(file, readFileSync(file, 'utf8').replace(`hash: ${PATCH}\n    path: patches/reg@1.0.0.patch`, PATCH).replace('reg@1.0.0:\n    ', 'reg@1.0.0: '))
+  await t.assert.rejects(build(dir), refused('neither it nor .*pnpm-workspace\\.yaml names the patch\'s file'))
+  rmSync(join(dir, 'patches', 'reg@1.0.0.patch'))
+  writeFileSync(join(dir, 'patches', 'own.patch'), PATCH_TEXT)
+  writeFileSync(join(dir, 'pnpm-workspace.yaml'), 'patchedDependencies:\n  reg@1.0.0: patches/own.patch\n')
+  await bundled(dir, 'settings', { lockfile: 'stasis.lock.json' })
+  t.assert.deepStrictEqual(npmRecords(dir, 'settings').reg, [SRI, { ...PATCHED, file: 'patches/own.patch' }])
+  const lockPath = join(dir, 'stasis.lock.json')
+  const locked = JSON.parse(readFileSync(lockPath, 'utf8'))
+  const reg = Object.keys(locked.modules).find((at) => at.includes('reg@'))
+  t.assert.deepStrictEqual(locked.modules[reg].patch, { ...PATCHED, file: 'patches/own.patch' }, 'and the lockfile records it too')
+  // A lockfile from before a patch's file was recorded holds the build all the same, its patch the same text.
+  delete locked.modules[reg].patch.file
+  writeFileSync(lockPath, JSON.stringify(locked))
+  await bundled(dir, 'frozen', { env: { ...process.env, EXODUS_STASIS_LOCK: 'frozen' } })
+  t.assert.deepStrictEqual(npmRecords(dir, 'frozen').reg, [SRI, { ...PATCHED, file: 'patches/own.patch' }])
+}))
+
+test("pnpm: a patch's file outside the bundle root is recorded from it", withTmp(async (t, dir) => {
+  const project = join(dir, 'project')
+  mkdirSync(join(project, 'node_modules', '.pnpm'), { recursive: true })
+  patchedProject(project)
+  const lockfile = join(project, 'node_modules', '.pnpm', 'lock.yaml')
+  writeFileSync(lockfile, readFileSync(lockfile, 'utf8').replace('path: patches/reg@1.0.0.patch', 'path: ../shared/reg.patch'))
+  writeFileSync(join(project, 'pnpm-lock.yaml'), readFileSync(lockfile, 'utf8'))
+  mkdirSync(join(dir, 'shared'))
+  writeFileSync(join(dir, 'shared', 'reg.patch'), PATCH_TEXT)
+  await bundled(project, 'out')
+  t.assert.deepStrictEqual(npmRecords(project, 'out').reg, [SRI, { ...PATCHED, file: '../shared/reg.patch' }])
 }))
