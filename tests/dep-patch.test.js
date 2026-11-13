@@ -256,10 +256,15 @@ test("validate: a patch's recorded file is the one it finds the patch in, from t
   const named = { path: 'pnpm-lock.yaml', text: PNPM_LOCK, from: 'local', read: async (path) => PROJECT[path] }
   t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), named)).status, 'valid')
   t.assert.deepStrictEqual(await depOf(recording('patches/other.patch'), named), { ecosystem: 'npm', name: 'dep', version: '1.0.0', files: 1, status: 'invalid', reason: 'patch-file-mismatch', at: 'patches/other.patch', patch: { hash: HASH, path: 'patches/dep@1.0.0.patch', from: 'local', recorded: true } })
-  // The lockfile a directory above the bundle's root: its path from there.
-  const above = { ...named, path: 'repo/pnpm-lock.yaml', root: 'app', read: async (path) => PROJECT[path.replace(/^repo\//u, '')] }
+  // A lockfile given on disk, `root` the bundle's directory in its repository: at the repository's root, the
+  // bundle's directory one of its importers, the patch's file is from there; in the bundle's directory, from it.
+  const read = async (path) => PROJECT[path.replace(/^repo\/(?:app\/)?/u, '')]
+  const above = { ...named, path: 'repo/pnpm-lock.yaml', root: 'app', read, text: PNPM_LOCK.replace("importers:\n\n  .:\n", "importers:\n\n  app:\n") }
   t.assert.equal((await depOf(recording('../patches/dep@1.0.0.patch'), above)).status, 'valid')
   t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), above)).reason, 'patch-file-mismatch')
+  const beside = { ...named, path: 'repo/app/pnpm-lock.yaml', root: 'app', read }
+  t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), beside)).status, 'valid')
+  t.assert.equal((await depOf(recording('../patches/dep@1.0.0.patch'), beside)).reason, 'patch-file-mismatch')
   // pnpm 11's, named by its hash alone: the file of that hash in a patches directory.
   const byHash = { ...named, text: PNPM_LOCK.replace(`    hash: ${HASH}\n    path: patches/dep@1.0.0.patch\n`, '').replace('dep@1.0.0:\n\nimporters', `dep@1.0.0: ${HASH}\n\nimporters`) }
   t.assert.equal((await depOf(recording('patches/dep@1.0.0.patch'), byHash)).status, 'valid')

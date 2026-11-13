@@ -773,7 +773,7 @@ function readLockfile(name, read) {
       const known = paths.get(hash)
       paths.set(hash, { path: known?.path ?? path, selectors: [...(known?.selectors ?? []), selector] })
     }
-    return { entries, locals, aliases, directoryAliases, patches: { hashes, paths } }
+    return { entries, locals, aliases, directoryAliases, patches: { hashes, paths }, importers: new Set(Object.keys(lockfile?.importers ?? {})) }
   }
   if (name === 'Cargo.lock') {
     for (const pkg of Object.values(parseCargoLock(text).packages)) add(pkg.name, pkg.version, lockedFrom(pkg.source?.startsWith('git+'), CRATES_IO.has(pkg.source), pkg.checksum))
@@ -840,10 +840,10 @@ export function lockedBy(lockfiles) {
     const other = same.find((one) => one.at === at)
     if (other !== undefined) throw new ValidateError('lockfile-ambiguous', `${other.path} and ${path} both lock ${ecosystem} packages: give one`)
     const locks = lockOf(path, text)
-    // npm's locks each location from its directory: the bundle's root from there is one of its importers on disk.
+    // A lockfile given on disk locks from its directory: the bundle's root from there is one of its importers, else its own.
     const within = locks.importers === undefined || from !== 'local' || locks.importers.has(root) ? root : ''
     // The bundle's root, in its paths' terms, as a recorded patch's `file` is from there.
-    const bundleDir = posix.join(posix.dirname(path), root)
+    const bundleDir = posix.join(posix.dirname(path), within)
     const one = { ...locks, path, from, read, tree, git, root: within, at, bundleDir, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] }
     by.set(ecosystem, [...same, one])
     all.push(one)
