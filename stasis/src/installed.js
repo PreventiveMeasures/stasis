@@ -109,31 +109,20 @@ const storeNames = (key) => {
 }
 export const STORE_HASH = /_[\da-f]{32}$/u
 
-// The patch files pnpm 11 names in its settings, by selector, as its lockfile names their hashes alone.
-function settingsPatches(file, host) {
-  const text = readText(host, file)
-  if (text === null) return undefined
-  let settings
-  try {
-    settings = parseYaml(withoutBom(text))
-  } catch (cause) {
-    throw unreadable(file, cause)
-  }
-  return isPlainObject(settings?.patchedDependencies) ? settings.patchedDependencies : undefined
-}
-
-// `file`'s, whose paths are from `base`, the directory of the pnpm-lock.yaml it is (or is a copy of).
-function pnpmLocks(file, base, host, strict) {
-  const parsed = parseLock(file, host, strict, (text) => ({ lockfile: parsePnpmLockfile(text).lockfile }))
-  if (parsed === undefined) return undefined
-  const { lockfile } = parsed
+// Of the lockfile `file` and the `patchers` (`[selector, { hash, path }]`) it locks: the file each hash's patch is in.
+function patchLocator(file, patchers, host) {
+  // node_modules/.pnpm/lock.yaml copies the pnpm-lock.yaml beside node_modules, its paths from there.
+  const base = basename(file) === 'lock.yaml' ? resolve(file, '../../..') : dirname(file)
   const settings = join(base, 'pnpm-workspace.yaml')
-  const settingsNamed = memoized(() => settingsPatches(settings, host))
-  // The file pnpm patched with: the lockfile's path for it, else (pnpm 11) the settings'; held to the hash it locks.
-  const patchAt = memoized((patchHash) => {
-    const selectors = Object.entries(lockfile?.patchedDependencies ?? {}).filter(([, patch]) => patch.hash === patchHash)
-    const path = selectors.find(([, patch]) => patch.path !== undefined)?.[1].path ?? selectors.map(([selector]) => settingsNamed()?.[selector]).find((one) => typeof one === 'string')
-    const refused = (why) => new Error(`${file} patches ${selectors.map(([selector]) => selector).join(', ') || 'a package'} with ${patchHash}: ${why}`)
+  const named = memoized(() => {
+    const patches = parseLock(settings, host, true, parseYaml)?.patchedDependencies
+    return isPlainObject(patches) ? patches : {}
+  })
+  return memoized((patchHash) => {
+    const selectors = patchers.filter(([, patch]) => patch.hash === patchHash)
+    // pnpm 11's lockfile names a patch by its hash alone, its file in pnpm-workspace.yaml.
+    const path = selectors.map(([selector, patch]) => patch.path ?? named()[selector]).find((one) => typeof one === 'string')
+    const refused = (why) => new Error(`${file} patches ${selectors.map(([selector]) => selector).join(', ')} with ${patchHash}: ${why}`)
     if (path === undefined) throw refused(`neither it nor ${settings} names the patch's file`)
     const at = resolve(base, path)
     const text = readText(host, at)
@@ -141,11 +130,20 @@ function pnpmLocks(file, base, host, strict) {
     if (!isPatchOf(text, patchHash)) throw refused(`${at} is a patch of another hash`)
     return at
   })
+}
+
+function pnpmLocks(file, host, strict) {
+  const parsed = parseLock(file, host, strict, (text) => ({ lockfile: parsePnpmLockfile(text).lockfile }))
+  if (parsed === undefined) return undefined
+  const { lockfile } = parsed
+  // Of its patches alone: the cache keeps a run's locators, which must not hold the lockfile.
+  const patchers = Object.entries(lockfile?.patchedDependencies ?? {})
+  const patchAt = patchers.length === 0 ? undefined : patchLocator(file, patchers, host)
   const stored = new Map()
   const keyed = new Map()
   const ids = []
   for (const [key, { name, version, resolution, patchHash }] of Object.entries(lockfile?.packages ?? {})) {
-    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity, patchHash, ...(patchHash !== undefined && { locatePatch: () => patchAt(patchHash) }) }
+    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity, patchHash, ...(patchHash !== undefined && { patchAt }) }
     for (const store of storeNames(key)) stored.set(store, record)
     keyed.set(key, record)
     ids.push([`${name}@${version ?? ''}`, record])
@@ -199,8 +197,8 @@ const MANAGERS = [
   {
     marker: '.modules.yaml',
     lockfiles: ['pnpm-lock.yaml'],
-    installed: (dir, host) => pnpmLocks(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), dir, host)?.named,
-    locks: (file, host) => pnpmLocks(file, dirname(file), host, true).named,
+    installed: (dir, host) => pnpmLocks(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), host)?.named,
+    locks: (file, host) => pnpmLocks(file, host, true).named,
     none: (version) => `${version}; it locks none`,
   },
 ]
@@ -220,9 +218,8 @@ function layoutOf(dir, host) {
 
 // pnpm's, where it isolates: `store`'s lock.yaml held to the pnpm-lock.yaml of the directory the store is in.
 function storeOf(store, host) {
-  const base = dirname(dirname(store))
-  const lockfile = join(base, 'pnpm-lock.yaml')
-  return { installed: pnpmLocks(join(store, 'lock.yaml'), base, host)?.stored ?? NONE, lockfile, locks: pnpmLocks(lockfile, base, host, true)?.stored, none: () => 'it locks none there' }
+  const lockfile = join(dirname(dirname(store)), 'pnpm-lock.yaml')
+  return { installed: pnpmLocks(join(store, 'lock.yaml'), host)?.stored ?? NONE, lockfile, locks: pnpmLocks(lockfile, host, true)?.stored, none: () => 'it locks none there' }
 }
 
 const commitLabel = (repo) => (repo ? `${repo.github}${repo.directory ? `/${repo.directory}` : ''}@${repo.commit}` : 'none')
@@ -240,18 +237,19 @@ function lockDiffers(version, installed, locked, none) {
 
 const PNPM_PACKAGE = /^(.*\/node_modules\/\.pnpm)\/([^/]+)\/node_modules\/(?:@[^/]+\/)?[^/]+$/u
 
-// An npm tarball's integrity is its sha512 alone; only an npm dependency has a patch, `patchFile` its file from the bundle root.
-export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash, patchFile } = {}) {
+// An npm tarball's integrity is its sha512 alone; only an npm dependency has a patch.
+export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
   const npm = isNpmDependency(dir, ecosystem)
   const tarball = npm ? tarballIntegrityOf(integrity) : integrity
   const patch = npm ? patchIntegrity(patchHash) : undefined
-  return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch, ...(patchFile !== undefined && { file: patchFile }) } }) }
+  return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
 }
 
 // With `locate`, a patch's record carries its file, from `root`: found and held to its hash, else refused.
 export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map(), locate = false } = {}) {
   const accounts = new Map()
   let top // the bundle root's real path, as each package's is compared with it
+  const rootReal = () => (top ??= resolve(host.realpath(resolve(root))))
   const layoutAt = (dir) => upsert(layouts, dir, () => layoutOf(dir, host))
   for (const [dir, info] of modules) {
     // An untagged bucket under node_modules is npm's too (an artifact from before the tag).
@@ -270,7 +268,7 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
       ;[layout, at] = [upsert(stores, store, () => storeOf(store, host)), [name]]
     } else {
       try {
-        top ??= resolve(host.realpath(resolve(root)))
+        rootReal()
       } catch {
         return accounts
       }
@@ -290,10 +288,8 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
     const told = record ?? locked
     if (told === undefined || told.ambiguous) continue
     const metadata = installedMetadata(dir, info.ecosystem, told)
-    if (locate && metadata.patch) {
-      top ??= resolve(host.realpath(resolve(root)))
-      metadata.patch = { ...metadata.patch, file: toPosix(relative(top, told.locatePatch())) }
-    }
+    // A record of the lockfile alone is held to, never recorded: its patch is not looked for.
+    if (locate && record !== undefined && metadata.patch) metadata.patch.file = toPosix(relative(rootReal(), told.patchAt(told.patchHash)))
     accounts.set(dir, { ...metadata, ...(record === undefined && { locked: true }) })
   }
   return accounts

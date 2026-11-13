@@ -96,13 +96,8 @@ const normalizeModuleRepo = blockMetadata('repo', REPO_FIELDS, 'github',
 
 const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{43}=$/u, sha512: /^sha512-[A-Za-z\d+/]{86}==$/u }
 // From the bundle root, `..` leading it alone: pnpm names a patch from the lockfile's directory, which may be above it.
-const isPatchFile = (v) => {
-  if (typeof v !== 'string' || v.length > 4096 || v.includes('\\') || v.includes('\0')) return false
-  const segments = v.split('/')
-  const up = segments.findIndex((segment) => segment !== '..')
-  return up !== -1 && segments.slice(up).every((segment) => segment !== '' && segment !== '.' && segment !== '..')
-}
-const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v), file: isPatchFile }
+const PATCH_FILE = /^(?:\.\.\/)*(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+(?:\/(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+)*$/u
+const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v), file: (v) => typeof v === 'string' && v.length <= 4096 && PATCH_FILE.test(v) }
 
 export function sha512Of(integrity) {
   const found = new Set((integrity ?? '').split(/\s+/u).filter((token) => token.startsWith('sha512-')).map((token) => token.split('?')[0]))
@@ -185,17 +180,17 @@ export const moduleInfo = (info) => {
   return record
 }
 
-// How a record's package was installed: two records of one bucket must agree on it.
-export const ATTESTED_METADATA = ['integrity', 'patch']
+// How a record's package was installed, which two records of one bucket must agree on: of a patch, its text's
+// integrity, not the `file` it was found at.
+const ATTESTS = { integrity: (v) => v, patch: (v) => v?.integrity }
+export const ATTESTED_METADATA = Object.keys(ATTESTS)
+export const sameAttested = (field, a, b) => ATTESTS[field](a) === ATTESTS[field](b)
 
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
 
 // A record of an integrity and no patch attests the patch null (installed unpatched); undefined: it tells nothing.
 export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
-
-// A patch's text is its integrity's; its `file`, where it was found, attests nothing.
-export const sameAttested = (field, a, b) => (field === 'patch' ? a?.integrity === b?.integrity : a === b)
 
 const agree = (field, record, other, what) => {
   if (sameAttested(field, record[field], other[field])) return
@@ -208,12 +203,25 @@ export function assertAttested(record, other, what) {
   for (const field of ATTESTED_METADATA) if (attestedOf(record, field) !== undefined) agree(field, record, other, what)
 }
 
+// `record`'s attested block (a patch) with what of `other`'s agreeing one attests nothing (its `file`), where it lacks it.
+const filledBlock = (field, record, other) => {
+  const [ours, theirs] = [record[field], other[field]]
+  if (![ours, theirs].every((block) => block !== null && typeof block === 'object') || !sameAttested(field, ours, theirs)) return undefined
+  return Object.keys(theirs).some((key) => ours[key] === undefined) ? Object.freeze({ ...theirs, ...ours }) : undefined
+}
+
+export function withFilledOf(record, other) {
+  const filled = Object.fromEntries(ATTESTED_METADATA.map((field) => [field, filledBlock(field, record, other)]).filter(([, block]) => block))
+  return Object.keys(filled).length === 0 ? record : moduleInfo({ ...record, ...filled })
+}
+
 export function withMetadataOf(record, other, what = 'module') {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
     if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) {
       agree(field, record, other, what)
-      if (field === 'patch' && record.patch?.file === undefined && other.patch?.file !== undefined) (added ??= {}).patch = other.patch
+      const filled = filledBlock(field, record, other)
+      if (filled) (added ??= {})[field] = filled
     } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
   for (const field of DIR_FIELDS) {

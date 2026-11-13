@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
+import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -299,7 +299,8 @@ export class State {
   #recordInstalled() {
     const accounts = installedAccounts(this.modules, this.root, { locate: true })
     heldToAccounts(this.modules, accounts)
-    for (const [dir, account] of accounts) if (!account.locked && !this.#absorbed.dirs.has(dir)) this.modules.set(dir, withMetadataOf(this.modules.get(dir), account))
+    // Onto an absorbed record, what attests nothing alone (a patch's file), its other files perhaps not this run's.
+    for (const [dir, account] of accounts) if (!account.locked) this.modules.set(dir, (this.#absorbed.dirs.has(dir) ? withFilledOf : withMetadataOf)(this.modules.get(dir), account))
     for (const [dir, files] of this.#absorbed.files) {
       const [module, account] = [this.modules.get(dir), accounts.get(dir)]
       const added = account && !account.locked ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))

@@ -7,6 +7,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { moduleInfo, withFilledOf } from '@exodus/stasis-core/util'
 import { State } from '@exodus/stasis-core/state'
 
 import { patchIntegrity } from '../stasis/src/installed.js'
@@ -90,6 +91,14 @@ test('a merge keeps one side\'s integrity or patch, and refuses two that differ 
       else t.assert.deepStrictEqual(JSON.parse(JSON.stringify(merged(), ['integrity', 'patch', 'file'])), expected, `${kind}: ${label}`)
     }
   }
+})
+
+test("a record takes what of an agreeing patch attests nothing, its file, where it lacks it, and no more", (t) => {
+  const record = moduleInfo(dep({ integrity: TARBALL, patch: PATCHED }))
+  t.assert.deepStrictEqual({ ...withFilledOf(record, { patch: FILED }).patch }, FILED)
+  t.assert.equal(withFilledOf(record, { patch: { integrity: patchIntegrity('0'.repeat(64)), file: FILED.file } }), record, 'not of another patch')
+  t.assert.equal(withFilledOf(moduleInfo(dep({ patch: FILED })), { patch: { ...PATCHED, file: 'elsewhere.patch' } }).patch.file, FILED.file, 'nor over its own')
+  t.assert.equal(withFilledOf(record, { integrity: OTHER_TARBALL }), record, 'nor of what attests')
 })
 
 // An app requiring dep, installed; a run capturing dep's `files` (and its entry, with no parent); dep's record edited.
@@ -224,10 +233,9 @@ for (const lazy of [false, true]) {
   test(`pnpm${lazy ? ', lazily' : ''}: a build from a lockfile alone records each package's integrity and patch, which validation holds them to`, async (t) => {
     const { bundle, lockfile } = await buildVfsBundle({ vfs: vfsOf(PROJECT), packageManager: 'pnpm', entries: ['src/a.js'], scope: 'full', cache, lazy })
     const { dep: built, other } = Object.fromEntries([...bundle.modules].filter(([, info]) => info.ecosystem === 'npm').map(([dir, info]) => [info.name, { dir, ...info }]))
-    const patched = { ...PATCHED, file: 'patches/dep@1.0.0.patch' }
-    t.assert.deepStrictEqual([built.integrity, { ...built.patch }, built.files['index.js'], other.integrity, other.patch], [PACKAGES.dep.integrity, patched, 'module.exports = 2\n', PACKAGES.other.integrity, undefined])
+    t.assert.deepStrictEqual([built.integrity, { ...built.patch }, built.files['index.js'], other.integrity, other.patch], [PACKAGES.dep.integrity, FILED, 'module.exports = 2\n', PACKAGES.other.integrity, undefined])
     const locked = JSON.parse(lockfile.serialize()).modules[built.dir]
-    t.assert.deepStrictEqual([Object.keys(locked), locked.patch], [['name', 'version', 'ecosystem', 'integrity', 'patch', 'files'], patched])
+    t.assert.deepStrictEqual([Object.keys(locked), locked.patch], [['name', 'version', 'ecosystem', 'integrity', 'patch', 'files'], FILED])
     const fetch = async (ecosystem, name) => new Map(Object.entries(PACKAGES[name].files).map(([path, text]) => [path, new TextEncoder().encode(text)]))
     const report = await validateBundle(validationPlan(Bundle.parse(bundle.serialize())), { reason: 'skipped' }, { fetch, locked: lockedBy([{ path: 'pnpm-lock.yaml', text: PNPM_LOCK, from: 'local', read: async (path) => PROJECT[path] }]) })
     t.assert.deepStrictEqual([report.status, report.packages.find((pkg) => pkg.name === 'dep').patch], ['valid', { hash: HASH, path: 'patches/dep@1.0.0.patch', from: 'local', recorded: true, applied: true }])

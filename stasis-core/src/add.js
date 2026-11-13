@@ -9,7 +9,7 @@ import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, sta
 import { diskHost } from './host.js'
 import { linksOn, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from './util.js'
+import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withAttestedOf, withFilledOf, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: outputMatcher must read the real disk, not be captured.
 const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
@@ -76,7 +76,7 @@ function heldToInstall(baseDir, artifacts) {
   }
   return (existing, added, companion) => {
     for (const [dir, account] of installedAccounts(added.modules, baseDir, { locate: true })) {
-      if (!account.locked) added.modules.set(dir, withAttestedOf(added.modules.get(dir), existing?.modules.get(dir) ?? companion?.modules.get(dir) ?? known.get(dir) ?? account))
+      if (!account.locked) added.modules.set(dir, withFilledOf(withAttestedOf(added.modules.get(dir), existing?.modules.get(dir) ?? companion?.modules.get(dir) ?? known.get(dir) ?? account), account))
     }
     return added
   }
