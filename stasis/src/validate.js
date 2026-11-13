@@ -843,8 +843,10 @@ export function lockedBy(lockfiles) {
     const other = same.find((one) => one.at === at)
     if (other !== undefined) throw new ValidateError('lockfile-ambiguous', `${other.path} and ${path} both lock ${ecosystem} packages: give one`)
     const locks = lockOf(path, text)
-    // A lockfile given on disk locks from its directory: the bundle's root from there is one of its importers, else its own.
-    const within = locks.importers === undefined || from !== 'local' || locks.importers.has(root) ? root : ''
+    // Given on disk, a lockfile's place in the repository isn't known: the bundle's root from its directory is the
+    // longest tail of `root` that is one of its importers, else its own.
+    const tails = root.split('/').map((_, start, parts) => parts.slice(start).join('/'))
+    const within = locks.importers === undefined || from !== 'local' ? root : tails.find((tail) => locks.importers.has(tail)) ?? ''
     // The bundle's root, in its paths' terms, as a recorded patch's `file` is from there.
     const bundleDir = posix.join(posix.dirname(path), within)
     const one = { ...locks, path, from, read, tree, git, root: within, at, bundleDir, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] }
