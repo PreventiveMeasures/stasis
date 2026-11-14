@@ -43,6 +43,7 @@
     "src/bundle-reader.js",
     "src/cmd/bundle.js",
     "src/cmd/bundle-options.js",
+    "src/cmd/cache-dir.js",
     "src/cmd/build.js",
     "src/cmd/diff.js",
     "src/cmd/github-bundle.js",

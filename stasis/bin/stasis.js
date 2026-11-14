@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from 'node:url'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
 import assert from 'node:assert/strict'
 import { parseLeadingOptions, valueFlagsOf } from '@exodus/stasis-core/util'
 import { addCli, brotliQualityOption, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
@@ -68,12 +67,14 @@ async function warningsOnFailure(build) {
   }
 }
 
-// The per-user cache directory, as each platform names it (XDG ignores a relative path).
-function userCacheDir() {
-  if (isAbsolute(process.env.XDG_CACHE_HOME ?? '')) return join(process.env.XDG_CACHE_HOME, 'stasis')
-  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Caches', 'stasis')
-  if (process.platform === 'win32') return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'stasis', 'Cache')
-  return join(homedir(), '.cache', 'stasis')
+// The cache directory (STASIS_CACHE_DIR, else the per-user one), a relative STASIS_CACHE_DIR refused.
+async function cacheDir() {
+  const { userCacheDir } = await import('../src/cmd/cache-dir.js')
+  try {
+    return userCacheDir()
+  } catch (cause) {
+    fail(`Error: ${cause.message}`)
+  }
 }
 
 const command = argv.shift()
@@ -219,7 +220,7 @@ if (command === '-v' || command === '--version') {
   }
   // Tarballs, zips and GitHub trees are cached where `stasis audit` caches.
   const { setCacheDir } = await import('../src/vfs-bundle.js')
-  setCacheDir(userCacheDir())
+  setCacheDir(await cacheDir())
   const { githubBundleCommand } = await import('../src/cmd/github-bundle.js')
   await githubBundleCommand({
     github,
@@ -384,7 +385,7 @@ if (command === '-v' || command === '--version') {
   // Upstream caches what it looks up (a package's GitHub repo, a month each) only where told to, and
   // answers from it without asking: a per-user directory, never one shared with less trusted jobs.
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
-  setCacheDir(userCacheDir())
+  setCacheDir(await cacheDir())
   const { AuditError, audit, printAuditReport } = await import('../src/audit.js')
   // With no file, the package manager's lockfile installing the project too, or each JS one its
   // stasis.config.json names in its `lockfiles`: their packages the bundle doesn't hold checked for
@@ -441,7 +442,7 @@ if (command === '-v' || command === '--version') {
   // `stasis audit` caches, each held to its id or integrity as it is read.
   const { createClient } = await import('@preventive/upstream/github.js')
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
-  setCacheDir(userCacheDir())
+  setCacheDir(await cacheDir())
   const { githubToken, withNpmToken } = await import('../src/cmd/tokens.js')
   const { ValidateError, exitCodeOf, validate, printValidationReport } = await import('../src/validate.js')
   let report

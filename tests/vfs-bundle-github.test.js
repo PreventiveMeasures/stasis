@@ -1632,7 +1632,7 @@ test('stasis github-bundle owner/name/path bundles as --github=owner/name --dire
     t.after(() => rm(tmp, { recursive: true, force: true }))
     const out = join(tmp, 'out')
     await mkdir(out)
-    const { status, stderr } = await githubBundleCli(args, { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), XDG_CACHE_HOME: join(tmp, 'cache') } })
+    const { status, stderr } = await githubBundleCli(args, { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache') } })
     t.assert.equal(status, 0, stderr)
     const names = await readdir(out)
     return { names, bytes: await readFile(join(out, names[0])), said: stderr.trim().split('\n').at(-1) }
@@ -1673,7 +1673,7 @@ test('stasis github-bundle owner/name/path --lockfile-only writes the lockfile a
   const run = async (dir, args) => {
     const out = join(tmp, dir)
     await mkdir(out)
-    const { status, stderr } = await githubBundleCli(args, { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), XDG_CACHE_HOME: join(tmp, 'cache') } })
+    const { status, stderr } = await githubBundleCli(args, { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache') } })
     t.assert.equal(status, 0, stderr)
     return { names: (await readdir(out)).toSorted(), said: stderr.trim().split('\n').at(-1) }
   }
@@ -1691,7 +1691,7 @@ test('stasis github-bundle owner/name/path --lockfile-only writes the lockfile a
   t.assert.deepStrictEqual([...Lockfile.parse(written).entries], ['src/a.js'])
   // Run again where it is: the build held to it, frozen, and it left as it is.
   const again = async (repo) => {
-    const { status, stderr } = await githubBundleCli([`${GITHUB}/packages/api`, `--sha=${SHA}`], { nodeArgs: [`--import=${FAKE_REPO}`], cwd: join(tmp, 'only'), env: { ...process.env, EXODUS_STASIS_LOCK: '', STASIS_TEST_REPO: JSON.stringify(repo), XDG_CACHE_HOME: join(tmp, 'cache') } })
+    const { status, stderr } = await githubBundleCli([`${GITHUB}/packages/api`, `--sha=${SHA}`], { nodeArgs: [`--import=${FAKE_REPO}`], cwd: join(tmp, 'only'), env: { ...process.env, EXODUS_STASIS_LOCK: '', STASIS_TEST_REPO: JSON.stringify(repo), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache') } })
     return { status, stderr, said: stderr.trim().split('\n').slice(-2), names: (await readdir(join(tmp, 'only'))).toSorted() }
   }
   const { stderr: _stderr, ...held } = await again(files)

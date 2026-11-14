@@ -872,7 +872,7 @@ test("audit --repo-advisories asks GitHub with GITHUB_TOKEN, else with ~/.audit/
   writeFileSync(join(audited, '.audit', 'config.json'), JSON.stringify({ token: 'from-audit' }))
   // `stasis audit --repo-advisories` with `home` as the user's, and `more` in its environment.
   const run = (home, more = {}) => {
-    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', '--repo-advisories', file], { encoding: 'utf-8', env: { ...cleanEnv, HOME: home, XDG_CACHE_HOME: join(tmp, 'cache'), ...more } })
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', '--repo-advisories', file], { encoding: 'utf-8', env: { ...cleanEnv, HOME: home, STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache'), ...more } })
     return { status: r.status, stderr: stripVTControlCharacters(r.stderr) }
   }
   t.assert.deepStrictEqual(run(audited), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-audit\nScanned 1 package: 0 alerts\n' })
@@ -886,7 +886,7 @@ test('audit asks repositories for advisories by default where there is a GitHub 
   const file = writeBundle(tmp, 'snapshot.br', { modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', repo: { github: 'o/dep' }, files: { 'index.js': '' } } }, formats: {} })
   // `stasis audit ...args` of the bundle, with GITHUB_TOKEN `token` where given, and no ~/.audit/config.json.
   const run = (args, token) => {
-    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', ...args, file], { encoding: 'utf-8', env: { ...cleanEnv, HOME: join(tmp, 'home'), XDG_CACHE_HOME: join(tmp, 'cache'), ...(token && { GITHUB_TOKEN: token }) } })
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', ...args, file], { encoding: 'utf-8', env: { ...cleanEnv, HOME: join(tmp, 'home'), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache'), ...(token && { GITHUB_TOKEN: token }) } })
     return { status: r.status, stderr: stripVTControlCharacters(r.stderr) }
   }
   const asked = 'github /repos/o/dep/security-advisories Bearer t\n'
@@ -896,6 +896,25 @@ test('audit asks repositories for advisories by default where there is a GitHub 
   t.assert.deepStrictEqual(run(['--no-repo-advisories']), { status: 0, stderr: 'Scanned 1 package: 0 alerts\n' })
   t.assert.deepStrictEqual(run(['--repo-advisories'], 't'), { status: 0, stderr: `${asked}Scanned 1 package: 0 alerts\n` }, 'as by default')
   t.assert.deepStrictEqual(run(['--repo-advisories', '--no-repo-advisories'], 't'), { status: 1, stderr: "Error: --repo-advisories and --no-repo-advisories: give one\nRun 'stasis --help' for usage.\n" })
+}))
+
+test('audit caches in STASIS_CACHE_DIR itself over XDG_CACHE_HOME, and refuses a relative one', withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  // GITHUB_SPY, but with a listing of no advisories for the repo, which is cached.
+  writeFileSync(spy, GITHUB_SPY.replace("  return json({ message: 'Not Found' }, 404)", "  if (url.host === 'api.github.com') return json([])\n  return json({ message: 'Not Found' }, 404)"))
+  const file = writeBundle(tmp, 'snapshot.br', { modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', repo: { github: 'o/dep' }, files: { 'index.js': '' } } }, formats: {} })
+  const own = join(tmp, 'own')
+  const xdg = join(tmp, 'xdg')
+  // `stasis audit` of the bundle in `tmp`, with GITHUB_TOKEN set and `cacheDir` its STASIS_CACHE_DIR.
+  const run = (cacheDir) => {
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', file], { cwd: tmp, encoding: 'utf-8', env: { ...cleanEnv, HOME: join(tmp, 'home'), GITHUB_TOKEN: 't', STASIS_CACHE_DIR: cacheDir, XDG_CACHE_HOME: xdg } })
+    return { status: r.status, stderr: stripVTControlCharacters(r.stderr) }
+  }
+  t.assert.deepStrictEqual(run(own), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer t\nScanned 1 package: 0 alerts\n' })
+  t.assert.ok(existsSync(join(own, 'github', 'advisories', 'o+dep.json.gz')), 'cached directly in it')
+  t.assert.ok(!existsSync(xdg), 'and nothing in XDG_CACHE_HOME')
+  t.assert.deepStrictEqual(run('rel'), { status: 1, stderr: `Error: STASIS_CACHE_DIR must be an absolute path, not "rel"\nRun 'stasis --help' for usage.\n` })
+  t.assert.ok(!existsSync(join(tmp, 'rel')) && !existsSync(xdg), 'nothing cached anywhere')
 }))
 
 // A preload answering npm's batch requests with an advisory for each of foo and bar it is asked
@@ -936,7 +955,7 @@ const writeProject = (dir, config) => {
 
 // `stasis ...args` in `cwd`, with NPM_SPY (written to `spy`) answering what it asks.
 const runSpied = (spy, cwd, args) => {
-  const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, ...args], { cwd, encoding: 'utf-8', env: { ...cleanEnv, XDG_CACHE_HOME: join(cwd, '..', 'cache') } })
+  const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, ...args], { cwd, encoding: 'utf-8', env: { ...cleanEnv, STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(cwd, '..', 'cache') } })
   return { status: r.status, stdout: stripVTControlCharacters(r.stdout), stderr: stripVTControlCharacters(r.stderr) }
 }
 
