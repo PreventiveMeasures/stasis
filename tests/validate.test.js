@@ -1330,7 +1330,7 @@ test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-un
   const file = join(tmp, 'own.stasis.code.br')
   writeBundle(file, { modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }]]) })
   // Colourless, as a pipe takes it, out of CI (whether this runs in it or not); in colour in CI.
-  const env = { ...process.env, XDG_CACHE_HOME: tmp }
+  const env = { ...process.env, STASIS_CACHE_DIR: '', XDG_CACHE_HOME: tmp }
   delete env.CI
   const run = (...args) => spawnSync(process.execPath, [cli, 'validate', ...args], { encoding: 'utf8', env })
   const skipped = run('--only-deps', file)
@@ -1398,7 +1398,7 @@ test("stasis validate reads GitHub with GITHUB_TOKEN, else ~/.audit/config.json'
   writeBundle(deps, { modules: new Map([['node_modules/@scope/q', { name: '@scope/q', version: '1.0.0', files: { 'index.js': 'q\n' } }]]) })
   const npmrc = `//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n`
   const [audited, npmrcOnly, notUtf8, empty] = await Promise.all([{ npmrc, audit: { token: 'gh-audit', npmToken: 'npm-audit' } }, { npmrc }, { npmrc: NOT_UTF8_NPMRC }, {}].map((files) => tokenHome(t, files)))
-  const env = { ...process.env, XDG_CACHE_HOME: join(tmp, 'cache') }
+  const env = { ...process.env, STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache') }
   for (const name of ['CI', 'GITHUB_TOKEN', ...NPM_TOKEN_VARS]) delete env[name]
   // What `stasis validate ...args`, with `home` the user's and `more` in its environment, sent each host for authorization.
   const sent = (home, args, more = {}) => {

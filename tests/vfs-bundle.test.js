@@ -265,7 +265,7 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         `)
         // Beside it, over what a real install left there, it builds nothing.
         const [r, installed] = await Promise.all([
-          run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', '--output=out.br', '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), XDG_CACHE_HOME: cacheRoot } }),
+          run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', '--output=out.br', '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: cacheRoot } }),
           run(['bundle', '--deptree', '--scope=full', '--output=deptree.br', 'src/entry.js'], { cwd: oracles[packageManager].installedCopy }),
         ])
         t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
