@@ -135,10 +135,28 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
 }
 
-async function repoTree(name, { github, sha, tag, directory, path, client, packageManager }, options) {
+// GitHub serves a commit pushed to any fork of a repo through the repo's name too, its tarball and trees alike: one
+// given by its sha is held to the repo's own history, as `stasis validate` holds it (historyOf). A tag's and the
+// default branch's head are the repo's own already.
+async function assertOwnCommit(name, client, github, sha) {
+  const { ValidateError, followingMoves, historyOf } = await import('../validate.js')
+  const repository = followingMoves(client, github)
+  let ref
+  try {
+    ref = await historyOf(repository, sha)
+  } catch (error) {
+    if (error instanceof ValidateError) throw new Error(`${name}: ${error.message}`, { cause: error })
+    throw error
+  }
+  if (ref === null) throw new Error(`${name}: ${sha} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give a commit of its own`)
+}
+
+// `own`: a given sha is held to the repo's history (assertOwnCommit), before anything else is fetched.
+async function repoTree(name, { github, sha, tag, directory, path, client, packageManager, own = false }, options) {
   checkAhead(name, packageManager, options)
   checkRepo(name, { github, sha, tag, directory, path })
   client ??= createClient({ token: null })
+  if (own && sha !== undefined) await debugTimed('Held the commit to the repo\'s history', () => assertOwnCommit(name, client, github, sha))
   sha ??= tag === undefined ? (await client.getRepoHead({ repo: github })).oid : (await client.getRepoTag({ repo: github, tag })).oid
   const where = `${name}: ${github}@${sha}`
   const list = memoized((dir) => client.listRepoDir({ repo: github, sha, directory: dir }))
@@ -181,7 +199,7 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
 export async function buildGitHubBundle({ github, sha, tag, directory, path, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   checkCache('buildGitHubBundle', options.cache)
-  const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, directory, path, client, packageManager }, options))
+  const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, directory, path, client, packageManager, own: true }, options))
   let { entries } = tree
   if (entries === undefined) {
     const suggested = defaultEntries('buildGitHubBundle', tree.host, tree.cwd, tree.packageManagers, options)
