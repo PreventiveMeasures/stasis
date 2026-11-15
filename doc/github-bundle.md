@@ -23,7 +23,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | - | - |
 | `owner/name[/path]` | The repository, and where `/path` is given, a directory or a file in it, as one argument, the first that is no option. A directory is `--directory=path`; a file is an entry of the nearest project above it, see [A file's project](#a-files-project). Not with `--github` or `--directory`. |
 | `--github=owner/name` | The repository, where `owner/name[/path]` does not give it. Fetched with `GITHUB_TOKEN` where it is set. |
-| `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. |
+| `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. A `--sha` commit must be in the repo's own history, as [`stasis validate`](validate.md#the-commit) holds it: GitHub serves a commit pushed to any fork through the repo's name too, so one in the history of none of its branches or tags is refused, before anything is fetched. |
 | `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
 | `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does; or, where its `stasis.config.json` names them, one tree of each of its [`lockfiles`](#several-lockfiles-lockfiles), with which it is refused. |
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
@@ -242,7 +242,7 @@ in each round, though one before it is set aside, so a round asks for what
 they all read.
 
 With `EXODUS_STASIS_DEBUG=1`, each step is said on stderr as it ends, with
-what it cost: fetching the repo, the tree (laid out, or where it is not lazy,
+what it cost: holding a `--sha` commit to the repo's history, fetching the repo, the tree (laid out, or where it is not lazy,
 installed), generating the Prisma Clients (see [Prisma](#prisma)), each build (of a lazy tree, each round, and the packages it asks for and
 how long unpacking them takes), and writing the bundle. A build says the
 files its scans parsed, resolved again from a parse kept and took as kept,
@@ -535,7 +535,9 @@ To generate none for a repo, whoever bundles it:
 ## Programmatic API (`@exodus/stasis/vfs-bundle`)
 
 - `buildGitHubBundle(options)` builds the same bundle from a GitHub repo, at a
-  commit or the one a tag names; `buildVfsBundle(options)` from a project held
+  commit or the one a tag names, a `sha` held to the repo's history as `--sha`
+  is (with the `client`'s `getRepoHead`, `compareCommits`, `listRepoTags` and
+  `listRepoBranches`); `buildVfsBundle(options)` from a project held
   in a `Vfs` (exported too), which is only read. `loadNodeModules(options)` lays
   out a project's `node_modules` alone, with deptree's `installed`, each package
   by its `path` with the `commit` its version document names. All three clean

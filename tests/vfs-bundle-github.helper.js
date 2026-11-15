@@ -65,11 +65,28 @@ export const vfsOf = (files) => {
   return vfs
 }
 
-// `tags` maps each tag to the commit it names.
-export const fakeClient = (files, { tags = {} } = {}) => {
+// `tags` maps each tag to the commit it names. `history` maps each branch to the commits in its history, the first
+// its head (main's is HEAD, wherever it is listed); without it, every commit is in main's history, as of a repo's own.
+// One in no branch's history, nor at a tag, GitHub's compare finds `diverged`, as it finds a fork's.
+export const fakeClient = (files, { tags = {}, history } = {}) => {
   const calls = []
+  const branches = history ?? { main: [] }
+  const headOf = (branch) => (branch === 'main' ? HEAD : branches[branch][0])
   return {
     calls,
+    async compareCommits({ repo, base, head }) {
+      calls.push(['compareCommits', repo, base, head])
+      if (base === headOf(head)) return { status: 'identical' }
+      return { status: history === undefined || branches[head]?.includes(base) ? 'ahead' : 'diverged' }
+    },
+    async listRepoTags({ repo }) {
+      calls.push(['listRepoTags', repo])
+      return Object.entries(tags).map(([tag, oid]) => ({ tag, oid }))
+    },
+    async listRepoBranches({ repo }) {
+      calls.push(['listRepoBranches', repo])
+      return Object.keys(branches).map((branch) => ({ branch, oid: headOf(branch) }))
+    },
     // A repo neither renamed nor transferred.
     async getRepo({ repo }) {
       calls.push(['getRepo', repo])

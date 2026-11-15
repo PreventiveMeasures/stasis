@@ -299,13 +299,13 @@ test("buildGitHubBundle lays out a tree of each lockfile stasis.config.json name
   t.assert.ok(built.bundle.sources.has('tools/node_modules/tool/index.js'))
   t.assert.ok(built.bundle.sources.has('node_modules/.pnpm/used@1.0.0/node_modules/used/index.js'))
   t.assert.deepStrictEqual(built.packageManagers, ['pnpm', 'npm'])
-  t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['getRepoHead', 'compareCommits', 'listRepoDir', 'getRepoTarball'])
   // A directory that stands alone is downloaded alone, and then, its lockfiles named, the whole repo they may climb out of.
   const nested = fakeClient({ 'README.md': 'x\n', ...under('apps/x', files) })
   const alone = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: nested, directory: 'apps/x', cache: store() })
   t.assert.deepStrictEqual([...alone.bundle.sources.keys()].toSorted(), [...built.bundle.sources.keys()].toSorted())
   t.assert.deepStrictEqual({ ...alone.bundle.repo }, { github: GITHUB, directory: 'apps/x', commit: SHA })
-  t.assert.deepStrictEqual(nested.calls.map(([method, , , path]) => (method === 'listRepoDir' ? `${method} ${path}` : method)), ['listRepoDir apps/x', 'listRepoDir apps', 'listRepoDir undefined', 'getRepoTreeTarball', 'getRepoTarball'])
+  t.assert.deepStrictEqual(nested.calls.map(([method, , , path]) => (method === 'listRepoDir' ? `${method} ${path}` : method)), ['getRepoHead', 'compareCommits', 'listRepoDir apps/x', 'listRepoDir apps', 'listRepoDir undefined', 'getRepoTreeTarball', 'getRepoTarball'])
   // No lockfile listed, but a stasis.config.json, which may name them: the tree tells.
   const unlisted = configured({ 'package.json': manifest('root'), 'app/package.json': manifest('app'), 'app/pnpm-lock.yaml': lockfile('.'), 'app/b.js': '' }, { lockfiles: ['app/pnpm-lock.yaml'], entries: { 'app/b.js': {} } })
   const told = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient(unlisted) })
@@ -313,7 +313,7 @@ test("buildGitHubBundle lays out a tree of each lockfile stasis.config.json name
   // ...and where it names none, the tree refuses as the listings would.
   const none = fakeClient({ 'package.json': manifest('p'), 'apps/p/stasis.config.json': json({}), 'apps/p/a.js': '' })
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: none, directory: 'apps/p', entries: ['a.js'] }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no packageManager given, and none of pnpm-lock\\.yaml, yarn\\.lock, package-lock\\.json, soldeer\\.lock installs /apps/p$`, 'u'))
-  t.assert.deepStrictEqual(none.calls.map(([method]) => method), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual(none.calls.map(([method]) => method), ['getRepoHead', 'compareCommits', 'listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
 })
 
 test("stasis bundle --deptree lays out the lockfiles stasis.config.json names, of which detection can't tell one", withTmp(async (t, tmp) => {
