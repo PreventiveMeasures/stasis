@@ -67,7 +67,7 @@ async function warningsOnFailure(build) {
   }
 }
 
-// The cache directory (STASIS_CACHE_DIR, else the per-user one), a relative STASIS_CACHE_DIR refused.
+// The cache directory (STASIS_CACHE_DIR, else the platform's), refused where it is relative or there is none.
 async function cacheDir() {
   const { userCacheDir } = await import('../src/cmd/cache-dir.js')
   try {
