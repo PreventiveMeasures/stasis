@@ -226,15 +226,18 @@ cache directory:
 
 | Platform | Cache directory |
 | - | - |
-| Linux | `~/.cache/stasis` |
+| Linux, BSDs | `$XDG_CACHE_HOME/stasis`, else `~/.cache/stasis` |
 | macOS | `~/Library/Caches/stasis` |
-| Windows | `%LOCALAPPDATA%\stasis\Cache` |
+| Windows | `%LOCALAPPDATA%\stasis\Cache`, else `~\AppData\Local\stasis\Cache` |
+
+That is `@preventive/upstream`'s `cacheDirFor('stasis')`, the directory it
+also reads as stasis's. Only an absolute `XDG_CACHE_HOME`, `LOCALAPPDATA` or
+home directory counts; with no absolute home, and nothing else to go on, there
+is no cache directory and the command is refused.
 
 On every platform, `STASIS_CACHE_DIR` is the cache directory itself, nothing
 added under it; it must be an absolute path, and a relative one is refused
-before anything is read or written. Empty, it is taken as unset. Without it, an
-absolute `XDG_CACHE_HOME` gives `$XDG_CACHE_HOME/stasis`, and a relative one is
-ignored, as XDG has it.
+before anything is read or written. Empty, it is taken as unset.
 
 A name recorded with two repositories, by two of its versions or two artifacts,
 takes neither and is looked up as before.
