@@ -344,6 +344,11 @@ export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} s
 // In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
 export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
 
+// Once extracted, each is the project's own: the lockfile a frozen extract checks, or a package manager's hook or config,
+// a Yarn PnP file or git metadata, which run code or redirect installs and imports.
+const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))$)/iu
+export const isForbiddenFile = (path) => isLockfileName(path) || FORBIDDEN.test(path)
+
 function compareSegments(al, bl) {
   let i = 0
   while (i < al.length && al[i] === bl[i]) i++

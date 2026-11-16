@@ -483,6 +483,29 @@ checks the bundle against, or root a stasis project of its own (see
 bundle` or `stasis add` whose files reach the project's lockfile fails rather
 than ship it, and reading one is refused as well.
 
+Nor does it carry a file that a tool takes for the project's own once it is
+extracted, or once the package holding it is installed on its own, to run code
+of its choosing, or to resolve or install from where the file says. These names
+are forbidden in the project and in any package a bundle carries, at any depth
+and in any case:
+
+| Name | What it is |
+| --- | --- |
+| `.npm-extension.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts` | npm 12's [extension](https://docs.npmjs.com/cli/v12/configuring-npm/npm-extension/), code npm runs before it resolves the tree |
+| `.pnpmfile.js`, `pnpmfile.js` (an older pnpm's), and either with `.mjs`, `.cjs`, `.ts`, `.mts` or `.cts` | pnpm's [hooks](https://pnpm.io/pnpmfile), code pnpm runs as it resolves the tree |
+| `.npmrc` | npm's and pnpm's config: `node-options` runs code in every script, it names the registries, and it holds their tokens |
+| `.yarnrc`, `.yarnrc.yml` | Yarn's config: `yarnPath` (`yarn-path` to Yarn 1) is run in place of Yarn, `plugins` are loaded, and it names the registries |
+| `bunfig.toml`, `.bunfig.toml` | Bun's config: `preload` runs before every `bun run` and `bun test`, and it names the registries |
+| `.pnp.cjs`, `.pnp.js`, `.pnp.loader.mjs`, `.pnp.data.json` | Yarn's Plug'n'Play: the runtime Yarn preloads, and the map it, and the bundlers that read it, resolve each import with |
+| `.git`, a directory or a file, anywhere in the path | git's: the commands its config names (`core.fsmonitor`, `core.hooksPath`) and its hooks, which git runs |
+
+A bundle whose files reach one, a dependency's included, is refused as one
+reaching `stasis.lock.json` is, writing and reading alike:
+
+```
+bundle: node_modules/dep/.npmrc is a file no bundle may carry
+```
+
 ```json
 {
   "version": 1,

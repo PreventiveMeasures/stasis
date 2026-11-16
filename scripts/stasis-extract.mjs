@@ -12,6 +12,8 @@ const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefine
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
 // Not an array or a string, which would read as files named by index.
 const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
+// As stasis-core's isForbiddenFile; the trailing `/` is a bucket's own listing.
+const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:stasis\.lock\.json|\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))\/?$)/iu
 
 function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
@@ -54,11 +56,12 @@ function extract(bundleFile, output = '.') {
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
+    assert(!FORBIDDEN.test(path), `extract: the bundle carries a forbidden file: ${path}`)
     if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
     // Canonical relative paths only, so every write stays inside outDir.
     assert(!path.includes('\\') && path.split('/').every((s) => s !== '' && s !== '.' && s !== '..'), `extract: invalid bundle path: ${path}`)
-    assert(!/(?:^|\/)stasis\.lock\.json$/iu.test(path) && !locks.some((lock) => lock.toLowerCase() === path.toLowerCase()), `extract: the bundle carries a lockfile: ${path}`)
+    assert(!locks.some((lock) => lock.toLowerCase() === path.toLowerCase()), `extract: the bundle carries a lockfile: ${path}`)
     assert(!paths.has(path), `extract: duplicate bundle path: ${path}`)
     paths.add(path)
     let bytes = content

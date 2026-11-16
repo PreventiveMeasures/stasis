@@ -167,7 +167,7 @@ test('run never takes the lockfile into a bundle, even one it only tolerates and
   // Only tolerated by this one, but no bundle carries a stasis.lock.json (see bundle-lockfile.test.js).
   const r = runCli(stasisCli, ['run', '--lock=ignore', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.notEqual(r.status, 0)
-  t.assert.match(r.stderr, /bundle: stasis\.lock\.json is a stasis lockfile, which no bundle may carry/)
+  t.assert.match(r.stderr, /bundle: stasis\.lock\.json is a file no bundle may carry/)
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
 }))
 

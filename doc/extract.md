@@ -25,7 +25,11 @@ Without any stasis package installed, the repository's
 It reads only what decides what is written (the scope, the files, their formats and
 execute bits), so it checks nothing else of the bundle, and it takes v1 bundles only. It has no lockfile support: it refuses
 an output dir holding a `stasis.lock.json`, or, for a `<name>.stasis.code.br`
-bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. It is
+bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. As
+`stasis extract` does, it refuses a bundle carrying a file of a name no bundle
+carries, a `stasis.lock.json`, a package manager's hook or config, a Yarn
+Plug'n'Play file or `.git` (see [Untrusted input](#untrusted-input)), naming it:
+`extract: the bundle carries a forbidden file: node_modules/dep/.pnpmfile.cjs`. It is
 not published in any package.
 
 ## What it writes
@@ -151,7 +155,8 @@ anything, so a malformed bundle fails before the first write. It refuses bundles
 - paths holding a `\` (no stasis path does: see [file formats](file-formats.md)),
 - duplicate paths, or a path used as both a file and a directory,
 - non-string file contents,
-- a file named `stasis.lock.json`, at any depth and in any case, which no bundle carries (see [file formats](file-formats.md#stasiscodebr)).
+- a file named `stasis.lock.json`, at any depth and in any case, which no bundle carries (see [file formats](file-formats.md#stasiscodebr)),
+- a file of another name no bundle carries, in the project or any package, at any depth and in any case: a package manager's hook (`.npm-extension.mjs`, `.pnpmfile.cjs`) or config (`.npmrc`, `.yarnrc.yml`, `bunfig.toml`), a Yarn Plug'n'Play file (`.pnp.cjs`), or `.git` (see [file formats](file-formats.md#stasiscodebr) for every name).
 
 The path checks are lexical: `extract` does not resolve symlinks, so writes pass
 through any symlinked directory already present inside the output directory (e.g.
