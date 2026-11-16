@@ -148,7 +148,6 @@ if (command === '-v' || command === '--version') {
   } catch (cause) {
     fail(`Error: ${cause.message}`)
   }
-  // --deptree's tarballs, zips and GitHub trees are cached where `stasis github-bundle` caches them.
   if (plan.deptree) {
     const { setCacheDir } = await import('../src/vfs-bundle.js')
     setCacheDir(await cacheDir())
