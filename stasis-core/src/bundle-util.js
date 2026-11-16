@@ -51,19 +51,15 @@ const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
   'node_modules/@redis/client/dist/package.json', // stale build-time copy
   'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
 ]
-const isInconsistentPackageJsonException = (file) =>
-  INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
 
-// Whether `pkg`, the package.json at `file` nested in the package whose own is `host`, is the package's. No package
-// manager installs one there (only at a `node_modules/<name>` of its own), so one naming no other package (a name in
-// the package's namespace is its) or version (a subpackage's, `ownVersion`, is its own) is, and so is a `private`
-// one, as npm publishes no such package: terser's `dist/package.json`, a `type` marker named `dist`. Any other may be
-// a copy of one npm has.
-export function isPackagesManifest(file, pkg, host, ownVersion = false) {
-  if (pkg.private === true || isInconsistentPackageJsonException(file)) return true
-  const { name } = pkg
-  if (name !== undefined && name !== host.name && !(typeof name === 'string' && name.startsWith(`${host.name}/`))) return false
-  return pkg.version === undefined || ownVersion || pkg.version === host.version
+export const inNamespaceOf = (name, hostName) => typeof name === 'string' && name.startsWith(`${hostName}/`)
+
+// Whether `pkg`, the package.json at `file` nested in `host`'s package, is the package's: one naming no other package
+// or version. Any other may be a copy of one npm has.
+export function isPackagesManifest(file, pkg, host) {
+  if (INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))) return true
+  if (pkg.name !== undefined && pkg.name !== host.name && !inNamespaceOf(pkg.name, host.name)) return false
+  return pkg.version === undefined || pkg.version === host.version
 }
 
 export function namedManifestOf(rel, read) {
@@ -87,7 +83,7 @@ export function scopeManifestOf(rel, pkgDir, exists) {
 // A malformed one is walked past, or with `strict` throws (its files would otherwise land in the parent's).
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
   const options = { strict, check, host }
-  const read = (rel) => readPackageJson(baseDir, rel, options)
+  const read = memoized((rel) => readPackageJson(baseDir, rel, options))
   const nm = splitNodeModulesPath(toPosix(fileRelPath))
   // A file in a vendored package is its host's, as State#locateModule has it.
   if (nm !== null && inAnyVendorDir(nm.rel)) {
@@ -100,8 +96,8 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
     }
   }
-  // A file in a subpackage is its host's too: the nearest package.json with a name is walked past, as is one nested
-  // in the package that is its own (isPackagesManifest), as State#locateModule has it.
+  // A file in a subpackage is its host's too: the nearest package.json with a name is walked past, as is a nested one
+  // that is the package's, or `private` (npm publishes none), as State#locateModule has it.
   let subpackages
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
@@ -125,12 +121,11 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
 // Once per directory, the only thing findPackageMetadata's answer depends on.
 export const packageLookup = (baseDir, options) => memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
 
-// Whether `pkg` at `dir` is nested in the package of `nm` (the file's, splitNodeModulesPath's) and is its own; only
-// of a package with a name and version, where the walk past it then stops.
+// Only below a package with a name and version, where the walk past it stops.
 function isHostsNested(read, nm, dir, pkg) {
   if (nm === null || !dir.startsWith(`${nm.dir}/`)) return false
   const host = read(`${nm.dir}/package.json`)
-  return Boolean(host?.name && host.version) && isPackagesManifest(`${dir}/package.json`, pkg, host)
+  return host?.name && host.version && (pkg.private === true || isPackagesManifest(`${dir}/package.json`, pkg, host))
 }
 
 function hostSubpackageDir(read, pkgDir, dir, manifestName) {

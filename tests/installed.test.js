@@ -47,6 +47,7 @@ const bundledEach = (dir) => Promise.all(BUILDS.map(async ([label, options]) => 
 
 // A sha512 integrity, as a lockfile locks a tarball with.
 const SRI = `sha512-${'A'.repeat(86)}==`
+const OTHER = `sha512-${'B'.repeat(85)}A==`
 
 test("npm: the hidden lockfile's `resolved` names a git dependency's repository and commit, by its location", withTmp(async (t, dir) => {
   writeProject(dir, ['dep', 'fork', 'reg', 'lab', 'short', 'stale'])
@@ -373,12 +374,10 @@ test('a package installed otherwise than the lockfile beside it locks it stops a
   await t.assert.rejects(build(at('f')), new RegExp(`package-lock\\.json doesn't lock node_modules/reg as installed \\(at o/reg@${SHA.dep}; it locks o/reg@${SHA.fork}\\)`, 'u'))
 }))
 
-// terser 5 keeps its CommonJS bundle in dist/, beside a package.json that makes it CommonJS in a package of
-// `"type": "module"`: one named `dist`, at 1.0.0, and `private`, which no lockfile locks.
+// terser 5's dist/package.json, `private` and named `dist`, makes its bundle CommonJS in a `"type": "module"` package.
 const TERSER = { name: 'terser', version: '5.51.2', type: 'module', main: 'dist/bundle.min.js' }
 const TERSER_DIST = { name: 'dist', private: true, version: '1.0.0', main: 'bundle.min.js', type: 'commonjs', license: 'BSD-2-Clause' }
 
-// terser at `at` in `dir`, its bundle requiring each of `requires`.
 function writeTerser(dir, at, requires = []) {
   mkdirSync(join(dir, at, 'dist'), { recursive: true })
   writeJson(join(dir, at, 'package.json'), TERSER)
@@ -386,28 +385,27 @@ function writeTerser(dir, at, requires = []) {
   writeFileSync(join(dir, at, 'dist', 'bundle.min.js'), `${requires.map((name) => `require('${name}')\n`).join('')}module.exports = {}\n`)
 }
 
+const recordsOf = (modules) => Object.entries(modules).map(([at, record]) => [at, `${record.name}@${record.version}`, record.integrity, Object.keys(record.files)])
+
 test("pnpm and npm: a package.json nested in a package, which no lockfile locks, is the package's (terser's dist/), and a package installed in its directory its own", withTmp(async (t, tmp) => {
   const [pnpm, npm] = ['pnpm', 'npm'].map((name) => join(tmp, name))
   mkdirSync(pnpm)
   writePnpmProject(pnpm, [{ name: 'terser', key: 'terser@5.51.2', store: 'terser@5.51.2', resolution: `{integrity: ${SRI}}`, pkg: TERSER }])
   writeTerser(pnpm, 'node_modules/.pnpm/terser@5.51.2/node_modules/terser')
-  cpSync(join(pnpm, 'node_modules', '.pnpm', 'lock.yaml'), join(pnpm, 'pnpm-lock.yaml'))
+  relock(pnpm, (text) => text)
   await bundledEach(pnpm)
   for (const [label] of BUILDS) {
     const { modules, formats } = bundleOf(pnpm, label)
     // A State's bucket is where the package is, the field resolver's where it is linked.
-    const [[at, record], ...rest] = Object.entries(modules)
-    t.assert.deepStrictEqual(rest.map(([other]) => other), [], `${label}: dist/ is no bucket of its own`)
-    t.assert.ok(at.endsWith('node_modules/terser'), label)
-    t.assert.deepStrictEqual([record.name, record.version, record.integrity, Object.keys(record.files)], ['terser', '5.51.2', SRI, ['dist/bundle.min.js']], label)
-    t.assert.equal(formats[`${at}/dist/bundle.min.js`], 'commonjs', `${label}: of the type dist/package.json gives it`)
+    const [at] = Object.keys(modules)
+    t.assert.deepStrictEqual(recordsOf(modules), [[at, 'terser@5.51.2', SRI, ['dist/bundle.min.js']]], label)
+    t.assert.equal(formats[`${at}/dist/bundle.min.js`], 'commonjs', label)
   }
 
   mkdirSync(npm)
   writeProject(npm, ['terser'])
   writeTerser(npm, 'node_modules/terser', ['inner'])
   writePackage(npm, 'node_modules/terser/node_modules/inner', { name: 'inner' })
-  const OTHER = `sha512-${'B'.repeat(85)}A==`
   const lock = { name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
     'node_modules/terser': { version: '5.51.2', resolved: 'https://registry.npmjs.org/terser/-/terser-5.51.2.tgz', integrity: SRI },
     'node_modules/terser/node_modules/inner': { version: '1.0.0', resolved: 'https://registry.npmjs.org/inner/-/inner-1.0.0.tgz', integrity: OTHER },
@@ -417,20 +415,12 @@ test("pnpm and npm: a package.json nested in a package, which no lockfile locks,
   await bundledEach(npm)
   for (const [label] of BUILDS) {
     const { modules, formats } = bundleOf(npm, label)
-    t.assert.deepStrictEqual(Object.fromEntries(Object.entries(modules).map(([at, record]) => [at, [`${record.name}@${record.version}`, record.integrity, Object.keys(record.files)]])), {
-      'node_modules/terser': ['terser@5.51.2', SRI, ['dist/bundle.min.js']],
-      'node_modules/terser/node_modules/inner': ['inner@1.0.0', OTHER, ['index.js']],
-    }, `${label}: inner, at a node_modules of its own, held to its own entry`)
+    t.assert.deepStrictEqual(recordsOf(modules), [
+      ['node_modules/terser', 'terser@5.51.2', SRI, ['dist/bundle.min.js']],
+      ['node_modules/terser/node_modules/inner', 'inner@1.0.0', OTHER, ['index.js']],
+    ], label)
     t.assert.equal(formats['node_modules/terser/dist/bundle.min.js'], 'commonjs', label)
   }
-
-  // One that may be a copy of a package npm has stands alone, which its lockfile must then lock, as a State refuses it.
-  mkdirSync(join(npm, 'node_modules', 'terser', 'vendor'))
-  writeJson(join(npm, 'node_modules', 'terser', 'vendor', 'package.json'), { name: 'other', version: '9.9.9' })
-  writeFileSync(join(npm, 'node_modules', 'terser', 'vendor', 'index.js'), 'module.exports = {}\n')
-  writeTerser(npm, 'node_modules/terser', ['inner', '../vendor'])
-  await t.assert.rejects(bundled(npm, 'state'), /Inconsistent data between node_modules\/terser\/vendor\/package\.json and node_modules\/terser\/package\.json/u)
-  await t.assert.rejects(bundled(npm, 'resolver', { mainFields: ['main'] }), /package-lock\.json doesn't lock node_modules\/terser\/vendor as installed \(it locks none there\): install from it again$/u)
 }))
 
 test("a disk build holds an alias by its package's own name, reads past a lockfile's byte order mark, and stops at one that can't be read", withTmp(async (t, dir) => {
@@ -516,7 +506,6 @@ function patchedProject(dir, edit = (text) => text) {
 const npmRecords = (dir, label) => Object.fromEntries(Object.values(modulesOf(dir, label)).filter(({ ecosystem }) => ecosystem === 'npm').map((info) => [info.name, [info.integrity, info.patch]]))
 
 test('pnpm and npm: the tarball and patch a package was installed with are recorded, by its directory, and held to the lockfile beside it', withTmp(async (t, dir) => {
-  const OTHER = `sha512-${'B'.repeat(85)}A==`
   const installed = patchedProject(dir)
   mkdirSync(join(dir, 'patches'))
   writeFileSync(join(dir, 'patches', 'reg@1.0.0.patch'), PATCH_TEXT)

@@ -393,25 +393,12 @@ name, so a rule copied from one file to the other may not refuse the same files.
     (`@hookform/resolvers/zod` at `zod/`, as microbundle lays them out): its
     files are the package's, its `version` (a placeholder, `1.0.0`) its own,
     and a bundle lists it (`subpackages`). One named in the namespace for
-    another directory is no subpackage, and still held to the package's
-    version unless `private`.
-  - A `private` one (`"private": true`, as JSON's `true`): npm publishes no
-    such package, so it is no copy of one. terser 5's `dist/package.json`,
-    named `dist` at `1.0.0`, is one: a `type` marker making its bundle
-    CommonJS in a package of `"type": "module"`. Its files are the package's,
-    of the format its `type` gives them, as Node reads it.
+    another directory is still held to the package's version.
+  - A `private` one (`"private": true`), which npm never publishes, such as
+    terser's `dist/package.json`, is passed over: its `type` still applies.
   - A few known upstream mismatches are let through, listed in
     `bundle-util.js`: `@redis/client`'s `dist/package.json`, a stale copy, and
     `hashids`'s `esm/package.json`, a `type` marker named `hashids-esm`.
-
-  None of these is a package installed there, which the package manager's
-  lockfile would lock: it installs one in another's directory only at a
-  `node_modules` of its own (`node_modules/terser/node_modules/inner`), and
-  that one is a package of its own. A bundle built without a run
-  (`--mainFields`, `--metro`) buckets as a run does, but takes a nested
-  `package.json` that may be a copy, which a run refuses, for a package of its
-  own at its directory, which the lockfile beside the `node_modules` must then
-  lock (see `repo` under `stasis.code.br`).
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier

@@ -11,7 +11,7 @@ import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
-import { detectRepo, invalidPackageConfig, isPackagesManifest, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
+import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
 import { diskHost } from './host.js'
@@ -703,9 +703,8 @@ export class State {
       if (closestPkgAbsolute !== pkgAbsolute && !vendor?.below) {
         // A subpackage whose own package.json is the closest has its own version.
         subpackage = this.#subpackageOf(nmRoot, nmRel, closestPkg, name)
-        const ownVersion = subpackage !== undefined && closestPkg.name !== undefined
-        const closestFile = this.relative(closestPkgAbsolute)
-        if (!isPackagesManifest(closestFile, closestPkg, rootPkg, ownVersion)) assert.fail(`Inconsistent data between ${closestFile} and ${this.relative(pkgAbsolute)}`)
+        const held = subpackage !== undefined && closestPkg.name !== undefined ? undefined : this.#heldManifest(nmRoot, nmRel, closestPkgAbsolute, closestPkg)
+        if (held && !isPackagesManifest(held.file, held.pkg, rootPkg)) assert.fail(`Inconsistent data between ${held.file} and ${this.relative(pkgAbsolute)}`)
       }
     } else {
       pkgAbsolute = closestPkgAbsolute
@@ -751,10 +750,18 @@ export class State {
     }
   }
 
+  // The closest package.json, or past `private` ones (npm publishes none, so they name no package) the nearest named one.
+  #heldManifest(nmRoot, nmRel, closestAbsolute, closest) {
+    if (closest.private !== true) return { file: this.relative(closestAbsolute), pkg: closest }
+    const below = this.#manifestsBelow(nmRoot)
+    const found = namedManifestOf(nmRel, (sub) => (below(sub)?.private === true ? null : below(sub)))
+    return found && { file: this.relative(resolve(this.root, nmRoot, found.dir, 'package.json')), pkg: found.pkg }
+  }
+
   // The nearest named package.json above `nmRel`, walked by the file's own path, not findPackageJSON's real one
   // through a symlinked install. Only where `closest` is a `{"type":"module"}` marker or names a subpath.
   #subpackageOf(nmRoot, nmRel, closest, name) {
-    if (closest.name !== undefined && !(typeof closest.name === 'string' && closest.name.startsWith(`${name}/`))) return undefined
+    if (closest.name !== undefined && !inNamespaceOf(closest.name, name)) return undefined
     const found = namedManifestOf(nmRel, this.#manifestsBelow(nmRoot))
     if (found === undefined || !isSubpackage(found.pkg.name, name, found.dir)) return undefined
     return { dir: found.dir, name: found.pkg.name, ...(isPackageString(found.pkg.version) ? { version: found.pkg.version } : {}) }
