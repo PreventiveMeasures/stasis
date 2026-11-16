@@ -483,6 +483,21 @@ checks the bundle against, or root a stasis project of its own (see
 bundle` or `stasis add` whose files reach the project's lockfile fails rather
 than ship it, and reading one is refused as well.
 
+Nor does it carry an npm extension or a pnpmfile, a file named
+`.npm-extension.js`, `.pnpmfile.js` or `pnpmfile.js` (as an older pnpm named
+it), with `.mjs`, `.cjs`, `.ts`, `.mts` or `.cts` for `.js`, in the project or
+in any package it carries, at any depth and in any case. The package manager runs one as the project's own code as it
+installs it, before it resolves the dependency tree (npm 12's
+[`.npm-extension`](https://docs.npmjs.com/cli/v12/configuring-npm/npm-extension/),
+pnpm's [`.pnpmfile.cjs`](https://pnpm.io/pnpmfile)), from the root of the
+project, which a package carried in a bundle becomes once it is extracted or
+installed on its own. A bundle whose files reach one, a dependency's included,
+is refused as one reaching `stasis.lock.json` is, writing and reading alike:
+
+```
+bundle: node_modules/dep/.npm-extension.mjs is an npm extension, which no bundle may carry
+```
+
 ```json
 {
   "version": 1,

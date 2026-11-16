@@ -344,6 +344,22 @@ export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} s
 // In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
 export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
 
+const named = (pattern) => (path) => pattern.test(path.slice(path.lastIndexOf('/') + 1))
+
+// The file names no bundle may carry, at any depth and in any case, as isLockfileName, each with what such a file is:
+// - a stasis lockfile: extracted, it would replace the one a frozen extract checks against, or root a project of its own;
+// - npm's `.npm-extension.[cm]?[jt]s` and pnpm's `.pnpmfile.[cm]?[jt]s`, or `pnpmfile.[cm]?[jt]s` as an older pnpm named
+//   it: code the package manager runs as it installs
+//   the project it is the root of, before it resolves the tree.
+const FORBIDDEN_FILE_NAMES = [
+  [isLockfileName, 'a stasis lockfile'],
+  [named(/^\.npm-extension\.[cm]?[jt]s$/iu), 'an npm extension'],
+  [named(/^\.?pnpmfile\.[cm]?[jt]s$/iu), 'a pnpmfile'],
+]
+
+// What the file at `path` is if no bundle may carry it, else undefined.
+export const forbiddenFileName = (path) => FORBIDDEN_FILE_NAMES.find(([test]) => test(path))?.[1]
+
 function compareSegments(al, bl) {
   let i = 0
   while (i < al.length && al[i] === bl[i]) i++

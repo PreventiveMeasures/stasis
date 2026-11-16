@@ -12,6 +12,13 @@ const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefine
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
 // Not an array or a string, which would read as files named by index.
 const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
+// The file names no bundle may carry, at any depth and in any case, as stasis-core's FORBIDDEN_FILE_NAMES: a stasis
+// lockfile, and npm's `.npm-extension.[cm]?[jt]s` and pnpm's `.?pnpmfile.[cm]?[jt]s`, code each runs as it installs.
+const FORBIDDEN_FILE_NAMES = [
+  [/^stasis\.lock\.json$/iu, 'a lockfile'],
+  [/^\.npm-extension\.[cm]?[jt]s$/iu, 'an npm extension'],
+  [/^\.?pnpmfile\.[cm]?[jt]s$/iu, 'a pnpmfile'],
+]
 
 function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
@@ -54,11 +61,14 @@ function extract(bundleFile, output = '.') {
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
+    // A record written as nothing is refused too, as stasis extract refuses it.
+    const forbidden = FORBIDDEN_FILE_NAMES.find(([pattern]) => pattern.test(basename(path)))
+    assert(forbidden === undefined, `extract: the bundle carries ${forbidden?.[1]}: ${path}`)
     if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
     // Canonical relative paths only, so every write stays inside outDir.
     assert(!path.includes('\\') && path.split('/').every((s) => s !== '' && s !== '.' && s !== '..'), `extract: invalid bundle path: ${path}`)
-    assert(!/(?:^|\/)stasis\.lock\.json$/iu.test(path) && !locks.some((lock) => lock.toLowerCase() === path.toLowerCase()), `extract: the bundle carries a lockfile: ${path}`)
+    assert(!locks.some((lock) => lock.toLowerCase() === path.toLowerCase()), `extract: the bundle carries a lockfile: ${path}`)
     assert(!paths.has(path), `extract: duplicate bundle path: ${path}`)
     paths.add(path)
     let bytes = content

@@ -8,7 +8,7 @@ import {
   fileSetToObject,
   fromEntries,
   flatFileKeys,
-  isLockfileName,
+  forbiddenFileName,
   isPlainObject,
   mergeFormatMaps,
   mergeImportMaps,
@@ -37,11 +37,14 @@ const LEGACY_VERSION = 0
 
 const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
 
-// Unique across buckets, else the `sources` getter would serve either payload. No bundle carries a stasis lockfile:
-// extracted, one would replace the attestation a frozen extract checks against, or root a project of its own.
+// Unique across buckets, else the `sources` getter would serve either payload. No bundle carries a file of a forbidden
+// name (forbiddenFileName): a stasis lockfile, an npm extension or a pnpmfile, in the project or any package it carries.
 const checkedFileKeys = (modules, formats) => {
   const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
-  for (const key of flatKeys.keys()) assert(!isLockfileName(key), `bundle: ${key} is a stasis lockfile, which no bundle may carry`)
+  for (const key of flatKeys.keys()) {
+    const forbidden = forbiddenFileName(key)
+    assert(forbidden === undefined, `bundle: ${key} is ${forbidden}, which no bundle may carry`)
+  }
   assertPayloadFree(formats, flatKeys, 'bundle')
   return flatKeys
 }
