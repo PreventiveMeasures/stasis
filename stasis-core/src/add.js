@@ -4,7 +4,8 @@ import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
-import { compressBundleText, parseBundleBytes } from './brotli.js'
+import { compressBundle, parseBundleBytes } from './brotli.js'
+import { lockfileFromBundle } from './extract.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
 import { linksOn, parsePolicy, recordedIn } from './policy.js'
@@ -103,9 +104,9 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, ex
   const total = fileCount(bundle)
   const write = () => {
     mkdirSync(dirname(abs), { recursive: true })
-    writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
+    writeFileSync(abs, compressBundle(bundle, brotliQuality))
   }
-  return { write, total, added: total - before }
+  return { bundle, write, total, added: total - before }
 }
 
 // By name, or dev+inode (a link to one, which a write rewrites in place), confirmed in bigint: a number rounds big inodes.
@@ -246,7 +247,8 @@ export function validateFiles({ baseDir, realBase, files, resources, withIntegri
   return { codeFiles, resourceFiles, integrities }
 }
 
-export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-core' } = {}) {
+// With `lockfileOnly`, the lockfile alone: the one there, as it is merged, else one of the bundles as the add leaves them.
+export function addCommand({ cwd = process.cwd(), entries, lockfileOnly = false, logLabel = 'stasis-core' } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('add: at least one file is required')
   const baseDir = resolve(cwd)
   const realBase = realpathSync(baseDir)
@@ -284,14 +286,21 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const bundles = new Map([bundleFile, resourcesBundleFile].filter(Boolean).map((file) => [file, bundleAt(file)]))
   const lock = hasLock ? existingOf(LOCK_FILE, () => Lockfile.parse(readFileSync(lockPath, 'utf8'))) : undefined
   const attest = heldToInstall(baseDir, [...bundles, [LOCK_FILE, lock]].filter(([, artifact]) => artifact))
+  // Each bundle as the add leaves it.
+  const after = new Map(bundles)
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
     const existing = bundles.get(target)
     const companion = bundles.get(target === bundleFile ? resourcesBundleFile : bundleFile)
     const added = attest(existing, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), companion)
-    const { write, total, added: count } = prepareBundleFile(baseDir, target, added, brotliQuality, check, existing)
-    writes.push(write)
-    summary.push(`+${count} ${kind} (${total} total) -> ${target}`)
+    const { bundle, write, total, added: count } = prepareBundleFile(baseDir, target, added, brotliQuality, check, existing)
+    after.set(target, bundle)
+    // Serialized under lockfileOnly too: never write a lockfile of a bundle that couldn't be written.
+    if (lockfileOnly) bundle.serializedBytes()
+    else {
+      writes.push(write)
+      summary.push(`+${count} ${kind} (${total} total) -> ${target}`)
+    }
   }
   const allFiles = new Map([...codeFiles, ...resourceFiles])
   if (resourcesBundleFile) {
@@ -311,6 +320,10 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     const merged = lock.merge(lockAdd)
     writes.push(() => writeFileSync(lockPath, merged.serialize()))
     summary.push(`+${fileCount(merged) - fileCount(lock)} (${fileCount(merged)} total) -> ${LOCK_FILE}`)
+  } else if (lockfileOnly) {
+    const created = [...after.values()].filter(Boolean).map(lockfileFromBundle).reduce((a, b) => a.merge(b))
+    writes.push(() => writeFileSync(lockPath, created.serialize()))
+    summary.push(`+${fileCount(created)} (${fileCount(created)} total) -> ${LOCK_FILE}`)
   }
   if (excluded.size > 0) summary.push(`skipped ${excluded.size} auto-excluded`)
 

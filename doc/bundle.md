@@ -7,9 +7,9 @@ counterpart of `stasis run --bundle=add`, for code that can't or shouldn't run
 to be captured (a React Native app, a library's entry points).
 
 ```sh
-stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
+stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash,
@@ -27,8 +27,8 @@ may carry, every offender named and nothing written, see
 | `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, or in the cwd with `--mainFields`/`--metro`, see [Output](#output). `-` streams to stdout. |
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
 | `--deptree` | Lay out the dependencies in memory from the lockfile instead of reading the installed ones, with nothing installed: see [Dependencies from the lockfile](#dependencies-from-the-lockfile---deptree). JS and Solidity. |
-| `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
-| `--lockfile-only` | With `--lockfile`: write that lockfile alone, no bundle. Not with `--output`, `--add` or `--brotli-quality`. See [Companion lockfile](#companion-lockfile---lockfile). |
+| `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file, where it isn't there; where it is, the build is held to it and, under the default `frozen`, it is left as it is. See [Companion lockfile](#companion-lockfile---lockfile). |
+| `--lockfile-only` | Write the lockfile alone, no bundle: at `--lockfile`'s path, or the one the build is held to (the project's `stasis.lock.json`). Where it is there, under the default `frozen`, nothing is written. Not with `--output`, `--add` or `--brotli-quality`. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. `--mainFields`/`--metro` always emit full scope, and refuse any other, given here or set by the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson) (which `--scope=full` overrides). |
 | `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
@@ -93,17 +93,24 @@ refuses rather than write a lockfile that doesn't attest the pre-existing
 bundle's files (write `--lockfile` from the first build, or drop it).
 
 A JS build is held to the `stasis.lock.json` there (the `--lockfile` path, else
-the project's, as a run finds it), with or without `--lockfile`, by the lock
-mode the project's runs take (`EXODUS_STASIS_LOCK`, or `frozen` where its
-`stasis.config.json` pins it; `add` by default, see [modes](run.md#modes)):
+the project's, as a run finds it: `EXODUS_STASIS_LOCK_FILE`'s, else the one at
+the root), with or without `--lockfile`, by the lock mode the project's runs
+take (`EXODUS_STASIS_LOCK`, or `frozen` where its `stasis.config.json` pins it,
+see [modes](run.md#modes)). With neither, it is `frozen` where the lockfile is
+there, and `add` where it isn't or under `--add`, which adds to what is there:
 
 | Mode | Behavior |
 | - | - |
 | `add` | What it builds must agree with what the lockfile records, each file and module among it; `--lockfile` writes the one built, which attests the bundle beside it (with `--add`, merged with the one there, as the bundle is). |
-| `frozen` | As `add`, and the lockfile must be there, and the bundle must load beside it as `stasis run --lock=frozen --bundle=load` loads them; `--lockfile` is refused. |
+| `frozen` | As `add`, and the lockfile must be there and attest every file built, and the bundle must load beside it as `stasis run --lock=frozen --bundle=load` loads them. It is left as it is: `--lockfile` and `--lockfile-only` write nothing. |
 | `replace` | The lockfile there is not read; `--lockfile`, which it requires, writes the one built (with `--add`, of the bundle merged). |
-| `ignore` | The lockfile there is neither read nor written; `--lockfile` is refused. |
-| `none` | There must be no lockfile there; `--lockfile` is refused. |
+| `ignore` | The lockfile there is neither read nor written; `--lockfile` and `--lockfile-only` are refused. |
+| `none` | There must be no lockfile there; `--lockfile` and `--lockfile-only` are refused. |
+
+A build held to a lockfile it read says so on stderr, before what it bundled or
+locked: `[stasis] Held 6591 files in 346 packages from src to stasis.lock.json`.
+To write a lockfile anew over one there, give `EXODUS_STASIS_LOCK=replace` (or
+`add`, to keep what it records).
 
 Under `--add`, the bundle already there is held to it too.
 
@@ -112,7 +119,9 @@ and `patch` is held to how that package was installed (see
 [`integrity`](file-formats.md#stasiscodebr)).
 
 `--lockfile-only` writes the lockfile alone: the same one, byte for byte, that
-`--lockfile` writes beside the bundle. The bundle is built all the same, and
+`--lockfile` writes beside the bundle, at `--lockfile`'s path, or without it the
+one the build is held to. Where that is there, under the default `frozen`, it
+only checks the build against it. The bundle is built all the same, and
 checked as it would be for writing, so the lockfile is refused wherever the
 bundle would be; only compressing and writing the bundle is skipped. As when it
 is written, the bundle's default path is never taken into
@@ -120,7 +129,7 @@ is written, the bundle's default path is never taken into
 or merge into, `--output`, `--add` and `--brotli-quality` are refused with it.
 
 ```sh
-stasis bundle --lockfile=stasis.lock.json --lockfile-only src/index.js   # writes stasis.lock.json alone
+stasis bundle --lockfile-only src/index.js   # writes stasis.lock.json alone, or, where it is there, holds the build to it
 ```
 
 ## Dependencies from the lockfile (`--deptree`)
@@ -962,17 +971,22 @@ why).
 ## `stasis add`
 
 ```sh
-stasis add path/to/(file|dir) ...
+stasis add [--lockfile-only] path/to/(file|dir) ...
 ```
 
 `stasis add` adds the listed files to the project's bundle(s) as they are, with
 no dependency resolution, where a file the import graph never reaches has to
-be attested anyway. It takes no options: the bundle files and the resource
-allowlist come from `stasis.config.json` (`bundleFile`, `resourcesBundleFile`,
-`resources`, `brotliQuality`, all optional; the file itself is required), and
+be attested anyway. It takes one option, `--lockfile-only` (below): the bundle
+files and the resource allowlist come from `stasis.config.json` (`bundleFile`,
+`resourcesBundleFile`, `resources`, `brotliQuality`, all optional; the file
+itself is required), and
 what it adds is held to its [allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules),
 as what the bundles and lockfile it adds to carry already is. A
-`stasis.lock.json` is updated only when one already exists. What those record
+`stasis.lock.json` there is added to as the bundles are (`add`): a file it
+records must be the one added, and it is written with the files added; one that
+isn't there is not written. `--lockfile-only` writes the lockfile alone, no
+bundle: the one there, added to, or where none is, one attesting the bundles as
+the add leaves them, so the files they carry already too. What those record
 of a dependency's [`integrity` and `patch`](file-formats.md#stasiscodebr) is
 held to how it is installed, and to each other, a split bundle's half no file
 is added to as well. It also ships on the core CLI

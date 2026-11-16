@@ -95,7 +95,9 @@ for (const lock of ['stasis.lock.json', 'app.stasis.lock.json']) {
       [coreCli, ['add', lock]],
     ]) {
       if (bin === coreCli && args[0] === 'add') writeFileSync(join(tmp, 'stasis.config.json'), '{}\n')
-      const r = spawnSync(process.execPath, [bin, ...args], { cwd: tmp, env: cleanEnv, encoding: 'utf-8' })
+      // A bundle in add, past the frozen hold a stasis.lock.json there has by default, which attests src/plain.js alone.
+      const env = args[0] === 'bundle' ? { ...cleanEnv, EXODUS_STASIS_LOCK: 'add' } : cleanEnv
+      const r = spawnSync(process.execPath, [bin, ...args], { cwd: tmp, env, encoding: 'utf-8' })
       const what = args.join(' ')
       t.assert.notEqual(r.status, 0, `${what} must fail`)
       t.assert.match(stripVTControlCharacters(r.stderr), refusal(lock), what)

@@ -1845,7 +1845,8 @@ process.exit(1)
     })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    const bundle = await buildBundle({ cwd: tmp, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
+    // In add: the stasis.lock.json the run wrote attests no file of the bundler's, which the static build carries.
+    const bundle = await buildBundle({ cwd: tmp, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'], env: { ...process.env, EXODUS_STASIS_LOCK: 'add' } })
     // What the static build carries as the bundler's (React Native's CLI, cli.js) aside: this run isn't one of it.
     const bundler = new Set(bundle.reason.bundle)
     for (const dir of ['node_modules/react-native-native-lib', 'node_modules/react-native']) {
