@@ -341,8 +341,12 @@ export const BUNDLE_FILE = 'stasis.code.br'
 export const SCOPES = new Set(['node_modules', 'full'])
 export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} scope must be node_modules or full, got ${JSON.stringify(scope)}`)
 
-// In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
-export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
+// In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too. `<name>.stasis.lock.json` is a
+// `<name>.stasis.code.br`'s.
+export const isLockfileName = (path) => {
+  const base = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  return base === LOCK_FILE || base.endsWith(`.${LOCK_FILE}`)
+}
 
 // Once extracted, each is the project's own: the lockfile a frozen extract checks, or a package manager's hook or config,
 // a Yarn PnP file or git metadata, which run code or redirect installs and imports.
