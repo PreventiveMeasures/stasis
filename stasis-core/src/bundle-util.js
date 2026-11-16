@@ -46,6 +46,26 @@ export function vendoredPackageOf(rel, vendorDir, read) {
   return { below }
 }
 
+// Nested package.json files upstream leaves disagreeing with their root's. Add only a confirmed false positive.
+const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
+  'node_modules/@redis/client/dist/package.json', // stale build-time copy
+  'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
+]
+const isInconsistentPackageJsonException = (file) =>
+  INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
+
+// Whether `pkg`, the package.json at `file` nested in the package whose own is `host`, is the package's. No package
+// manager installs one there (only at a `node_modules/<name>` of its own), so one naming no other package (a name in
+// the package's namespace is its) or version (a subpackage's, `ownVersion`, is its own) is, and so is a `private`
+// one, as npm publishes no such package: terser's `dist/package.json`, a `type` marker named `dist`. Any other may be
+// a copy of one npm has.
+export function isPackagesManifest(file, pkg, host, ownVersion = false) {
+  if (pkg.private === true || isInconsistentPackageJsonException(file)) return true
+  const { name } = pkg
+  if (name !== undefined && name !== host.name && !(typeof name === 'string' && name.startsWith(`${host.name}/`))) return false
+  return pkg.version === undefined || ownVersion || pkg.version === host.version
+}
+
 export function namedManifestOf(rel, read) {
   for (let dir = posix.dirname(rel); dir !== '.'; dir = posix.dirname(dir)) {
     const pkg = read(dir)
@@ -80,7 +100,8 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
     }
   }
-  // A file in a subpackage is its host's too: the nearest package.json with a name is walked past.
+  // A file in a subpackage is its host's too: the nearest package.json with a name is walked past, as is one nested
+  // in the package that is its own (isPackagesManifest), as State#locateModule has it.
   let subpackages
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
@@ -90,7 +111,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     const sub = pkg?.name && nm !== null ? hostSubpackageDir(read, nm.dir, posixDir, pkg.name) : undefined
     if (sub !== undefined) {
       if (nearest) subpackages = { [sub]: manifestIdentity(pkg) }
-    } else if (pkg?.name && (pkg.version || !inNodeModules)) {
+    } else if (pkg?.name && (pkg.version || !inNodeModules) && !isHostsNested(read, nm, posixDir, pkg)) {
       const repo = inNodeModules ? packageRepo(pkg) : undefined
       const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
@@ -103,6 +124,14 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
 
 // Once per directory, the only thing findPackageMetadata's answer depends on.
 export const packageLookup = (baseDir, options) => memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
+
+// Whether `pkg` at `dir` is nested in the package of `nm` (the file's, splitNodeModulesPath's) and is its own; only
+// of a package with a name and version, where the walk past it then stops.
+function isHostsNested(read, nm, dir, pkg) {
+  if (nm === null || !dir.startsWith(`${nm.dir}/`)) return false
+  const host = read(`${nm.dir}/package.json`)
+  return Boolean(host?.name && host.version) && isPackagesManifest(`${dir}/package.json`, pkg, host)
+}
 
 function hostSubpackageDir(read, pkgDir, dir, manifestName) {
   if (!dir.startsWith(`${pkgDir}/`)) return undefined

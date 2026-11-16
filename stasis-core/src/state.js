@@ -11,7 +11,7 @@ import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
-import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
+import { detectRepo, invalidPackageConfig, isPackagesManifest, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
 import { diskHost } from './host.js'
@@ -37,14 +37,6 @@ const cloneMaps = (map) => new Map(Array.from(map, ([key, value]) => [key, value
 
 // With no `type`, Node decides .js/.ts by syntax detection: either variant is possible, the first is the default.
 const UNTYPED_VARIANTS = { __proto__: null, '.js': ['commonjs', 'module'], '.ts': ['commonjs-typescript', 'module-typescript'] }
-
-// Nested package.json files upstream leaves disagreeing with their root's. Add only a confirmed false positive.
-const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
-  'node_modules/@redis/client/dist/package.json', // stale build-time copy
-  'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
-]
-const isInconsistentPackageJsonException = (file) =>
-  INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
 
 // 'import' or 'require', as a condition list or #conditionsKey asserts; null for '*' or a set naming both or neither.
 function resolutionContext(conditions) {
@@ -708,14 +700,12 @@ export class State {
       const vendorDir = vendorDirOf(name, nmRel)
       const vendor = vendorDir === undefined ? undefined : vendoredPackageOf(nmRel, vendorDir, this.#manifestsBelow(nmRoot))
       vendored = vendor?.vendored
-      if (closestPkgAbsolute !== pkgAbsolute && !vendor?.below && !isInconsistentPackageJsonException(this.relative(closestPkgAbsolute))) {
-        const message = `Inconsistent data between ${this.relative(closestPkgAbsolute)} and ${this.relative(pkgAbsolute)}`
-        // Allow fake module-name subpaths: the real module owns the prefix (npm wouldn't publish this).
-        if (closestPkg.name !== undefined && closestPkg.name !== name) assert.ok(closestPkg.name.startsWith(`${name}/`), message)
+      if (closestPkgAbsolute !== pkgAbsolute && !vendor?.below) {
         // A subpackage whose own package.json is the closest has its own version.
         subpackage = this.#subpackageOf(nmRoot, nmRel, closestPkg, name)
         const ownVersion = subpackage !== undefined && closestPkg.name !== undefined
-        if (closestPkg.version !== undefined && !ownVersion) assert.equal(closestPkg.version, version, message)
+        const closestFile = this.relative(closestPkgAbsolute)
+        if (!isPackagesManifest(closestFile, closestPkg, rootPkg, ownVersion)) assert.fail(`Inconsistent data between ${closestFile} and ${this.relative(pkgAbsolute)}`)
       }
     } else {
       pkgAbsolute = closestPkgAbsolute
