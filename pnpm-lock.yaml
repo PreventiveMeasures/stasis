@@ -245,8 +245,8 @@ importers:
         specifier: ^1.4.1
         version: 1.4.1(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: ^1.5.1
-        version: 1.5.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
+        specifier: ^1.5.2
+        version: 1.5.2(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/lockfile':
         specifier: ^1.3.0
         version: 1.3.0(@noble/hashes@2.4.0)
@@ -254,8 +254,8 @@ importers:
         specifier: 1.0.0-alpha.8
         version: 1.0.0-alpha.8(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)
       '@preventive/upstream':
-        specifier: ^1.7.0
-        version: 1.7.0(@noble/hashes@2.4.0)
+        specifier: ^1.8.0
+        version: 1.8.0(@noble/hashes@2.4.0)
       '@preventive/vfs':
         specifier: ^1.1.0
         version: 1.1.0
@@ -912,8 +912,8 @@ packages:
       oxfmt:
         optional: true
 
-  '@preventive/deptree@1.5.1':
-    resolution: {integrity: sha512-hVmyf8IIP6Ew8k4gwZmESboHQ3YPmEUecyxGFXitT5c2t67cAUVSw7EXeyhxdX3NH8zekF/n+Q/wTPiXTdlH9g==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.5.1.tgz}
+  '@preventive/deptree@1.5.2':
+    resolution: {integrity: sha512-OSKf5SbdQwDUUjecIgV/0KmeleaA28fPcE8FyvF6iv84iVi/kfzOmIPoqBVcJJGWsJncZ84ntE6Nnai0boh9tg==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.5.2.tgz}
     engines: {node: '>=24.14.0'}
     hasBin: true
 
@@ -944,8 +944,8 @@ packages:
       oxc-parser:
         optional: true
 
-  '@preventive/upstream@1.7.0':
-    resolution: {integrity: sha512-E9n3pXKdWY/tLm7wVMOShNMonVZiaVzprwT6owwQ3wy4rx+Cu4di+XecJDZiJScpz/8ruzCMImaJ6Wa9k6SNNQ==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.7.0.tgz}
+  '@preventive/upstream@1.8.0':
+    resolution: {integrity: sha512-T7rraWa9gaVQKFmQvcfSoCgDTFNoyo9WcnAZE4Pt5z3EaQLz/bc7gJenYp7QF6G6i4wMYH2xeeiPwiVBODifSw==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.8.0.tgz}
     engines: {node: '>=24.14.0'}
     peerDependencies:
       semver: ^7.5.2
@@ -3446,7 +3446,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/deptree@1.5.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
+  '@preventive/deptree@1.5.2(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
     dependencies:
       '@chalker/queue': 1.0.1
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
@@ -3454,7 +3454,7 @@ snapshots:
       '@preventive/compare': 1.2.11(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/diff': 1.1.1
       '@preventive/lockfile': 1.3.0(@noble/hashes@2.4.0)
-      '@preventive/upstream': 1.7.0(@noble/hashes@2.4.0)
+      '@preventive/upstream': 1.8.0(@noble/hashes@2.4.0)
       '@preventive/vfs': 1.1.0
     transitivePeerDependencies:
       - '@noble/hashes'
@@ -3478,7 +3478,7 @@ snapshots:
       flow-remove-types: 2.322.0
       oxc-parser: 0.152.0
 
-  '@preventive/upstream@1.7.0(@noble/hashes@2.4.0)':
+  '@preventive/upstream@1.8.0(@noble/hashes@2.4.0)':
     dependencies:
       '@preventive/archive': 1.4.1(@noble/hashes@2.4.0)
       '@preventive/lockfile': 1.3.0(@noble/hashes@2.4.0)
