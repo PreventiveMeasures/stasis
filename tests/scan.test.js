@@ -670,7 +670,6 @@ const writeTree = (tmp, files) => {
   }
 }
 
-// Flow code flow-remove-types leaves: `component`, `hook`, `enum`, `match`.
 const FLOW_CODE = [
   '/**',
   ' * @flow strict-local',
@@ -710,7 +709,6 @@ test('scan --flow lowers the Flow code of a react-native file where stripping al
   })
   const result = scan(['react-native', 'react-native-greeting'].map((name) => join(tmp, 'node_modules', name, 'Greeting.js')), { flow: true }).toRelative(tmp)
   t.assert.deepStrictEqual(result.parseErrors.map((e) => [e.file, e.message]), [['node_modules/react-native-greeting/Greeting.js', 'Flow is not supported']])
-  // Its value import and the runtime its lowered enum requires, not its type import.
   t.assert.deepStrictEqual(result.files.get('node_modules/react-native/Greeting.js'), {
     format: 'module',
     edges: [

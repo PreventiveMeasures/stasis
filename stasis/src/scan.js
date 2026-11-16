@@ -136,8 +136,7 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
 const TYPE_KINDS = new Set(['type', 'typeof'])
 
 // Babel's Flow and TypeScript transforms erase such a statement whole (Node keeps it, as `import {} from`). --flow blanks
-// the types of `source` (the file's, or its lowered Flow code) in place in `strippedSource`. The Metro plugin's
-// transformer draws the same line.
+// the types in place in `strippedSource`. The Metro plugin's transformer draws the same line.
 function listsTypesOnly(node, { source, strippedSource }) {
   const specifiers = node.specifiers ?? []
   if (specifiers.length > 0) return specifiers.every((specifier) => TYPE_KINDS.has(specifier.importKind ?? specifier.exportKind))

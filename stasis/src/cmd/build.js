@@ -159,8 +159,7 @@ function metroAssetResource(state, platform, built) {
 }
 
 // --flow, as Metro's Babel builds a file: Flow types stripped from a file marked `@flow`, else only where
-// esbuild can't parse it, and react-native's Flow code lowered as `stasis bundle --flow` lowers it; what still
-// doesn't parse fails the build in esbuild.
+// esbuild can't parse it; what still doesn't parse fails the build in esbuild.
 function createFlowTransform(esbuild) {
   return async (source, { path, loader }) => {
     if (!FLOW_EXTS.has(extname(path))) return undefined
@@ -171,7 +170,7 @@ function createFlowTransform(esbuild) {
         return undefined
       } catch { /* stripped below */ }
     }
-    // Read by oxc, as the scan reads it, so a file is lowered where the bundle's was.
+    // oxc, as the scan checks it, so the build lowers what the bundle's scan lowered.
     const lang = loader === 'jsx' ? 'jsx' : 'js'
     const parses = (code) => syntaxErrors(getParser().parseSync(path, code, { sourceType: 'unambiguous', lang })).length === 0
     const { stripped } = stripFlow(text, path, parses, { removeEmptyImports: true })

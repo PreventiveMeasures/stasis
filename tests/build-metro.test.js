@@ -322,7 +322,6 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
         'node_modules/react-native/Libraries/Mode.js': '// @flow strict\nexport default enum Mode {\n  Quiet,\n  Loud,\n}\n',
         'node_modules/react/package.json': JSON.stringify({ name: 'react', version: '19.2.3' }),
         'node_modules/react/index.js': 'exports.forwardRef = (render) => ({ forwardRef: true, render })\n',
-        // flow-enums-runtime's API, stubbed.
         'node_modules/flow-enums-runtime/package.json': JSON.stringify({ name: 'flow-enums-runtime', version: '0.0.6' }),
         'node_modules/flow-enums-runtime/index.js': [
           'const createEnum = (members) => Object.freeze({ ...members, cast: (value) => (Object.values(members).includes(value) ? value : undefined) })',
@@ -336,7 +335,6 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     t.assert.equal(bundled.status, 0, bundled.stderr)
     const r = await runCli(['build', '--format=cjs', '--metro=ios', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
     t.assert.equal(r.status, 0, r.stderr)
-    // `ref` through React.forwardRef.
     t.assert.deepStrictEqual(JSON.parse(runNode(t, join(tmp, 'out.cjs'))), {
       forwardRef: true,
       quiet: { label: 'hi', ref: 'a' },

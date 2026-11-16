@@ -1,6 +1,5 @@
 // --flow (which --metro turns on): Flow type syntax stripped as Metro's Babel (@react-native/babel-preset) strips it,
-// by flow-remove-types, and react-native's Flow code lowered by hermes-parser -- stasis's own dependencies, never the
-// project's, loaded lazily.
+// by flow-remove-types -- stasis's own dependency, never the project's, loaded lazily.
 import { createRequire } from 'node:module'
 import { splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 
@@ -32,11 +31,11 @@ function stripFlowTypes(source, { removeEmptyImports = false } = {}) {
   return stripped.slice(0, -NOFLOW_STRIPPED.length)
 }
 
-// A file of the package installed as `react-native` (not of one nested in it), whose own sources use Flow code.
+// A file of the package installed as `react-native`, not of one nested in it.
 export const inReactNative = (path) => splitNodeModulesPath(toPosix(path))?.name === 'react-native'
 
-// `source` with its Flow code (`component`, `hook`, `match`, `enum`) lowered as Metro's Babel lowers it, types kept:
-// an `enum` as a call of `require('flow-enums-runtime')`. Throws where it can't parse.
+// `source` with its Flow code (`component`, `hook`, `match`, `enum`) lowered as Metro's Babel lowers it, types kept;
+// an `enum` requires `flow-enums-runtime`. Throws where it can't parse.
 function lowerFlowSyntax(source) {
   hermesParser ??= require('hermes-parser')
   generate ??= require('@babel/generator').default
@@ -47,30 +46,25 @@ function lowerFlowSyntax(source) {
     sourceType: 'unambiguous',
     transformOptions: { TransformEnumSyntax: { enable: true } },
   })
-  // On the lines it was read from, marked `@flow` as the source is (`comments: false` drops the mark).
+  // `comments: false` drops the `@flow` mark the strip reads.
   return (flow ? '/* @flow */' : '') + generate(ast, { comments: false, retainLines: true }).code
 }
 
-// `text` with its Flow types stripped, as `parse` reads it (falsy where it can't): `{ parsed, source, stripped }`,
-// `stripped` blanking the types of `source` in place -- `text`, or in a file of react-native that stripping alone
-// leaves unread, `text` with its Flow code lowered. Where neither is read, the plain strip, `parsed` null, with the
-// `error` of an attempt that threw.
+// `{ parsed, source, stripped }`: `text` with its types stripped, as `parse` reads it (falsy where it can't). In a file
+// of react-native that doesn't parse so, `source` is `text` with its Flow code lowered first. Neither parsing: the
+// plain strip, `parsed` null, with any `error` thrown.
 export function stripFlow(text, path, parse, { removeEmptyImports = false } = {}) {
-  const read = (source) => {
-    const stripped = stripFlowTypes(source, { removeEmptyImports })
-    return { parsed: parse(stripped) || null, source, stripped }
+  const read = (lower) => {
+    try {
+      const source = lower ? lowerFlowSyntax(text) : text
+      const stripped = stripFlowTypes(source, { removeEmptyImports })
+      return { parsed: parse(stripped) || null, source, stripped }
+    } catch (error) {
+      return { parsed: null, error }
+    }
   }
-  let plain
-  try {
-    plain = read(text)
-  } catch (error) {
-    plain = { parsed: null, error }
-  }
+  const plain = read(false)
   if (plain.parsed !== null || !inReactNative(path)) return plain
-  try {
-    const lowered = read(lowerFlowSyntax(text))
-    return lowered.parsed === null ? plain : lowered
-  } catch (error) {
-    return { ...plain, error }
-  }
+  const lowered = read(true)
+  return lowered.parsed !== null ? lowered : { ...plain, error: lowered.error ?? plain.error }
 }
