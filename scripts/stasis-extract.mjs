@@ -14,6 +14,7 @@ const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()
 const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
 // As stasis-core's isForbiddenFile; the trailing `/` is a bucket's own listing.
 const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:stasis\.lock\.json|\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))\/?$)/iu
+const FORBIDDEN_IN_PACKAGE = /(?:^|\/)node_modules\/(?:[^/]*\/)*(?:pnpm-workspace\.yaml|\.env\.[^/]*|[^/]*\.env)\/?$/iu
 
 function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
@@ -56,7 +57,7 @@ function extract(bundleFile, output = '.') {
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
-    assert(!FORBIDDEN.test(path), `extract: the bundle carries a forbidden file: ${path}`)
+    assert(!FORBIDDEN.test(path) && !FORBIDDEN_IN_PACKAGE.test(path), `extract: the bundle carries a forbidden file: ${path}`)
     if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
     // Canonical relative paths only, so every write stays inside outDir.

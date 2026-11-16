@@ -347,7 +347,9 @@ export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).to
 // Once extracted, each is the project's own: the lockfile a frozen extract checks, or a package manager's hook or config,
 // a Yarn PnP file or git metadata, which run code or redirect installs and imports.
 const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))$)/iu
-export const isForbiddenFile = (path) => isLockfileName(path) || FORBIDDEN.test(path)
+// The project's own may be carried; a dependency's would root a pnpm workspace, or be loaded as the project's env.
+const FORBIDDEN_IN_PACKAGE = /(?:^|\/)node_modules\/(?:[^/]*\/)*(?:pnpm-workspace\.yaml|\.env\.[^/]*|[^/]*\.env)$/iu
+export const isForbiddenFile = (path) => isLockfileName(path) || FORBIDDEN.test(path) || FORBIDDEN_IN_PACKAGE.test(path)
 
 function compareSegments(al, bl) {
   let i = 0

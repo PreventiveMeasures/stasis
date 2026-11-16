@@ -100,6 +100,11 @@ const CASES = {
   'names only resembling a config or git metadata': [v1({
     npmrc: '1', '.npmrc.bak': '1', '.yarnrc.yaml': '1', 'bunfig.json': '1', '.pnp.mjs': '1', '.gitignore': '1', '.github/x.yml': '1', 'git/config': '1', 'a.git/config': '1',
   }), 'extracted'],
+  'a pnpm-workspace.yaml in a dependency': [v1({ 'a.js': '1' }, { modules: dep({ 'pnpm-workspace.yaml': 'packages: []' }) }), 'refused'],
+  'an env file in a nested dependency': [v1({ 'a.js': '1' }, { modules: { 'node_modules/foo/node_modules/bar': { name: 'bar', version: '1.0.0', files: { '.ENV.local': 'x' } } } }), 'refused'],
+  'a stat record of a dependency\'s .env': [v1({ 'a.js': '1' }, { modules: dep({ '.env': '' }), formats: { 'node_modules/foo/.env': 'stat:file' } }), 'refused'],
+  'the project\'s own pnpm-workspace.yaml and env files': [v1({ 'pnpm-workspace.yaml': 'packages: []', '.env': 'x', 'packages/x/prod.env': 'x', 'x_node_modules/.env': 'x' }), 'extracted'],
+  'names in a dependency only resembling a pnpm workspace manifest or env file': [v1({}, { modules: dep({ 'pnpm-workspace.yml': '1', '.envrc': '1', 'x.env.bak': '1', '.environment': '1' }) }), 'extracted'],
   'a node_modules-scope bundle carrying sources': [{ ...v1({ 'src/a.js': '1' }), config: { scope: 'node_modules' }, modules: dep({ 'i.js': '1' }) }, 'refused'],
   'no scope': [{ ...v1({ 'a.js': '1' }), config: undefined }, 'refused'],
   'a dependency bucket outside node_modules': [v1({}, { modules: { src: { name: 's', version: '1.0.0', files: { 'a.js': '1' } } } }), 'refused'],
@@ -191,7 +196,7 @@ test('stasis-extract.mjs refuses a stasis.lock.json, or a <name>.stasis.lock.jso
 }))
 
 test('stasis-extract.mjs refuses a file of a forbidden name, naming it and writing nothing', withTmp((t, tmp) => {
-  for (const file of ['stasis.lock.json', '.npm-extension.mjs', 'lib/.pnpmfile.cjs', 'PNPMFILE.MTS', '.npmrc', '.yarnrc', '.yarnrc.yml', 'bunfig.toml', '.pnp.loader.mjs', '.git', '.git/hooks/post-checkout']) {
+  for (const file of ['stasis.lock.json', '.npm-extension.mjs', 'lib/.pnpmfile.cjs', 'PNPMFILE.MTS', '.npmrc', '.yarnrc', '.yarnrc.yml', 'bunfig.toml', '.pnp.loader.mjs', '.git', '.git/hooks/post-checkout', 'pnpm-workspace.yaml', '.env']) {
     writeBundle(join(tmp, 'bundle.code.br'), v1({ 'a.js': 'a\n' }, { modules: dep({ 'index.js': '1\n', [file]: 'x\n' }) }))
     const r = runScript(['-o', join(tmp, 'out'), join(tmp, 'bundle.code.br')])
     t.assert.equal(r.status, 1, file)

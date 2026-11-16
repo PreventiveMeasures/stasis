@@ -156,7 +156,7 @@ anything, so a malformed bundle fails before the first write. It refuses bundles
 - duplicate paths, or a path used as both a file and a directory,
 - non-string file contents,
 - a file named `stasis.lock.json`, at any depth and in any case, which no bundle carries (see [file formats](file-formats.md#stasiscodebr)),
-- a file of another name no bundle carries, in the project or any package, at any depth and in any case: a package manager's hook (`.npm-extension.mjs`, `.pnpmfile.cjs`) or config (`.npmrc`, `.yarnrc.yml`, `bunfig.toml`), a Yarn Plug'n'Play file (`.pnp.cjs`), or `.git` (see [file formats](file-formats.md#stasiscodebr) for every name).
+- a file of another name no bundle carries, in the project or any package, at any depth and in any case: a package manager's hook (`.npm-extension.mjs`, `.pnpmfile.cjs`) or config (`.npmrc`, `.yarnrc.yml`, `bunfig.toml`), a Yarn Plug'n'Play file (`.pnp.cjs`), or `.git`, and, in a dependency, a `pnpm-workspace.yaml` or `.env` file (see [file formats](file-formats.md#stasiscodebr) for every name).
 
 The path checks are lexical: `extract` does not resolve symlinks, so writes pass
 through any symlinked directory already present inside the output directory (e.g.
