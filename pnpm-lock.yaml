@@ -236,10 +236,10 @@ importers:
         specifier: ^1.16.0
         version: 1.16.0(@noble/hashes@2.4.0)
       '@exodus/stasis-core':
-        specifier: 1.0.0-rc.2
+        specifier: 1.0.0-rc.3
         version: link:../stasis-core
       '@exodus/stasis-plugins':
-        specifier: 1.0.0-rc.2
+        specifier: 1.0.0-rc.3
         version: link:../stasis-plugins
       '@preventive/archive':
         specifier: ^1.4.1
@@ -284,7 +284,7 @@ importers:
   stasis-plugins:
     dependencies:
       '@exodus/stasis-core':
-        specifier: 1.0.0-rc.2
+        specifier: 1.0.0-rc.3
         version: link:../stasis-core
 
 packages:
