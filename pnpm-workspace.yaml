@@ -9,6 +9,7 @@ allowBuilds:
   # through the WASM ones alone.
   '@prisma/engines': false
   esbuild: false
+  fsevents: false
 
 enableGlobalVirtualStore: false
 
