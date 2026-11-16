@@ -38,7 +38,8 @@ const LEGACY_VERSION = 0
 const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
 
 // Unique across buckets, else the `sources` getter would serve either payload. No bundle carries a file of a forbidden
-// name (forbiddenFileName): a stasis lockfile, an npm extension or a pnpmfile, in the project or any package it carries.
+// name (forbiddenFileName), in the project or in any package it carries: a stasis lockfile, a package manager's hook or
+// config, a Yarn Plug'n'Play file, or git metadata.
 const checkedFileKeys = (modules, formats) => {
   const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
   for (const key of flatKeys.keys()) {

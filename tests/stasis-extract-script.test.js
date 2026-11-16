@@ -87,6 +87,19 @@ const CASES = {
   'a stat record of a pnpmfile': [v1({ 'a.js': '1' }, { modules: dep({ '.pnpmfile.ts': '' }), formats: { 'node_modules/foo/.pnpmfile.ts': 'stat:file' } }), 'refused'],
   'a pnpmfile named without its dot': [v1({ 'a.js': '1' }, { modules: dep({ 'pnpmfile.js': 'x' }) }), 'refused'],
   'names only resembling a pnpmfile': [v1({ '.pnpmfile': '1', '.pnpmfile.json': '{}', 'my.pnpmfile.cjs': '1', 'my-pnpmfile.js': '1', 'pnpmfile.jsx': '1' }), 'extracted'],
+  'an .npmrc in a dependency': [v1({ 'a.js': '1' }, { modules: dep({ '.npmrc': 'registry=x' }), formats: { 'node_modules/foo/.npmrc': 'resource' } }), 'refused'],
+  'a .yarnrc.yml in the project': [v1({ 'packages/x/.yarnrc.yml': 'yarnPath: x.cjs' }), 'refused'],
+  'a .yarnrc in a dependency, in any case': [v1({ 'a.js': '1' }, { modules: dep({ 'lib/.YarnRC': 'yarn-path x.js' }) }), 'refused'],
+  'a bunfig.toml in a dependency': [v1({ 'a.js': '1' }, { modules: dep({ 'bunfig.toml': 'preload = []' }) }), 'refused'],
+  'a .bunfig.toml in the project': [v1({ '.bunfig.toml': 'preload = []' }), 'refused'],
+  'a Yarn Plug\'n\'Play file in a dependency': [v1({ 'a.js': '1' }, { modules: dep({ '.pnp.cjs': 'x', 'index.js': '1' }) }), 'refused'],
+  'a .pnp.data.json in the project': [v1({ '.pnp.data.json': '{}' }), 'refused'],
+  'a .git directory in a dependency': [v1({ 'a.js': '1' }, { modules: dep({ '.git/config': '[core]' }) }), 'refused'],
+  'a .git file in the project, in any case': [v1({ 'sub/.GIT': 'gitdir: ../x' }), 'refused'],
+  'a stat record of git metadata': [v1({ 'a.js': '1', '.git/HEAD': '' }, { formats: { '.git/HEAD': 'stat:file' } }), 'refused'],
+  'names only resembling a config or git metadata': [v1({
+    npmrc: '1', '.npmrc.bak': '1', '.yarnrc.yaml': '1', 'bunfig.json': '1', '.pnp.mjs': '1', '.gitignore': '1', '.github/x.yml': '1', 'git/config': '1', 'a.git/config': '1',
+  }), 'extracted'],
   'a node_modules-scope bundle carrying sources': [{ ...v1({ 'src/a.js': '1' }), config: { scope: 'node_modules' }, modules: dep({ 'i.js': '1' }) }, 'refused'],
   'no scope': [{ ...v1({ 'a.js': '1' }), config: undefined }, 'refused'],
   'a dependency bucket outside node_modules': [v1({}, { modules: { src: { name: 's', version: '1.0.0', files: { 'a.js': '1' } } } }), 'refused'],
@@ -177,8 +190,9 @@ test('stasis-extract.mjs refuses a stasis.lock.json, or a <name>.stasis.lock.jso
   }
 }))
 
-test('stasis-extract.mjs refuses an npm extension or a pnpmfile, naming it and writing nothing', withTmp((t, tmp) => {
-  for (const [file, what] of [['.npm-extension.mjs', 'an npm extension'], ['lib/.pnpmfile.cjs', 'a pnpmfile'], ['PNPMFILE.MTS', 'a pnpmfile']]) {
+test('stasis-extract.mjs refuses a file of a forbidden name, naming it and writing nothing', withTmp((t, tmp) => {
+  for (const [file, what] of [['.npm-extension.mjs', 'an npm extension'], ['lib/.pnpmfile.cjs', 'a pnpmfile'], ['PNPMFILE.MTS', 'a pnpmfile'], ['.npmrc', 'an npm config'],
+    ['.yarnrc.yml', 'a Yarn config'], ['bunfig.toml', 'a Bun config'], ['.pnp.loader.mjs', 'a Yarn Plug\'n\'Play file'], ['.git/hooks/post-checkout', 'git metadata']]) {
     writeBundle(join(tmp, 'bundle.code.br'), v1({ 'a.js': 'a\n' }, { modules: dep({ 'index.js': '1\n', [file]: 'x\n' }) }))
     const r = runScript(['-o', join(tmp, 'out'), join(tmp, 'bundle.code.br')])
     t.assert.equal(r.status, 1, file)

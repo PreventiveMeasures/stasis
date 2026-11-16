@@ -12,12 +12,18 @@ const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefine
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
 // Not an array or a string, which would read as files named by index.
 const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
-// The file names no bundle may carry, at any depth and in any case, as stasis-core's FORBIDDEN_FILE_NAMES: a stasis
-// lockfile, and npm's `.npm-extension.[cm]?[jt]s` and pnpm's `.?pnpmfile.[cm]?[jt]s`, code each runs as it installs.
+// The file names no bundle may carry, at any depth and in any case, as stasis-core's FORBIDDEN_FILE_NAMES (which says
+// why): a stasis lockfile, a package manager's hook or config, a Yarn Plug'n'Play file, or `.git` anywhere in the path.
+const named = (pattern) => (path) => pattern.test(basename(path))
 const FORBIDDEN_FILE_NAMES = [
-  [/^stasis\.lock\.json$/iu, 'a lockfile'],
-  [/^\.npm-extension\.[cm]?[jt]s$/iu, 'an npm extension'],
-  [/^\.?pnpmfile\.[cm]?[jt]s$/iu, 'a pnpmfile'],
+  [named(/^stasis\.lock\.json$/iu), 'a lockfile'],
+  [named(/^\.npm-extension\.[cm]?[jt]s$/iu), 'an npm extension'],
+  [named(/^\.?pnpmfile\.[cm]?[jt]s$/iu), 'a pnpmfile'],
+  [named(/^\.npmrc$/iu), 'an npm config'],
+  [named(/^\.yarnrc(?:\.yml)?$/iu), 'a Yarn config'],
+  [named(/^\.?bunfig\.toml$/iu), 'a Bun config'],
+  [named(/^\.pnp\.(?:c?js|loader\.mjs|data\.json)$/iu), 'a Yarn Plug\'n\'Play file'],
+  [(path) => path.split('/').some((segment) => segment.toLowerCase() === '.git'), 'git metadata'],
 ]
 
 function readBundle(bundleAbs) {
@@ -62,7 +68,7 @@ function extract(bundleFile, output = '.') {
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
     // A record written as nothing is refused too, as stasis extract refuses it.
-    const forbidden = FORBIDDEN_FILE_NAMES.find(([pattern]) => pattern.test(basename(path)))
+    const forbidden = FORBIDDEN_FILE_NAMES.find(([test]) => test(path))
     assert(forbidden === undefined, `extract: the bundle carries ${forbidden?.[1]}: ${path}`)
     if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
