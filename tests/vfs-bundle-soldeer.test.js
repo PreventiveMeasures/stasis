@@ -52,13 +52,13 @@ const gitDependency = () => ({
   'foundry.toml': files['foundry.toml'].replace('stasis-sol-lib = "1.0.0"', `stasis-sol-lib = { version = "1.0.0", git = "https://github.com/ExodusOSS/stasis-sol-lib.git", rev = "${REV}" }`),
 })
 
-const bundleOnDisk = async (cwd, args) => {
+const bundleOnDisk = async (cwd, args, extraEnv = {}) => {
   const { FOUNDRY_PROFILE: _p, FOUNDRY_REMAPPINGS: _r, DAPP_REMAPPINGS: _d, ...env } = process.env
-  const child = spawn(process.execPath, [cli, 'bundle', ...args, ...ENTRIES], { cwd, env })
+  const child = spawn(process.execPath, [cli, 'bundle', ...args, ...ENTRIES], { cwd, env: { ...env, ...extraEnv } })
   const stderr = []
   child.stderr.on('data', (d) => stderr.push(d))
   const [status] = await once(child, 'close')
-  if (status !== 0) throw new Error(`Failed to build the oracle bundle: ${Buffer.concat(stderr)}`)
+  if (status !== 0) throw new Error(`stasis bundle ${args.join(' ')} failed in ${cwd}: ${Buffer.concat(stderr)}`)
 }
 
 // path -> what a dependencies folder holds there: a directory, or a file's mode and bytes.
@@ -125,9 +125,9 @@ test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle 
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
 })
 
-test('stasis bundle --deptree builds, from a checkout without its dependencies folder, the byte-identical bundle, and writes nothing else', withTmp(async (t, checkout) => {
-  // In this process, so the zip comes from the cache seeded above, read and never written
-  // (bundleCommand's --deptree caches nothing).
+test('stasis bundle --deptree builds, from a checkout without its dependencies folder, the byte-identical bundle, and writes nothing else in it', withTmp(async (t, checkout) => {
+  // In this process, so the zip comes from the cache seeded above, which holds it already: it is
+  // not written again.
   await cp(join(fixture, 'project'), checkout, { recursive: true })
   const zips = () => readdirSync(join(cacheRoot, 'soldeer', 'zips'))
   const cached = zips()
@@ -139,6 +139,13 @@ test('stasis bundle --deptree builds, from a checkout without its dependencies f
   t.assert.match(warn.mock.calls[0].arguments[0], /^\[stasis\] Unpacked 1 of 1 packages: 6 files, /u)
   t.assert.deepStrictEqual(readdirSync(checkout).toSorted(), [...readdirSync(join(fixture, 'project')), 'manifests.br', 'out.br'].toSorted(), 'no dependencies folder is written')
   t.assert.deepStrictEqual(zips(), cached)
+}))
+
+test("the CLI's stasis bundle --deptree reads the zip from its cache (STASIS_CACHE_DIR), fetching nothing", withTmp(async (t, checkout) => {
+  // stasis-sol-lib is on no registry: a build that fetched its zip would fail.
+  await cp(join(fixture, 'project'), checkout, { recursive: true })
+  await bundleOnDisk(checkout, ['--deptree', '--output=out.br'], { STASIS_CACHE_DIR: cacheRoot })
+  t.assert.equal(brotliDecompressSync(await readFile(join(checkout, 'out.br'))).toString('utf8'), oracles.plain)
 }))
 
 test('stasis bundle --deptree of a Solidity build, which has no stasis lockfile, takes any lock mode', withTmp(async (t, checkout) => {

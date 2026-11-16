@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
@@ -22,8 +22,9 @@ const fixtures = join(here, 'fixtures')
 
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('EXODUS_STASIS_')))
 
-const runCli = async (args, { cwd }) => {
-  const child = spawn(process.execPath, [cli, ...args], { cwd, env: cleanEnv })
+// `node: true` runs node itself on `args` rather than the CLI.
+const runCli = async (args, { cwd, node = false }) => {
+  const child = spawn(process.execPath, node ? args : [cli, ...args], { cwd, env: cleanEnv })
   const stderr = []
   child.stderr.on('data', (d) => stderr.push(d))
   child.stdout.resume()
@@ -54,6 +55,36 @@ const pnpmProject = (dir) => {
   }
   return realpathSync(dir)
 }
+
+// Each module of @preventive/upstream or @preventive/deptree that is loaded, printed as it resolves.
+const TRACE_FETCHERS = [
+  "import { writeSync } from 'node:fs'",
+  "import { registerHooks } from 'node:module'",
+  'registerHooks({ resolve(specifier, context, next) {',
+  '  const result = next(specifier, context)',
+  "  if (/@preventive[+/](?:upstream|deptree)[@/]/u.test(result.url)) writeSync(2, `[loaded] ${result.url}\\n`)",
+  '  return result',
+  '} })',
+].join('\n')
+
+test('stasis bundle without --deptree never loads @preventive/upstream or @preventive/deptree, so it fetches and caches nothing', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': JSON.stringify({ name: 'p', version: '1.0.0', dependencies: { dep: '1.0.0' } }),
+    'node_modules/dep/package.json': JSON.stringify({ name: 'dep', version: '1.0.0', main: 'index.js' }),
+    'node_modules/dep/index.js': 'module.exports = 1\n',
+    'src/a.js': "require('dep')\n",
+    'src/A.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract A {}\n',
+    'trace.mjs': TRACE_FETCHERS,
+  })
+  const traced = (args) => runCli(['--import', pathToFileURL(join(tmp, 'trace.mjs')).href, cli, ...args], { cwd: tmp, node: true })
+  const [plain, deptree] = await Promise.all([traced(['bundle', '--output=out.br', 'src/a.js', 'src/A.sol']), traced(['bundle', '--deptree', 'src/a.js'])])
+  t.assert.equal(plain.status, 0, plain.stderr)
+  t.assert.ok(existsSync(join(tmp, 'out.br')))
+  t.assert.doesNotMatch(plain.stderr, /\[loaded\]/u)
+  // The trace sees them where they are loaded: --deptree loads them, then refuses the install there.
+  t.assert.equal(deptree.status, 1)
+  t.assert.match(deptree.stderr, /\[loaded\] .*@preventive[+/]deptree/u)
+}))
 
 describe('stasis bundle --deptree usage', { concurrency: 4 }, () => {
   test('is for JS and Solidity bundles alone', withTmp(async (t, tmp) => {

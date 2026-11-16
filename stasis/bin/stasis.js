@@ -148,6 +148,10 @@ if (command === '-v' || command === '--version') {
   } catch (cause) {
     fail(`Error: ${cause.message}`)
   }
+  if (plan.deptree) {
+    const { setCacheDir } = await import('../src/vfs-bundle.js')
+    setCacheDir(await cacheDir())
+  }
   const { bundleCommand } = await import('../src/cmd/bundle.js')
   await bundleCommand({ cwd, ...plan })
 } else if (command === 'github-bundle') {
