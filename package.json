@@ -14,7 +14,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ExodusOSS/stasis.git"
+    "url": "git+https://github.com/PreventiveMeasures/stasis.git"
   },
   "author": "Exodus Movement, Inc.",
   "license": "MIT",
