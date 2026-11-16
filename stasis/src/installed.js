@@ -135,7 +135,10 @@ function patchLocator(file, patchers, host) {
   })
 }
 
-function pnpmLocks(file, host, strict) {
+// `aliases`, the top-level names pnpm's copy of the lockfile lists where it is read, are those held where they are: where
+// pnpm hoists, the place of one it left out (a devDependency `pnpm install --prod` skips) holds whatever hoists into it,
+// held by its name and version. `named` carries the names this one lists.
+function pnpmLocks(file, host, strict, aliases) {
   const parsed = parseLock(file, host, strict, (text) => ({ lockfile: parsePnpmLockfile(text).lockfile }))
   if (parsed === undefined) return undefined
   const { lockfile } = parsed
@@ -156,13 +159,14 @@ function pnpmLocks(file, host, strict) {
   for (const importer of Object.values(lockfile?.importers ?? {})) {
     for (const [as, key] of [importer.dependencies, importer.devDependencies, importer.optionalDependencies].flatMap((deps) => Object.entries(deps ?? {}))) {
       const record = keyed.get(key)
-      if (record) top.set(as, top.has(as) && top.get(as) !== record ? undefined : record)
+      if (record && (aliases?.has(as) ?? true)) top.set(as, top.has(as) && top.get(as) !== record ? undefined : record)
     }
   }
   const named = byId(ids)
+  const atTop = (location) => (location === `node_modules/${nameAt(location)}` ? top.get(nameAt(location)) : undefined)
   return {
     stored: (name) => stored.get(name) ?? stored.get(STORE_HASH.exec(name)?.[0]),
-    named: (location, ...of) => (location === `node_modules/${nameAt(location)}` ? top.get(nameAt(location)) : undefined) ?? named(location, ...of),
+    named: Object.assign((location, ...of) => atTop(location) ?? named(location, ...of), { aliases: new Set(top.keys()) }),
   }
 }
 
@@ -201,7 +205,7 @@ const MANAGERS = [
     marker: '.modules.yaml',
     lockfiles: ['pnpm-lock.yaml'],
     installed: (dir, host) => pnpmLocks(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), host)?.named,
-    locks: (file, host) => pnpmLocks(file, host, true).named,
+    locks: (file, host, installed) => pnpmLocks(file, host, true, installed.aliases).named,
     none: (version) => `${version}; it locks none`,
   },
 ]
@@ -216,7 +220,7 @@ function layoutOf(dir, host) {
   if (locking.length > 1 && held.length === 0) throw new Error(`${dir}: ${locking.map(([, file]) => basename(file)).join(' and ')} are both there, and which installed its node_modules isn't known`)
   const [manager = marked.length === 1 ? marked[0] : undefined, lockfile] = held[0] ?? []
   const installed = (marked.length === 1 && marked[0] === manager && manager.installed(dir, host)) || NONE
-  return { installed, lockfile, locks: lockfile && manager.locks(lockfile, host), none: manager?.none }
+  return { installed, lockfile, locks: lockfile && manager.locks(lockfile, host, installed), none: manager?.none }
 }
 
 // pnpm's, where it isolates: `store`'s lock.yaml held to the pnpm-lock.yaml of the directory the store is in.
