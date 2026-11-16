@@ -56,13 +56,15 @@ test('stasis bundle and stasis run read no repo of a lockfile, whatever it is, a
     lock.repo = { github: 'org/repo', directory: '', commit: 'b'.repeat(40) }
     writeFileSync(lockPath, lock.serialize())
   }
-  const bundle = () => bundleCommand({ cwd: tmp, entries: ['index.js'], lockfile: 'stasis.lock.json', output: 'app.stasis.code.br', env: {} })
+  const bundle = (env = {}) => bundleCommand({ cwd: tmp, entries: ['index.js'], lockfile: 'stasis.lock.json', output: 'app.stasis.code.br', env })
   await bundle()
   t.assert.equal(Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'app.stasis.code.br'))).toString('utf8')).repo.github, 'org/other')
   t.assert.equal(lockRepo(), undefined, "the bundle's repo not written to the lockfile")
-  // Held to it all the same (lock = add), its repo no matter: none written.
+  // Held to it all the same, its repo no matter: frozen, left as it is; in add, written anew, of none.
   stamp()
   await bundle()
+  t.assert.equal(lockRepo().commit, 'b'.repeat(40))
+  await bundle({ EXODUS_STASIS_LOCK: 'add' })
   t.assert.equal(lockRepo(), undefined)
   // A run: frozen, held to it and nothing written; add, written anew, of none.
   stamp()

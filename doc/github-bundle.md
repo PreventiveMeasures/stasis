@@ -383,7 +383,8 @@ package installed.
 
 A JS build is held to the `stasis.lock.json` at the repository's root by its
 lock mode, as [`stasis bundle`](bundle.md#companion-lockfile---lockfile) holds
-one, and to the [local lockfile](#local-lockfile).
+one (`frozen` where it is there, unless `EXODUS_STASIS_LOCK` gives another), and
+to the [local lockfile](#local-lockfile).
 
 ## Local lockfile
 

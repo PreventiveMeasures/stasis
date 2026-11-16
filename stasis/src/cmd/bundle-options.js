@@ -179,7 +179,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
 const DISK_RUN_FLAGS = ['babel', 'metro-resolver']
 
 function outputOptions(values, { allJs, allSol, jsAndSol }) {
-  if (values.lockfile && !allJs) throw new Error('--lockfile is only valid for JS bundles')
+  if ((values.lockfile || values['lockfile-only']) && !allJs) throw new Error(`--${values.lockfile ? 'lockfile' : 'lockfile-only'} is only valid for JS bundles`)
   const deptree = Boolean(values.deptree)
   if (deptree && !allJs && !allSol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
   for (const flag of deptree ? DISK_RUN_FLAGS : []) {
@@ -189,7 +189,7 @@ function outputOptions(values, { allJs, allSol, jsAndSol }) {
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
   const lockfileOnly = Boolean(values['lockfile-only'])
-  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'] }) : null
+  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'], named: true }) : null
   if (lockfileOnlyRefused !== null) throw new Error(lockfileOnlyRefused)
   return { output: values.output, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
 }

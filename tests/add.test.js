@@ -579,12 +579,41 @@ test('CLI (stasis-core): add with no file, an option, or no config errors', with
   t.assert.equal(runCli(coreCli, ['add'], { cwd: tmp }).status, 1)
   const opt = runCli(coreCli, ['add', '--output=x', 'src/a.js'], { cwd: tmp })
   t.assert.equal(opt.status, 1)
-  t.assert.match(opt.stderr, /add takes no options/)
+  t.assert.match(opt.stderr, /add takes no option but --lockfile-only/)
 
   rmSync(join(tmp, 'stasis.config.json'))
   const noCfg = runCli(coreCli, ['add', 'src/a.js'], { cwd: tmp })
   t.assert.equal(noCfg.status, 1)
   t.assert.match(noCfg.stderr, /requires a stasis\.config\.json/)
+}))
+
+test('addCommand lockfileOnly writes the lockfile alone: the one there, merged, else one of the bundles as the add leaves them', withTmp(async (t, tmp) => {
+  seed(tmp)
+  t.mock.method(console, 'warn', () => {})
+  const lockPath = join(tmp, 'stasis.lock.json')
+  const recorded = () => Object.keys(Lockfile.parse(readFileSync(lockPath, 'utf8')).modules.get('.').files).toSorted()
+  addCommand({ cwd: tmp, entries: ['src/a.js'] })
+  t.assert.ok(!existsSync(lockPath), 'none written without it, where none is')
+  const code = readFileSync(join(tmp, 'dist/code.br'))
+  addCommand({ cwd: tmp, entries: ['src/icon.svg'], lockfileOnly: true })
+  t.assert.deepStrictEqual(recorded(), ['src/a.js', 'src/icon.svg'], 'of the bundle there too')
+  t.assert.equal(Lockfile.parse(readFileSync(lockPath, 'utf8')).modules.get('.').files['src/icon.svg'], sha512integrity(readFileSync(join(tmp, 'src/icon.svg'))))
+  t.assert.deepStrictEqual(readFileSync(join(tmp, 'dist/code.br')), code)
+  t.assert.ok(!existsSync(join(tmp, 'dist/res.br')), 'no bundle written')
+  addCommand({ cwd: tmp, entries: ['src/b.cjs'], lockfileOnly: true })
+  t.assert.deepStrictEqual(recorded(), ['src/a.js', 'src/b.cjs', 'src/icon.svg'])
+  t.assert.deepStrictEqual(readFileSync(join(tmp, 'dist/code.br')), code)
+  // One it records otherwise refused, nothing written.
+  const before = readFileSync(lockPath, 'utf8')
+  writeFileSync(join(tmp, 'src', 'a.js'), 'export const a = 2\n')
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/a.js'], lockfileOnly: true }), /src\/a\.js/u)
+  t.assert.equal(readFileSync(lockPath, 'utf8'), before)
+  // The CLI takes it, and no other option.
+  const r = runCli(stasisCli, ['add', '--lockfile-only', 'src/logo.png'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.match(r.stderr, /^\[stasis\] add: \+1 \(4 total\) -> stasis\.lock\.json\n$/u)
+  t.assert.ok(!existsSync(join(tmp, 'dist/res.br')))
+  t.assert.match(runCli(stasisCli, ['add', '--lockfile-only', '--output=x', 'src/logo.png'], { cwd: tmp }).stderr, /add takes no option but --lockfile-only/u)
 }))
 
 // --- CLI: stasis add --------------------------------------------------------

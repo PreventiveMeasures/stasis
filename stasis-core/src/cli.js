@@ -99,10 +99,12 @@ export async function runProgram(argv, { nodeArgs = [], loader, imports }) {
 
 // Its runtime errors propagate as they are: wrapping them in fail() would bury the cause.
 export async function addCli(argv, { label, fail }) {
-  if (argv.length === 0) fail('Nothing to add: no file given')
-  if (argv.some((a) => a.startsWith('-'))) fail('Error: add takes no options; its targets and resource allowlist come from stasis.config.json')
+  const lockfileOnly = argv.includes('--lockfile-only')
+  const files = argv.filter((a) => a !== '--lockfile-only')
+  if (files.length === 0) fail('Nothing to add: no file given')
+  if (files.some((a) => a.startsWith('-'))) fail('Error: add takes no option but --lockfile-only; its targets and resource allowlist come from stasis.config.json')
   const { addCommand } = await import('./add.js')
-  addCommand({ entries: argv, logLabel: label })
+  addCommand({ entries: files, lockfileOnly, logLabel: label })
 }
 
 export async function extractCli(argv, { label, fail }) {
