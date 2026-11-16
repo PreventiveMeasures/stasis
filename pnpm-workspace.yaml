@@ -37,6 +37,13 @@ linkWorkspacePackages: true
 
 lockfileIncludeTarballUrl: true
 
+# Resolve only versions published at least two weeks (in minutes) ago, so a compromised release has
+# time to be caught and pulled before it lands here. Our own @preventive packages are exempt.
+minimumReleaseAge: 20160
+
+minimumReleaseAgeExclude:
+  - '@preventive/*'
+
 modulesCacheMaxAge: 0
 
 # exodus-test preloads a module.registerHooks resolve hook (loader/remap.cjs, for tape/@jest/globals
