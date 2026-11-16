@@ -344,33 +344,10 @@ export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} s
 // In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
 export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
 
-const named = (pattern) => (path) => pattern.test(path.slice(path.lastIndexOf('/') + 1))
-
-// The file names no bundle may carry, at any depth and in any case, as isLockfileName, each with what such a file is.
-// Extracted, or once the package holding one is installed on its own, each is the project's own to the tool that reads
-// it, which runs code of its choosing, or resolves or installs from where it says:
-// - a stasis lockfile: it would replace the one a frozen extract checks against, or root a project of its own;
-// - npm's `.npm-extension.[cm]?[jt]s`, pnpm's `.pnpmfile.[cm]?[jt]s` (`pnpmfile.[cm]?[jt]s` to an older pnpm): code the
-//   package manager runs as it installs the project, before it resolves the tree;
-// - `.npmrc` (npm's and pnpm's), `.yarnrc` and `.yarnrc.yml` (Yarn's), `bunfig.toml` (Bun's): a config that runs code
-//   (`node-options`, `yarnPath`, `plugins`, `preload`), names a registry, or holds its tokens;
-// - Yarn's Plug'n'Play `.pnp.cjs`, `.pnp.js`, `.pnp.loader.mjs` and `.pnp.data.json`: the runtime Yarn preloads, and
-//   what it and the bundlers that read it resolve each import to;
-// - `.git`, a directory or a file (a `gitdir:` link) anywhere in the path: git runs what its config names
-//   (`core.fsmonitor`, `core.hooksPath`) and its hooks.
-const FORBIDDEN_FILE_NAMES = [
-  [isLockfileName, 'a stasis lockfile'],
-  [named(/^\.npm-extension\.[cm]?[jt]s$/iu), 'an npm extension'],
-  [named(/^\.?pnpmfile\.[cm]?[jt]s$/iu), 'a pnpmfile'],
-  [named(/^\.npmrc$/iu), 'an npm config'],
-  [named(/^\.yarnrc(?:\.yml)?$/iu), 'a Yarn config'],
-  [named(/^\.?bunfig\.toml$/iu), 'a Bun config'],
-  [named(/^\.pnp\.(?:c?js|loader\.mjs|data\.json)$/iu), 'a Yarn Plug\'n\'Play file'],
-  [(path) => path.split('/').some((segment) => segment.toLowerCase() === '.git'), 'git metadata'],
-]
-
-// What the file at `path` is if no bundle may carry it, else undefined.
-export const forbiddenFileName = (path) => FORBIDDEN_FILE_NAMES.find(([test]) => test(path))?.[1]
+// Once extracted, each is the project's own: the lockfile a frozen extract checks, or a package manager's hook or config,
+// a Yarn PnP file or git metadata, which run code or redirect installs and imports.
+const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))$)/iu
+export const isForbiddenFile = (path) => isLockfileName(path) || FORBIDDEN.test(path)
 
 function compareSegments(al, bl) {
   let i = 0

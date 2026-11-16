@@ -439,7 +439,7 @@ test('extractCommand refuses non-string file content', withTmp((t, tmp) => {
 
 // No bundle carries one (see tests/bundle-lockfile.test.js), so extract refuses it as it parses the bundle.
 const lockfileRefusal = (err) => /extract: not a valid stasis bundle: /.test(err.message) &&
-  /bundle: stasis\.lock\.json is a stasis lockfile, which no bundle may carry/.test(err.cause?.message)
+  /bundle: stasis\.lock\.json is a file no bundle may carry/.test(err.cause?.message)
 
 test('extractCommand refuses a bundle that contains stasis.lock.json', withTmp((t, tmp) => {
   // The bundled file would replace the lockfile there, or plant one the next frozen extract trusts.

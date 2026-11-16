@@ -503,7 +503,7 @@ A bundle whose files reach one, a dependency's included, is refused as one
 reaching `stasis.lock.json` is, writing and reading alike:
 
 ```
-bundle: node_modules/dep/.npmrc is an npm config, which no bundle may carry
+bundle: node_modules/dep/.npmrc is a file no bundle may carry
 ```
 
 ```json

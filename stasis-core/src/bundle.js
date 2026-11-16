@@ -8,7 +8,7 @@ import {
   fileSetToObject,
   fromEntries,
   flatFileKeys,
-  forbiddenFileName,
+  isForbiddenFile,
   isPlainObject,
   mergeFormatMaps,
   mergeImportMaps,
@@ -37,15 +37,10 @@ const LEGACY_VERSION = 0
 
 const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
 
-// Unique across buckets, else the `sources` getter would serve either payload. No bundle carries a file of a forbidden
-// name (forbiddenFileName), in the project or in any package it carries: a stasis lockfile, a package manager's hook or
-// config, a Yarn Plug'n'Play file, or git metadata.
+// Unique across buckets, else the `sources` getter would serve either payload.
 const checkedFileKeys = (modules, formats) => {
   const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
-  for (const key of flatKeys.keys()) {
-    const forbidden = forbiddenFileName(key)
-    assert(forbidden === undefined, `bundle: ${key} is ${forbidden}, which no bundle may carry`)
-  }
+  for (const key of flatKeys.keys()) assert(!isForbiddenFile(key), `bundle: ${key} is a file no bundle may carry`)
   assertPayloadFree(formats, flatKeys, 'bundle')
   return flatKeys
 }

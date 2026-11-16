@@ -12,7 +12,7 @@ const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefine
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
 // Not an array or a string, which would read as files named by index.
 const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
-// What no bundle may carry, at any depth and in any case, as stasis-core's FORBIDDEN_FILE_NAMES (which says why).
+// As stasis-core's isForbiddenFile; the trailing `/` is a bucket's own listing.
 const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:stasis\.lock\.json|\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))\/?$)/iu
 
 function readBundle(bundleAbs) {
@@ -56,7 +56,6 @@ function extract(bundleFile, output = '.') {
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
-    // A record written as nothing is refused too, as stasis extract refuses it.
     assert(!FORBIDDEN.test(path), `extract: the bundle carries a forbidden file: ${path}`)
     if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)

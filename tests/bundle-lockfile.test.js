@@ -25,7 +25,7 @@ const {
   ...cleanEnv
 } = process.env
 
-const refusal = (key) => new RegExp(`bundle: ${key.replaceAll('.', '\\.')} is a stasis lockfile, which no bundle may carry`)
+const refusal = (key) => new RegExp(`bundle: ${key.replaceAll('.', '\\.')} is a file no bundle may carry`)
 
 // A full-scope bundle carrying src/a.js and a file at `key`.
 const bundleWith = (key) => {
