@@ -46,6 +46,22 @@ export function vendoredPackageOf(rel, vendorDir, read) {
   return { below }
 }
 
+// Nested package.json files upstream leaves disagreeing with their root's. Add only a confirmed false positive.
+const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
+  'node_modules/@redis/client/dist/package.json', // stale build-time copy
+  'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
+]
+
+export const inNamespaceOf = (name, hostName) => typeof name === 'string' && name.startsWith(`${hostName}/`)
+
+// Whether `pkg`, the package.json at `file` nested in `host`'s package, is the package's: one naming no other package
+// or version. Any other may be a copy of one npm has.
+export function isPackagesManifest(file, pkg, host) {
+  if (INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))) return true
+  if (pkg.name !== undefined && pkg.name !== host.name && !inNamespaceOf(pkg.name, host.name)) return false
+  return pkg.version === undefined || pkg.version === host.version
+}
+
 export function namedManifestOf(rel, read) {
   for (let dir = posix.dirname(rel); dir !== '.'; dir = posix.dirname(dir)) {
     const pkg = read(dir)
@@ -67,7 +83,7 @@ export function scopeManifestOf(rel, pkgDir, exists) {
 // A malformed one is walked past, or with `strict` throws (its files would otherwise land in the parent's).
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
   const options = { strict, check, host }
-  const read = (rel) => readPackageJson(baseDir, rel, options)
+  const read = memoized((rel) => readPackageJson(baseDir, rel, options))
   const nm = splitNodeModulesPath(toPosix(fileRelPath))
   // A file in a vendored package is its host's, as State#locateModule has it.
   if (nm !== null && inAnyVendorDir(nm.rel)) {
@@ -80,7 +96,8 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
     }
   }
-  // A file in a subpackage is its host's too: the nearest package.json with a name is walked past.
+  // A file in a subpackage is its host's too: the nearest package.json with a name is walked past, as is a nested one
+  // that is the package's, or `private` (npm publishes none), as State#locateModule has it.
   let subpackages
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
@@ -90,7 +107,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     const sub = pkg?.name && nm !== null ? hostSubpackageDir(read, nm.dir, posixDir, pkg.name) : undefined
     if (sub !== undefined) {
       if (nearest) subpackages = { [sub]: manifestIdentity(pkg) }
-    } else if (pkg?.name && (pkg.version || !inNodeModules)) {
+    } else if (pkg?.name && (pkg.version || !inNodeModules) && !isHostsNested(read, nm, posixDir, pkg)) {
       const repo = inNodeModules ? packageRepo(pkg) : undefined
       const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
@@ -103,6 +120,13 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
 
 // Once per directory, the only thing findPackageMetadata's answer depends on.
 export const packageLookup = (baseDir, options) => memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
+
+// Only below a package with a name and version, where the walk past it stops.
+function isHostsNested(read, nm, dir, pkg) {
+  if (nm === null || !dir.startsWith(`${nm.dir}/`)) return false
+  const host = read(`${nm.dir}/package.json`)
+  return host?.name && host.version && (pkg.private === true || isPackagesManifest(`${dir}/package.json`, pkg, host))
+}
 
 function hostSubpackageDir(read, pkgDir, dir, manifestName) {
   if (!dir.startsWith(`${pkgDir}/`)) return undefined

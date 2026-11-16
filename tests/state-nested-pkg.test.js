@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { findPackageMetadata } from '@exodus/stasis-core/bundle-util'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { State } from '@exodus/stasis-core/state'
 
@@ -68,6 +69,46 @@ test('addFile tolerates the listed upstream mismatch: hashids esm/package.json',
   t.assert.ok(!state.modules.has('node_modules/hashids/esm'), 'never a bucket of its own')
   t.assert.equal(module.subpackages, undefined, 'no subpackage: hashids-esm is not hashids/esm')
   t.assert.equal(state.formats.get('node_modules/hashids/esm/hashids.js'), 'module')
+})
+
+// terser 5's dist/package.json, `private` and named `dist`, makes its bundle CommonJS in a `"type": "module"` package.
+test('addFile takes a private package.json nested in a package as its package\'s: terser\'s dist/', (t) => {
+  const state = new State(root)
+  state.addFile(pathToFileURL(join(root, 'node_modules', 'terser', 'dist', 'bundle.min.js')).toString())
+  const module = state.modules.get('node_modules/terser')
+  t.assert.equal(module.name, 'terser')
+  t.assert.equal(module.version, '5.51.2')
+  t.assert.ok(module.files['dist/bundle.min.js'])
+  t.assert.ok(!state.modules.has('node_modules/terser/dist'), 'never a bucket of its own')
+  t.assert.equal(module.subpackages, undefined, 'no subpackage: dist is not terser/dist')
+  t.assert.equal(state.formats.get('node_modules/terser/dist/bundle.min.js'), 'commonjs', 'of its type, not the package\'s')
+})
+
+test('a private package.json is passed over: one above it that names another package is still refused', (t) => {
+  t.assert.throws(() => new State(root).addFile(pathToFileURL(join(root, 'node_modules', 'conflict', 'lib', 'dist', 'inner.js')).toString()),
+    /Inconsistent data between node_modules\/conflict\/lib\/package\.json and node_modules\/conflict\/package\.json/)
+  // Only JSON's `true` is private.
+  t.assert.throws(() => new State(root).addFile(pathToFileURL(join(root, 'node_modules', 'conflict', 'quoted', 'index.js')).toString()),
+    /Inconsistent data between node_modules\/conflict\/quoted\/package\.json/)
+})
+
+test('a bundle buckets a nested package.json with its package where a State takes it as the package\'s, else on its own', (t) => {
+  const bucketOf = (file) => {
+    const { pkgDir, name, version } = findPackageMetadata(root, file)
+    return `${pkgDir} ${name}@${version}`
+  }
+  t.assert.equal(bucketOf('node_modules/terser/dist/bundle.min.js'), 'node_modules/terser terser@5.51.2')
+  t.assert.equal(bucketOf('node_modules/widget/lib/util.js'), 'node_modules/widget widget@1.2.3')
+  t.assert.equal(bucketOf('node_modules/@redis/client/dist/index.js'), 'node_modules/@redis/client @redis/client@1.6.0')
+  t.assert.equal(bucketOf('node_modules/hashids/esm/hashids.js'), 'node_modules/hashids hashids@2.3.0')
+  // What a State refuses.
+  t.assert.equal(bucketOf('node_modules/conflict/lib/inner.js'), 'node_modules/conflict/lib different-name@9.9.9')
+  t.assert.equal(bucketOf('node_modules/conflict/lib/dist/inner.js'), 'node_modules/conflict/lib different-name@9.9.9')
+  t.assert.equal(bucketOf('node_modules/conflict/quoted/index.js'), 'node_modules/conflict/quoted quoted@1.0.0')
+  t.assert.equal(bucketOf('node_modules/stale/dist/index.js'), 'node_modules/stale/dist stale@1.5.17')
+  t.assert.equal(bucketOf('node_modules/next/dist/server/next.js'), 'node_modules/next/dist/server not-next@0.0.1')
+  // Installed in another's directory, at a node_modules of its own.
+  t.assert.equal(bucketOf('node_modules/host/node_modules/@redis/client/dist/index.js'), 'node_modules/host/node_modules/@redis/client @redis/client@5.8.0')
 })
 
 // Next.js compiles ~140 dependencies into dist/compiled/<dir>, each beside a trimmed package.json naming

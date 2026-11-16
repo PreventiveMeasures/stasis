@@ -394,9 +394,11 @@ name, so a rule copied from one file to the other may not refuse the same files.
     files are the package's, its `version` (a placeholder, `1.0.0`) its own,
     and a bundle lists it (`subpackages`). One named in the namespace for
     another directory is still held to the package's version.
-  - A few known upstream mismatches are let through, listed in `state.js`:
-    `@redis/client`'s `dist/package.json`, a stale copy, and `hashids`'s
-    `esm/package.json`, a `type` marker named `hashids-esm`.
+  - A `private` one (`"private": true`), which npm never publishes, such as
+    terser's `dist/package.json`, is passed over: its `type` still applies.
+  - A few known upstream mismatches are let through, listed in
+    `bundle-util.js`: `@redis/client`'s `dist/package.json`, a stale copy, and
+    `hashids`'s `esm/package.json`, a `type` marker named `hashids-esm`.
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier
