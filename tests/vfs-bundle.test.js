@@ -226,16 +226,18 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
       })
 
-      test('stasis bundle --deptree builds the same from a checkout with nothing installed, and writes nothing but the bundle and lockfile', withTmp(async (t, tmp) => {
-        // node:fs is wrapped in a preload, so each write through it is seen. The tarballs come from
-        // the cache the builds here fill, which is stasis's own (XDG_CACHE_HOME), read and never
-        // written: the CLI sets no cache for --deptree.
+      test('stasis bundle --deptree builds the same from a checkout with nothing installed, writes nothing in it but the bundle and lockfile, and caches what it fetches', withTmp(async (t, tmp) => {
+        // node:fs is wrapped in a preload, so each write through it is seen. The CLI caches in a
+        // directory of its own (STASIS_CACHE_DIR). The tarballs the builds here fetched are read
+        // from stasis's default cache (XDG_CACHE_HOME), which is never written; each version
+        // document is fetched, into the CLI's cache, from which a second build reads it.
         const project = join(tmp, 'project')
+        const cache = join(tmp, 'cache')
+        const inCache = (p) => p === cache || p.startsWith(`${cache}/`)
         await Promise.all(Object.entries(oracles[packageManager].files).map(async ([file, text]) => {
           await mkdir(dirname(join(project, file)), { recursive: true })
           await writeFile(join(project, file), text)
         }))
-        const log = join(tmp, 'written.json')
         const spy = join(tmp, 'spy.mjs')
         await writeFile(spy, `
           import fs from 'node:fs'
@@ -261,11 +263,16 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
           }
           spy(fs, 'createWriteStream')
           syncBuiltinESMExports()
-          process.on('exit', () => save(${JSON.stringify(log)}, JSON.stringify(written)))
+          process.on('exit', () => save(process.env.WRITES_LOG, JSON.stringify(written)))
         `)
+        // -> the CLI's result, and every path it wrote.
+        const deptree = async (output, log) => {
+          const r = await run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', `--output=${output}`, '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), STASIS_CACHE_DIR: cache, XDG_CACHE_HOME: cacheRoot, WRITES_LOG: log } })
+          return { ...r, written: r.status === 0 ? JSON.parse(await readFile(log, 'utf8')) : [] }
+        }
         // Beside it, over what a real install left there, it builds nothing.
         const [r, installed] = await Promise.all([
-          run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', '--output=out.br', '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: cacheRoot } }),
+          deptree('out.br', join(tmp, 'written.json')),
           run(['bundle', '--deptree', '--scope=full', '--output=deptree.br', 'src/entry.js'], { cwd: oracles[packageManager].installedCopy }),
         ])
         t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
@@ -273,9 +280,14 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         t.assert.equal(unpinned(decode(await readFile(join(project, 'out.br')))), oracles[packageManager].bundle)
         t.assert.equal(await readFile(join(project, 'out.lock.json'), 'utf8'), oracles[packageManager].lockfile)
         const outputs = new Set([project, join(project, 'out.br'), join(project, 'out.lock.json')])
-        const written = JSON.parse(await readFile(log, 'utf8'))
-        t.assert.ok(written.includes(join(project, 'out.br')), 'the spy sees the bundle written')
-        t.assert.deepStrictEqual(written.filter((p) => !outputs.has(p)), [], 'nothing else is written')
+        t.assert.ok(r.written.includes(join(project, 'out.br')), 'the spy sees the bundle written')
+        t.assert.deepStrictEqual(r.written.filter((p) => !outputs.has(p) && !inCache(p)), [], 'nothing is written but the outputs and the cache')
+        t.assert.ok((await readdir(join(cache, 'npm', 'versions'))).length > 0, 'the version documents fetched are cached')
+        // Again, from that cache: the same bundle, and nothing more cached, as nothing more is fetched.
+        const again = await deptree('again.br', join(tmp, 'again.json'))
+        t.assert.equal(again.status, 0, `stderr: ${again.stderr}`)
+        t.assert.equal(decode(await readFile(join(project, 'again.br'))), decode(await readFile(join(project, 'out.br'))))
+        t.assert.deepStrictEqual(again.written.filter((p) => !outputs.has(p) && p !== join(project, 'again.br')), [], 'nothing is written but the outputs')
         t.assert.equal(installed.status, 1)
         t.assert.match(installed.stderr, new RegExp(`^Error: .*/node_modules is there already, and the tree is laid out from .*/${m.lockfile.replaceAll('.', '\\.')} alone, over nothing installed: remove it first$`, 'mu'))
         t.assert.equal(existsSync(join(oracles[packageManager].installedCopy, 'deptree.br')), false)

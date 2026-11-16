@@ -132,7 +132,9 @@ cwd, as [`stasis github-bundle`](github-bundle.md#dependencies) lays them out
 folder for a Solidity one), and the rest of the project is read from disk
 through them. In a checkout, it is the bundle a fresh install and a plain
 `stasis bundle` give, but that each dependency's `repo` records the commit it
-was published from, as `github-bundle`'s does.
+was published from, as `github-bundle`'s does. Without `--deptree`,
+`stasis bundle` reads the dependencies installed on disk alone: it fetches
+nothing and caches nothing.
 
 ```sh
 git clone https://github.com/owner/name && cd name
@@ -151,11 +153,16 @@ stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
   projects' `node_modules`, or Soldeer's `dependencies` folder) the project has
   to hold nothing, not even a link, or it refuses. Every refusal comes before
   anything is fetched.
-- Nothing is written but the bundle (and `--lockfile`): nothing is cached.
+- Nothing is written in the project but the bundle (and `--lockfile`). What
+  is fetched is cached where `stasis github-bundle` caches it: the user cache
+  directory, or `STASIS_CACHE_DIR` where it is set (see
+  [audit](audit.md#repository-advisories)). That covers each npm package's
+  tarball and version document, each Soldeer zip and each tree fetched from
+  GitHub, so a second build fetches none of them again.
   The tree is never [lazy](github-bundle.md#lazy---no-lazy): every package is
   fetched before the build. Every tarball and zip is held to the lockfile. An npm package's tarball is
-  read from a cache that holds it already (npm's, or `stasis github-bundle`'s),
-  else fetched from the registry, as is each Soldeer zip; a Soldeer git
+  read from a cache that holds it already (npm's, or stasis's own), else
+  fetched from the registry, as is each Soldeer zip; a Soldeer git
   dependency on GitHub is fetched with `GITHUB_TOKEN` where it is set.
 - A private (scoped) npm package is fetched with the first of
   `PREVENTIVE_MEASURES_NPM_TOKEN`, `STASIS_NPM_TOKEN` and `NPM_TOKEN` that is

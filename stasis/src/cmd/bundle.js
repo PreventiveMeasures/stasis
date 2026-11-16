@@ -2180,10 +2180,10 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
   const bundleExtra = builds !== undefined
   let union, root
   if (deptree) {
-    // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
+    // The disk read through the tree, what is fetched cached where setCacheDir says (the CLI's user cache directory).
     const { createClient } = await import('@preventive/upstream/github.js')
     const built = await withNpmToken(home, () => buildFromLockfile('bundleCommand', diskHost, {
-      cwd: resolve(cwd), lockfile, cache: false, lazy: false, client: createClient({ token: env.GITHUB_TOKEN || null }),
+      cwd: resolve(cwd), lockfile, lazy: false, client: createClient({ token: env.GITHUB_TOKEN || null }),
     }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true, why: '--deptree lays out the dependencies from a lockfile' }))
     console.warn(unpackedSummary(built.stats))
     root = built.root
