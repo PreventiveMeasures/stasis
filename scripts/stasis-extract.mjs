@@ -12,19 +12,8 @@ const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefine
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
 // Not an array or a string, which would read as files named by index.
 const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
-// The file names no bundle may carry, at any depth and in any case, as stasis-core's FORBIDDEN_FILE_NAMES (which says
-// why): a stasis lockfile, a package manager's hook or config, a Yarn Plug'n'Play file, or `.git` anywhere in the path.
-const named = (pattern) => (path) => pattern.test(basename(path))
-const FORBIDDEN_FILE_NAMES = [
-  [named(/^stasis\.lock\.json$/iu), 'a lockfile'],
-  [named(/^\.npm-extension\.[cm]?[jt]s$/iu), 'an npm extension'],
-  [named(/^\.?pnpmfile\.[cm]?[jt]s$/iu), 'a pnpmfile'],
-  [named(/^\.npmrc$/iu), 'an npm config'],
-  [named(/^\.yarnrc(?:\.yml)?$/iu), 'a Yarn config'],
-  [named(/^\.?bunfig\.toml$/iu), 'a Bun config'],
-  [named(/^\.pnp\.(?:c?js|loader\.mjs|data\.json)$/iu), 'a Yarn Plug\'n\'Play file'],
-  [(path) => path.split('/').some((segment) => segment.toLowerCase() === '.git'), 'git metadata'],
-]
+// What no bundle may carry, at any depth and in any case, as stasis-core's FORBIDDEN_FILE_NAMES (which says why).
+const FORBIDDEN = /(?:^|\/)(?:\.git(?:\/|$)|(?:stasis\.lock\.json|\.npm-extension\.[cm]?[jt]s|\.?pnpmfile\.[cm]?[jt]s|\.npmrc|\.yarnrc(?:\.yml)?|\.?bunfig\.toml|\.pnp\.(?:c?js|loader\.mjs|data\.json))\/?$)/iu
 
 function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
@@ -68,8 +57,7 @@ function extract(bundleFile, output = '.') {
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
     // A record written as nothing is refused too, as stasis extract refuses it.
-    const forbidden = FORBIDDEN_FILE_NAMES.find(([test]) => test(path))
-    assert(forbidden === undefined, `extract: the bundle carries ${forbidden?.[1]}: ${path}`)
+    assert(!FORBIDDEN.test(path), `extract: the bundle carries a forbidden file: ${path}`)
     if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
     // Canonical relative paths only, so every write stays inside outDir.

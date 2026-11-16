@@ -191,12 +191,11 @@ test('stasis-extract.mjs refuses a stasis.lock.json, or a <name>.stasis.lock.jso
 }))
 
 test('stasis-extract.mjs refuses a file of a forbidden name, naming it and writing nothing', withTmp((t, tmp) => {
-  for (const [file, what] of [['.npm-extension.mjs', 'an npm extension'], ['lib/.pnpmfile.cjs', 'a pnpmfile'], ['PNPMFILE.MTS', 'a pnpmfile'], ['.npmrc', 'an npm config'],
-    ['.yarnrc.yml', 'a Yarn config'], ['bunfig.toml', 'a Bun config'], ['.pnp.loader.mjs', 'a Yarn Plug\'n\'Play file'], ['.git/hooks/post-checkout', 'git metadata']]) {
+  for (const file of ['stasis.lock.json', '.npm-extension.mjs', 'lib/.pnpmfile.cjs', 'PNPMFILE.MTS', '.npmrc', '.yarnrc', '.yarnrc.yml', 'bunfig.toml', '.pnp.loader.mjs', '.git', '.git/hooks/post-checkout']) {
     writeBundle(join(tmp, 'bundle.code.br'), v1({ 'a.js': 'a\n' }, { modules: dep({ 'index.js': '1\n', [file]: 'x\n' }) }))
     const r = runScript(['-o', join(tmp, 'out'), join(tmp, 'bundle.code.br')])
     t.assert.equal(r.status, 1, file)
-    t.assert.ok(r.stderr.includes(`extract: the bundle carries ${what}: node_modules/foo/${file}`), r.stderr)
+    t.assert.ok(r.stderr.includes(`extract: the bundle carries a forbidden file: node_modules/foo/${file}`), r.stderr)
     t.assert.ok(!existsSync(join(tmp, 'out')), file)
   }
 }))

@@ -29,7 +29,7 @@ bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. As
 `stasis extract` does, it refuses a bundle carrying a file of a name no bundle
 carries, a `stasis.lock.json`, a package manager's hook or config, a Yarn
 Plug'n'Play file or `.git` (see [Untrusted input](#untrusted-input)), naming it:
-`extract: the bundle carries a pnpmfile: node_modules/dep/.pnpmfile.cjs`. It is
+`extract: the bundle carries a forbidden file: node_modules/dep/.pnpmfile.cjs`. It is
 not published in any package.
 
 ## What it writes
