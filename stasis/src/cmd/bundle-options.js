@@ -177,7 +177,7 @@ function buildOptions(values, lang) {
 }
 
 function outputOptions(values, { js, sol, jsAndSol }) {
-  if (values.lockfile && !js) throw new Error('--lockfile is only valid for JS bundles')
+  if ((values.lockfile || values['lockfile-only']) && !js) throw new Error(`--${values.lockfile ? 'lockfile' : 'lockfile-only'} is only valid for JS bundles`)
   const deptree = Boolean(values.deptree)
   if (deptree && !js && !sol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
   // The CONSENT_FLAGS that run a program of the project's from disk, where --deptree installs nothing.
@@ -188,7 +188,7 @@ function outputOptions(values, { js, sol, jsAndSol }) {
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
   const lockfileOnly = Boolean(values['lockfile-only'])
-  checkLockfileOnly('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'], format: values.format })
+  checkLockfileOnly('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'], format: values.format, named: true })
   bundleFormat('', { format: values.format, output: values.output, brotliQuality: values['brotli-quality'] })
   return { output: values.output, format: values.format, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
 }

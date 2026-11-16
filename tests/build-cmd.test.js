@@ -36,8 +36,10 @@ const {
 // spawn. Blocking spawnSync would stall the node:test event loop and collapse the
 // describe-level `concurrency` below; spawn() + once('close') yields so the builds
 // overlap. Each test still spawns its own process.
-const runCli = async (args, { cwd } = {}) => {
-  const child = spawn(process.execPath, [cli, ...args], { cwd, env: cleanEnv })
+// The fixture's stasis.lock.json, of a run of src/entry.js alone, attests no src/hello.js: held to in add.
+const UNFROZEN = { EXODUS_STASIS_LOCK: 'add' }
+const runCli = async (args, { cwd, env } = {}) => {
+  const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...cleanEnv, ...env } })
   const stdoutChunks = []
   const stderrChunks = []
   child.stdout.on('data', (d) => stdoutChunks.push(d))
@@ -681,7 +683,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
   test('build requires an entry when the artifact has several, and lists them', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     // Bundle two entry points (hello.js is a valid module entry of its own).
-    t.assert.equal((await runCli(['bundle', '--output=app.code.br', 'src/entry.js', 'src/hello.js'], { cwd: tmp })).status, 0)
+    t.assert.equal((await runCli(['bundle', '--output=app.code.br', 'src/entry.js', 'src/hello.js'], { cwd: tmp, env: UNFROZEN })).status, 0)
 
     const r = await runCli(['build', '--output=out.js', 'app.code.br'], { cwd: tmp })
     t.assert.notEqual(r.status, 0)
@@ -692,7 +694,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
 
   test('build builds the selected entry from a multi-entry artifact', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    t.assert.equal((await runCli(['bundle', '--output=app.code.br', 'src/entry.js', 'src/hello.js'], { cwd: tmp })).status, 0)
+    t.assert.equal((await runCli(['bundle', '--output=app.code.br', 'src/entry.js', 'src/hello.js'], { cwd: tmp, env: UNFROZEN })).status, 0)
 
     const r = await runCli(['build', '--output=out.js', 'app.code.br', 'src/entry.js'], { cwd: tmp })
     t.assert.equal(r.status, 0, r.stderr)
@@ -702,7 +704,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
 
   test('build rejects an entry that is not an entry point of the artifact', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    t.assert.equal((await runCli(['bundle', '--output=app.code.br', 'src/entry.js', 'src/hello.js'], { cwd: tmp })).status, 0)
+    t.assert.equal((await runCli(['bundle', '--output=app.code.br', 'src/entry.js', 'src/hello.js'], { cwd: tmp, env: UNFROZEN })).status, 0)
 
     const r = await runCli(['build', '--output=out.js', 'app.code.br', 'src/nope.js'], { cwd: tmp })
     t.assert.notEqual(r.status, 0)

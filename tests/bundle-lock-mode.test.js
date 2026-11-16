@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -9,7 +9,7 @@ import { lockfile } from './vfs-bundle-github.helper.js'
 
 // `stasis bundle` and the stasis.lock.json there: what it builds held to what the lockfile records,
 // by the lock mode the project's runs take (EXODUS_STASIS_LOCK, or frozen where stasis.config.json
-// pins it; add by default).
+// pins it), else frozen where the lockfile is there (add under --add).
 
 const OTHER = `sha512-${'B'.repeat(85)}A==`
 const { EXODUS_STASIS_LOCK: _lock, EXODUS_STASIS_LOCK_FILE: _file, ...env } = process.env
@@ -26,30 +26,65 @@ const build = (dir, { lock, ...options } = {}) => bundleCommand({ cwd: dir, entr
 
 test('stasis bundle in lock = add holds what it builds to the stasis.lock.json there, with --lockfile or not, and writes the one built, or with --add both merged', withTmp(async (t, dir) => {
   project(dir)
-  await build(dir, { lockfile: 'stasis.lock.json' })
+  const inAdd = (at, options) => build(at, { lock: 'add', ...options })
+  await inAdd(dir, { lockfile: 'stasis.lock.json' })
   const lockPath = join(dir, 'stasis.lock.json')
   const written = readFileSync(lockPath, 'utf8')
   const lock = JSON.parse(written)
   lock.sources['.'].files['index.js'] = OTHER
   writeJson(lockPath, lock)
   const edited = readFileSync(lockPath, 'utf8')
-  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json: content mismatch for 'index\.js'$/u, 'without --lockfile: read all the same')
-  await t.assert.rejects(build(dir, { lockfile: 'stasis.lock.json' }), /content mismatch for 'index\.js'/u, 'with it: not overwritten')
+  await t.assert.rejects(inAdd(dir), /^Error: stasis\.lock\.json: content mismatch for 'index\.js'$/u, 'without --lockfile: read all the same')
+  await t.assert.rejects(inAdd(dir, { lockfile: 'stasis.lock.json' }), /content mismatch for 'index\.js'/u, 'with it: not overwritten')
   t.assert.equal(readFileSync(lockPath, 'utf8'), edited, 'left as it was')
   // Held to what it records, the lockfile written is the one built, which the bundle beside it pairs
   // with; with --add, both merged.
   writeFileSync(lockPath, written)
   writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
-  await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json' })
+  await inAdd(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json' })
   t.assert.deepStrictEqual([readJson(lockPath).entries, readBundle(dir).entries], [['more.js'], ['more.js']])
   writeFileSync(lockPath, written)
-  await build(dir, { lockfile: 'stasis.lock.json' })
-  await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json', add: true })
+  await inAdd(dir, { lockfile: 'stasis.lock.json' })
+  await inAdd(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json', add: true })
   const merged = readJson(lockPath)
   t.assert.deepStrictEqual([Object.keys(merged.sources['.'].files).toSorted(), merged.entries.toSorted(), readBundle(dir).entries.toSorted()], [['index.js', 'more.js'], ['index.js', 'more.js'], ['index.js', 'more.js']])
   // One changed since is refused, as for a run.
   writeFileSync(join(dir, 'more.js'), 'module.exports = 3\n')
-  await t.assert.rejects(build(dir, { entries: ['more.js'] }), /stasis\.lock\.json: content mismatch for 'more\.js'/u)
+  await t.assert.rejects(inAdd(dir, { entries: ['more.js'] }), /stasis\.lock\.json: content mismatch for 'more\.js'/u)
+}))
+
+test('stasis bundle with no lock mode given holds the build to a stasis.lock.json there, frozen, and leaves it as it is; --lockfile-only writes one where none is, stasis.lock.json by default', withTmp(async (t, dir) => {
+  project(dir)
+  const warn = t.mock.method(console, 'warn', () => {})
+  const said = () => warn.mock.calls.slice(-1)[0].arguments[0]
+  const lockPath = join(dir, 'stasis.lock.json')
+  const only = (options) => build(dir, { lockfileOnly: true, output: undefined, ...options })
+  await only()
+  t.assert.equal(said(), '[stasis] Locked 1 files in 1 package from . to stasis.lock.json')
+  t.assert.ok(!existsSync(join(dir, 'out.br')), 'no bundle written')
+  const written = readFileSync(lockPath, 'utf8')
+  await only()
+  t.assert.equal(said(), '[stasis] Held 1 files in 1 package from . to stasis.lock.json')
+  await build(dir)
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  t.assert.equal(readFileSync(lockPath, 'utf8'), written, 'left as it is')
+  // A file it doesn't attest refused; in add, or under --add, held to what it records and written anew.
+  writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
+  for (const options of [{}, { lockfile: 'stasis.lock.json' }, { lockfileOnly: true, output: undefined }]) {
+    await t.assert.rejects(build(dir, { entries: ['index.js', 'more.js'], ...options }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u, JSON.stringify(options)) // eslint-disable-line no-await-in-loop -- one lockfile, read by each
+  }
+  t.assert.equal(readFileSync(lockPath, 'utf8'), written)
+  await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json', add: true })
+  t.assert.deepStrictEqual(Object.keys(readJson(lockPath).sources['.'].files).toSorted(), ['index.js', 'more.js'])
+  await only({ entries: ['index.js', 'more.js'], lock: 'add' })
+  // EXODUS_STASIS_LOCK_FILE's, as a run finds it; none of a bundle with no lockfile, nor in ignore or none.
+  rmSync(lockPath)
+  await bundleCommand({ cwd: dir, entries: ['index.js'], lockfileOnly: true, env: { ...env, EXODUS_STASIS_LOCK_FILE: join(dir, 'locks', 'app.lock.json') } })
+  t.assert.ok(existsSync(join(dir, 'locks', 'app.lock.json')))
+  t.assert.ok(!existsSync(lockPath))
+  writeFileSync(join(dir, 'run.sh'), 'echo 1\n')
+  await t.assert.rejects(only({ entries: ['run.sh'] }), /^Error: bundleCommand: --lockfile is only valid for JS bundles$/u)
+  for (const lock of ['ignore', 'none']) await t.assert.rejects(only({ lock }), { message: `bundleCommand: --lockfile-only: lock = ${lock} writes no lockfile` }) // eslint-disable-line no-await-in-loop -- one project
 }))
 
 test('stasis bundle in lock = ignore leaves stasis.lock.json alone, in replace rewrites it, in none refuses one: as a run takes them', withTmp(async (t, dir) => {
@@ -73,7 +108,7 @@ test('stasis bundle in lock = ignore leaves stasis.lock.json alone, in replace r
   await t.assert.rejects(build(dir, { lockfile: 'stasis.lock.json', lock: 'none' }), /^Error: bundleCommand: --lockfile: lock = none writes no lockfile$/u)
 }))
 
-test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.json, and refuses --lockfile', withTmp(async (t, dir) => {
+test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.json, and leaves it as it is', withTmp(async (t, dir) => {
   project(dir)
   writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
   await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json isn't there, and lock = frozen holds the build to it$/u)
@@ -84,7 +119,9 @@ test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.j
   const lockPath = join(dir, 'stasis.lock.json')
   const before = readFileSync(lockPath, 'utf8')
   await frozen()
-  await t.assert.rejects(frozen({ lockfile: 'stasis.lock.json' }), /^Error: bundleCommand: --lockfile: lock = frozen writes no lockfile$/u)
+  await frozen({ lockfile: 'stasis.lock.json' })
+  await frozen({ lockfile: 'stasis.lock.json', lockfileOnly: true, output: undefined })
+  t.assert.equal(readFileSync(lockPath, 'utf8'), before, '--lockfile and --lockfile-only write nothing')
   writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
   await t.assert.rejects(frozen({ entries: ['index.js', 'more.js'] }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u)
   t.assert.equal(readFileSync(lockPath, 'utf8'), before, 'not written')

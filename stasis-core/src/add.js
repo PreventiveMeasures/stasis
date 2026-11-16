@@ -4,7 +4,8 @@ import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
-import { compressBundleText, parseBundleBytes } from './brotli.js'
+import { compressBundle, parseBundleBytes } from './brotli.js'
+import { lockfileFromBundle } from './extract.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
 import { excludedText, linksOn, moduleExcluder, parsePolicy, recordedIn } from './policy.js'
@@ -239,7 +240,8 @@ export function validateFiles({ baseDir, realBase, files, resources, label = 'ad
   return { codeFiles, resourceFiles }
 }
 
-export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-core' } = {}) {
+// With `lockfileOnly`, the lockfile alone: the one there, as it is merged, else one of the bundles as the add leaves them.
+export function addCommand({ cwd = process.cwd(), entries, lockfileOnly = false, logLabel = 'stasis-core' } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('add: at least one file is required')
   const baseDir = resolve(cwd)
   const realBase = realpathSync(baseDir)
@@ -279,6 +281,8 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   // keeps peak memory at one target's.
   const summary = []
   const writes = []
+  // Each bundle as the add leaves it.
+  const after = new Map(bundles)
   const plan = (target, existing, added, kind, write) => {
     let merged = added
     let before = 0
@@ -288,8 +292,11 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
       merged = existing.merge(added)
     }
     const total = fileCount(merged)
-    writes.push(() => write(merged))
-    summary.push(`+${total - before} ${kind ? `${kind} ` : ''}(${total} total) -> ${target}`)
+    if (write !== undefined) {
+      writes.push(() => write(merged))
+      summary.push(`+${total - before} ${kind ? `${kind} ` : ''}(${total} total) -> ${target}`)
+    }
+    return merged
   }
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
@@ -298,10 +305,13 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     const added = attest(existing, assemble(entriesForTarget, repo), companion)
     check?.(added)
     const abs = resolve(baseDir, target)
-    plan(target, existing, added, kind, (bundle) => {
+    const merged = plan(target, existing, added, kind, lockfileOnly ? undefined : (bundle) => {
       mkdirSync(dirname(abs), { recursive: true })
-      writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
+      writeFileSync(abs, compressBundle(bundle, brotliQuality))
     })
+    after.set(target, merged)
+    // Serialized under lockfileOnly too: never write a lockfile of a bundle that couldn't be written.
+    if (lockfileOnly) merged.serializedBytes()
   }
   const allFiles = new Map([...codeFiles, ...resourceFiles])
   if (resourcesBundleFile) {
@@ -317,6 +327,12 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   if (hasLock) {
     const added = Lockfile.fromBundle(assemble(allFiles), (file, content) => bundledIntegrity(content, allFiles.get(file).format))
     plan(LOCK_FILE, lock, attest(lock, added), '', (merged) => writeFileSync(lockPath, merged.serialize()))
+  } else if (lockfileOnly) {
+    const created = [...after.values()].filter(Boolean).map(lockfileFromBundle).reduce((a, b) => a.merge(b))
+    // It attests what a bundle the add leaves alone carries too: held to the policy whole.
+    check?.(created, recordedIn(LOCK_FILE))
+    writes.push(() => writeFileSync(lockPath, created.serialize()))
+    summary.push(`+${fileCount(created)} (${fileCount(created)} total) -> ${LOCK_FILE}`)
   }
   if (excluded.size > 0) summary.push(`skipped ${excluded.size} auto-excluded`)
 
