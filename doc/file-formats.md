@@ -499,6 +499,14 @@ and in any case:
 | `.pnp.cjs`, `.pnp.js`, `.pnp.loader.mjs`, `.pnp.data.json` | Yarn's Plug'n'Play: the runtime Yarn preloads, and the map it, and the bundlers that read it, resolve each import with |
 | `.git`, a directory or a file, anywhere in the path | git's: the commands its config names (`core.fsmonitor`, `core.hooksPath`) and its hooks, which git runs |
 
+Two more are forbidden only in a dependency, under `node_modules`, as the
+project's own may be carried:
+
+| Name | What it is |
+| --- | --- |
+| `pnpm-workspace.yaml` | pnpm's workspace manifest: it roots a workspace of its own, with its settings (`pnpmfile`, `overrides`, ...) |
+| `.env`, `.env.*`, `*.env` | env files, which Bun and others load as the project's, and which hold secrets |
+
 A bundle whose files reach one, a dependency's included, is refused as one
 reaching `stasis.lock.json` is, writing and reading alike:
 

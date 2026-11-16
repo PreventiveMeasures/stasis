@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
-import { brotliCompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { extractCommand } from '@exodus/stasis-core/extract'
@@ -38,6 +38,10 @@ const LOOKALIKES = [
   'pnp.cjs', '.pnp.mjs', '.pnp.data.js', '.pnp.loader.cjs', '.pnp.cjs.map',
   '.gitignore', '.gitattributes', '.gitmodules', '.github/workflows/ci.yml', 'git/config', '.git.js', 'a.git/config', '.gits/config',
 ]
+
+// Forbidden in a dependency only.
+const IN_PACKAGE = ['pnpm-workspace.yaml', '.env', '.env.local', '.env.production.local', 'prod.env']
+const IN_PACKAGE_LOOKALIKES = ['pnpm-workspace.yml', 'pnpm-workspace.json', 'my-pnpm-workspace.yaml', '.envrc', 'env', '.environment', 'x.env.bak', '.env.local/index.js']
 
 const refusal = (key) => new RegExp(`bundle: ${key.replaceAll('.', '\\.')} is a file no bundle may carry`)
 
@@ -75,8 +79,20 @@ test('Bundle.parse refuses a forbidden name in any package, a node_modules-scope
   }
 })
 
+test('Bundle refuses a dependency\'s pnpm workspace manifest or env file, and carries the project\'s own', (t) => {
+  for (const name of IN_PACKAGE) {
+    for (const key of [`${DEP}${name}`, `${DEP}lib/${name}`, `${DEP}${name.toUpperCase()}`, `node_modules/.pnpm/dep@1.0.0/${DEP}${name}`]) {
+      t.assert.throws(() => bundleWith(key).serialize(), refusal(key), key)
+    }
+    const nm = { version: 1, config: { scope: 'node_modules' }, formats: {}, imports: {}, modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', files: { [name]: 'x\n' } } } }
+    t.assert.throws(() => Bundle.parse(JSON.stringify(nm)), refusal(`${DEP}${name}`), name)
+    for (const key of [name, `packages/x/${name}`, `x_node_modules/${name}`]) t.assert.ok(Bundle.parse(bundleWith(key).serialize()).sources.has(key), key)
+  }
+  for (const key of IN_PACKAGE_LOOKALIKES.map((name) => `${DEP}${name}`)) t.assert.ok(Bundle.parse(bundleWith(key).serialize()).sources.has(key), key)
+})
+
 test('extract refuses a bundle carrying a forbidden name, writing nothing', withTmp((t, tmp) => {
-  for (const name of FORBIDDEN) {
+  for (const name of [...FORBIDDEN, ...IN_PACKAGE]) {
     const bundleFile = join(tmp, 'evil.code.br')
     const json = { version: 1, config: { scope: 'node_modules' }, formats: {}, imports: {}, modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', files: { 'index.js': 'export {}\n', [name]: 'x\n' } } } }
     writeFileSync(bundleFile, brotliCompressSync(JSON.stringify(json)))
@@ -132,5 +148,24 @@ test('no run ships a package\'s config or git metadata it reads, even one declar
       ['run', '--lock=ignore', '--bundle=add', '--fs=sync', 'src/entry.js'],
       ['run', '--lock=ignore', '--dependencies', '--bundle=add', '--fs=sync', 'src/entry.js'],
     ]) assertRefused(t, dir, name, args)
+  }
+}))
+
+test('bundle and add refuse a dependency\'s pnpm workspace manifest or env file that extra or add names, and take the project\'s own', withTmp((t, tmp) => {
+  const coreCli = join(here, '..', 'stasis-core', 'bin', 'stasis-core.js')
+  for (const name of ['pnpm-workspace.yaml', '.env']) {
+    const dir = join(tmp, name)
+    reachingProject(dir, 'index.js')
+    for (const path of [name, `${DEP}${name}`]) writeFileSync(join(dir, path), 'x: 1\n')
+    writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ resources: ['yaml', 'env'], extra: [`${DEP}${name}`] }))
+    assertRefused(t, dir, name, ['bundle', '--output=stasis.code.br', 'src/entry.js'])
+    writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ resources: ['yaml', 'env'] }))
+    const r = spawnSync(process.execPath, [coreCli, 'add', `${DEP}${name}`], { cwd: dir, env: cleanEnv, encoding: 'utf-8' })
+    t.assert.notEqual(r.status, 0, `add ${name}`)
+    t.assert.match(stripVTControlCharacters(r.stderr), refusal(`${DEP}${name}`), `add ${name}`)
+    writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ resources: ['yaml', 'env'], extra: [name] }))
+    const own = spawnSync(process.execPath, [cli, 'bundle', '--output=stasis.code.br', 'src/entry.js'], { cwd: dir, env: cleanEnv, encoding: 'utf-8' })
+    t.assert.equal(own.status, 0, own.stderr)
+    t.assert.ok(Bundle.parse(brotliDecompressSync(readFileSync(join(dir, 'stasis.code.br'))).toString('utf8')).sources.has(name), name)
   }
 }))
