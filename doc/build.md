@@ -19,7 +19,7 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--format` | esbuild output format `esm`\|`cjs`\|`iife`. Default `esm` (`iife` under `--platform=hermes`). |
 | `--platform` | Target platform `node`\|`browser`\|`neutral` (esbuild's), or `hermes`. Default `node`. See [Hermes](#hermes---platformhermes). |
 | `--babel` | Transform every code file with the project's own `babel.config.*` before bundling. See [`--babel`](#the-projects-babel-config---babel). |
-| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as `stasis bundle --flow` does: one marked `@flow`, and any other esbuild can't parse. On under `--metro` (not with `--babel`). See [Flow](#flow). |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as `stasis bundle --flow` does: one marked `@flow`, and any other esbuild can't parse, lowering `react-native`'s own Flow code where stripping alone fails. On under `--metro` (not with `--babel`). See [Flow](#flow). |
 | `--minify`, `--sourcemap` | Forwarded to esbuild. |
 | `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); value forwarded verbatim, must be valid JS as esbuild's CLI expects (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). Under `--metro`, `__DEV__` and `process.env.NODE_ENV` have Metro's release values unless given. |
 | `--external=PATTERN` (repeatable) | esbuild [external](https://esbuild.github.io/api/#external). See [Externals](#externals). |
@@ -321,13 +321,17 @@ stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # -
 - An import listing types alone (`import { type A } from`) is dropped whole, as
   Babel's Flow transform drops it. A `--metro` bundle records no edge for it.
 - Stripping removes types only. Flow syntax that compiles to code (`component`
-  and `hook` declarations, `enum`s) stays, so such a file fails the build, as it
-  fails `stasis bundle --flow`. React Native 0.81's `View.js` and `VirtualView.js`
-  are two such files.
+  and `hook` declarations, `enum`s, `match`) stays, so such a file fails the
+  build, as it fails `stasis bundle --flow`, except in `react-native`: a file of
+  it that stripping alone leaves esbuild unable to parse has that syntax lowered
+  first, as `stasis bundle --flow` lowers it to read it (see
+  [JSX and Flow](bundle.md#jsx-and-flow)). React Native's `View.js`, `Text.js`
+  and `VirtualView.js` are such files. A lowered `enum` requires
+  `flow-enums-runtime`, which the bundle records for the file.
 
 [`--babel`](#the-projects-babel-config---babel) compiles all of Flow instead:
-React Native's preset strips the types and compiles `component`, `hook` and
-`enum` too, as Metro does. The project's config gets each file's bytes as they
+React Native's preset strips the types and compiles `component` and `hook`
+too, as Metro does (an `enum` it drops, as React Native 0.85's preset does). The project's config gets each file's bytes as they
 are, so `--flow` and `--babel` don't combine.
 
 ### Non-code assets (`--resources`)

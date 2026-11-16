@@ -14,7 +14,7 @@ import { assetData, assetModule } from '@preventive/rn/metro-assets.js'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { METRO_RELEASE_DEFINE } from '../define.js'
-import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from '../flow.js'
+import { FLOW_EXTS, hasFlowPragma, inReactNative, lowerFlowSyntax, stripFlowTypes } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
 import { writeFile } from './output.js'
@@ -158,22 +158,34 @@ function metroAssetResource(state, platform, built) {
 }
 
 // --flow, as Metro's Babel builds a file: Flow types stripped from a file marked `@flow`, else only where
-// esbuild can't parse it; what still doesn't parse fails the build in esbuild.
-function createFlowTransform(esbuild) {
-  return async (source, { path, loader }) => {
-    if (!FLOW_EXTS.has(extname(path))) return undefined
-    const text = String(source)
-    if (!hasFlowPragma(text)) {
-      try {
-        await esbuild.transform(text, { loader, sourcefile: path, logLevel: 'silent' })
-        return undefined
-      } catch { /* stripped below */ }
-    }
+// esbuild can't parse it, and in a file of react-native its Flow code lowered where stripping alone fails, as
+// `stasis bundle --flow` reads it; what still doesn't parse fails the build in esbuild.
+function createFlowTransform(esbuild, root) {
+  const parses = async (text, { path, loader }) => {
     try {
-      return { contents: stripFlowTypes(text, { removeEmptyImports: true }), loader }
+      await esbuild.transform(text, { loader, sourcefile: path, logLevel: 'silent' })
+      return true
     } catch {
-      return undefined
+      return false
     }
+  }
+  return async (source, file) => {
+    if (!FLOW_EXTS.has(extname(file.path))) return undefined
+    const text = String(source)
+    if (!hasFlowPragma(text) && await parses(text, file)) return undefined
+    let stripped
+    try {
+      stripped = stripFlowTypes(text, { removeEmptyImports: true })
+    } catch { /* lowered below, else left to esbuild */ }
+    if (inReactNative(relative(root, file.path)) && (stripped === undefined || !await parses(stripped, file))) {
+      let lowered
+      try {
+        lowered = lowerFlowSyntax(text, { removeEmptyImports: true }).stripped
+      } catch { /* left to esbuild */ }
+      // One that doesn't parse either leaves esbuild to report the stripped file, on the source's own lines.
+      if (lowered !== undefined && await parses(lowered, file)) return { contents: lowered, loader: file.loader }
+    }
+    return stripped === undefined ? undefined : { contents: stripped, loader: file.loader }
   }
 }
 
@@ -304,7 +316,7 @@ export async function buildCommand({
   let transform
   if (babel) transform = createBabelConfigTransform({ projectDir: cwd })
   else if (hermes) transform = createHermesTransform({ projectDir: cwd, esbuild })
-  if (flow) transform = transform === undefined ? createFlowTransform(esbuild) : chainTransforms(createFlowTransform(esbuild), transform)
+  if (flow) transform = transform === undefined ? createFlowTransform(esbuild, state.root) : chainTransforms(createFlowTransform(esbuild, state.root), transform)
   const builtAssets = new Map()
   const resource = metro === undefined ? undefined : metroAssetResource(state, metro, builtAssets)
 

@@ -9,7 +9,7 @@ import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { hostMemo } from './vfs-bundle/lazy.js'
-import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from './flow.js'
+import { FLOW_EXTS, hasFlowPragma, inReactNative, lowerFlowSyntax, stripFlowTypes } from './flow.js'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
 
@@ -136,7 +136,8 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
 const TYPE_KINDS = new Set(['type', 'typeof'])
 
 // Babel's Flow and TypeScript transforms erase such a statement whole (Node keeps it, as `import {} from`). --flow blanks
-// the types in place in `strippedSource`. The Metro plugin's transformer draws the same line.
+// the types of `source` (the file's, or its lowered Flow code) in place in `strippedSource`. The Metro plugin's
+// transformer draws the same line.
 function listsTypesOnly(node, { source, strippedSource }) {
   const specifiers = node.specifiers ?? []
   if (specifiers.length > 0) return specifiers.every((specifier) => TYPE_KINDS.has(specifier.importKind ?? specifier.exportKind))
@@ -303,14 +304,29 @@ export class Scan {
     }
   }
 
-  // null where stripping fails: the caller keeps oxc's parse, saying so where that failed (`failed`).
-  #stripFlow(src, file, failed) {
+  // `src` with its Flow types stripped, as `parse` reads it (null where it fails), with the text the types were blanked
+  // in: src, or in a file of react-native where stripping alone fails, src with its Flow code lowered (flow.js). null
+  // where that fails too: the caller keeps oxc's parse, saying so where it failed (`failed`).
+  #parseFlow(src, file, failed, parse) {
+    let why
     try {
-      return stripFlowTypes(src)
+      const strippedSource = stripFlowTypes(src)
+      const parsed = parse(strippedSource)
+      if (parsed !== null) return { parsed, source: src, strippedSource }
     } catch (cause) {
-      if (failed) console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`)
-      return null
+      why = `could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`
     }
+    if (inReactNative(file)) {
+      try {
+        const { lowered, stripped } = lowerFlowSyntax(src)
+        const parsed = parse(stripped)
+        if (parsed !== null) return { parsed, source: lowered, strippedSource: stripped }
+      } catch (cause) {
+        why = `could not lower the Flow syntax of ${file}; leaving it to oxc (${cause.message})`
+      }
+    }
+    if (failed && why !== undefined) console.warn(`[stasis] --flow: ${why}`)
+    return null
   }
 
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
@@ -359,18 +375,17 @@ export class Scan {
 
     // --flow, as Metro's Babel reads the file: one marked `@flow` even where oxc parses it (`f<T>(x)` a comparison
     // there), any other only where oxc's parse failed. A re-parse that still fails keeps the original's errors.
+    let source = src
     let strippedSource = null
     if (this.flow && FLOW_EXTS.has(ext) && (errors.length > 0 || hasFlowPragma(src))) {
-      const flowSrc = this.#stripFlow(src, file, errors.length > 0)
-      const asFlow = flowSrc === null ? null : cleanParse(flowSrc, baseSourceType)
+      const asFlow = this.#parseFlow(src, file, errors.length > 0, (text) => cleanParse(text, baseSourceType))
       if (asFlow !== null) {
-        parsed = asFlow
+        ({ parsed, source, strippedSource } = asFlow)
         format = declared ?? detectedFormat(parsed)
         errors = []
-        strippedSource = flowSrc
       }
     }
-    return { format, parsed, errors, source: src, strippedSource }
+    return { format, parsed, errors, source, strippedSource }
   }
 
   #scanFile(url, queue) {
