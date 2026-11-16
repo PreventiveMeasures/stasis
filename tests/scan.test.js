@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Scan, getParser, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
+import { inReactNative } from '../stasis/src/flow.js'
 import { loadTsconfigCompilerOptions, loadTsconfigPaths, packageTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 import { withTmp } from './tmp.helper.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -661,6 +662,83 @@ test('scan --flow leaves .ts sources to oxc (does not run flow-remove-types on T
   t.assert.ok(result.files.has('dep.ts'), 'the TS import graph is unaffected by --flow')
 }))
 
+// A project tree under `tmp`: `files` maps paths to contents (objects are JSON).
+const writeTree = (tmp, files) => {
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+}
+
+const FLOW_CODE = [
+  '/**',
+  ' * @flow strict-local',
+  ' */',
+  "import type { Label } from './types.js'",
+  "import { prefix } from './prefix.js'",
+  'export enum Mode { Quiet, Loud }',
+  'hook useLabel(name: string, mode: Mode): Label {',
+  '  return match (mode) { Mode.Quiet => prefix + name, Mode.Loud => prefix + name.toUpperCase() }',
+  '}',
+  'component Greeting(name: string, mode: Mode = Mode.Quiet) { return useLabel(name, mode) }',
+  'export default Greeting',
+  '',
+].join('\n')
+
+test('inReactNative holds for a file of the react-native package alone', (t) => {
+  const paths = [
+    'node_modules/react-native/Libraries/Text/Text.js',
+    '/app/node_modules/.pnpm/react-native@0.85.3/node_modules/react-native/Libraries/Text/Text.js',
+    'node_modules/react-native-greeting/Greeting.js',
+    'node_modules/react-native/node_modules/nested/index.js',
+    'Greeting.js',
+  ]
+  t.assert.deepStrictEqual(paths.map(inReactNative), [true, true, false, false, false])
+})
+
+test('scan --flow lowers the Flow code of a react-native file where stripping alone leaves it, and of no other package\'s', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app', version: '0.0.0', type: 'module' },
+    'node_modules/react-native/package.json': { name: 'react-native', version: '0.85.3' },
+    'node_modules/react-native/Greeting.js': FLOW_CODE,
+    'node_modules/react-native/prefix.js': "export const prefix = '> '\n",
+    'node_modules/flow-enums-runtime/package.json': { name: 'flow-enums-runtime', version: '0.0.6' },
+    'node_modules/flow-enums-runtime/index.js': 'module.exports = (members) => members\n',
+    'node_modules/react-native-greeting/package.json': { name: 'react-native-greeting', version: '1.0.0' },
+    'node_modules/react-native-greeting/Greeting.js': FLOW_CODE,
+  })
+  const result = scan(['react-native', 'react-native-greeting'].map((name) => join(tmp, 'node_modules', name, 'Greeting.js')), { flow: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.parseErrors.map((e) => [e.file, e.message]), [['node_modules/react-native-greeting/Greeting.js', 'Flow is not supported']])
+  t.assert.deepStrictEqual(result.files.get('node_modules/react-native/Greeting.js'), {
+    format: 'module',
+    edges: [
+      { kind: 'import', spec: './prefix.js', child: 'node_modules/react-native/prefix.js' },
+      { kind: 'require', spec: 'flow-enums-runtime', child: 'node_modules/flow-enums-runtime/index.js' },
+    ],
+  })
+  t.assert.deepStrictEqual(result.unresolved, [])
+}))
+
+test('scan --flow lowers a react-native file only where stripping alone fails, keeping a genuine parse error', withTmp((t, tmp) => {
+  const rn = join(tmp, 'node_modules', 'react-native')
+  writeTree(tmp, {
+    'node_modules/react-native/package.json': { name: 'react-native', version: '0.85.3', type: 'module' },
+    'node_modules/react-native/Greeting.js': FLOW_CODE,
+    'node_modules/react-native/typed.js': '// @flow\nimport type { T } from "./t.js"\nexport const f = (x: number): number => x\n',
+    'node_modules/react-native/broken.js': '// @flow\nexport const x: number = {\n',
+  })
+  const scanner = new Scan({ flow: true })
+  const typed = scanner.parseFile(join(rn, 'typed.js'))
+  t.assert.equal(typed.source, readFileSync(join(rn, 'typed.js'), 'utf8'))
+  t.assert.match(scanner.parseFile(join(rn, 'Greeting.js')).source, /function Greeting\(/u)
+
+  const warn = t.mock.method(console, 'warn', () => {})
+  const result = scan([join(rn, 'broken.js')], { flow: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.parseErrors.map((e) => e.file), ['node_modules/react-native/broken.js'])
+  t.assert.equal(warn.mock.callCount(), 1)
+  t.assert.match(warn.mock.calls[0].arguments[0], /^\[stasis\] --flow: could not strip Flow types from .*broken\.js; leaving it to oxc/u)
+}))
+
 // --- TypeScript resolution (typescript: true / --typescript). ---
 //
 // tsc never rewrites specifiers, so TS sources import each other by their OUTPUT names
@@ -1069,13 +1147,6 @@ test('scan typescriptPaths completes an alias target to .js/.jsx after the TS ex
   t.assert.deepStrictEqual(result.parseErrors, [])
 }))
 
-// A project tree under `tmp`: `files` maps paths to contents (objects are JSON).
-const writeTree = (tmp, files) => {
-  for (const [name, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, name)), { recursive: true })
-    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
-  }
-}
 const aliasTo = (target) => ({ compilerOptions: { paths: { '@/*': [target] } } })
 
 test('packageTsconfigPaths: in a monorepo, each file takes its own package\'s tsconfig.json', withTmp((t, tmp) => {

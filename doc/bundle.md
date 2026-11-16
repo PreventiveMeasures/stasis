@@ -823,9 +823,10 @@ stored source stays the original bytes. `.ts`/`.tsx` files are never stripped.
 It strips with `flow-remove-types`, a dependency of stasis resolved from where
 stasis is installed, never from the project being bundled, and combines with
 `--jsx`, `--conditions` and `--mainFields`; `--metro` turns it on.
-Stripping removes types only: Flow syntax that compiles to code, as `component`
-and `hook` declarations and `enum`s do, stays, so a file using it still doesn't
-parse (React Native 0.81's `View.js` and `VirtualView.js`).
+Stripping removes types only: Flow syntax that compiles to code (`component`
+and `hook` declarations, `enum`s, `match`) stays, so a file using it doesn't
+parse, unless it is React Native's own: there it is lowered first, as Metro's
+Babel lowers it.
 
 A file the scanner can't parse fails the bundle (`JS bundle would be broken at
 load time`), however it is reached, an import inside a function included: its

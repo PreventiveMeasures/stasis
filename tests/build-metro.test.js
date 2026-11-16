@@ -93,7 +93,7 @@ test('assetRegistryResolver resolves the registry from the asset, among the file
 
 // A React Native app: JSX in .js, a logo at three scales, an icon with an Android variant, a font, a
 // module with .ios/.android files, and React Native's asset registry (0.81's shape) installed.
-function rnProject(dir, { registry = true, index } = {}) {
+function rnProject(dir, { registry = true, index, files: extra = {} } = {}) {
   const files = {
     'package.json': JSON.stringify({ name: 'rn-app', version: '0.0.0', private: true }),
     'index.js': index ?? [
@@ -132,6 +132,7 @@ function rnProject(dir, { registry = true, index } = {}) {
       ].join('\n'),
     })
   }
+  Object.assign(files, extra)
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true })
     writeFileSync(join(dir, rel), content)
@@ -287,6 +288,59 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     const plain = await runCli(['build', '--format=cjs', '--output=plain.cjs', 'app.code.br'], { cwd: tmp })
     t.assert.notEqual(plain.status, 0)
     t.assert.match(plain.stderr, /Expected "\)" but found ":"\n\n {4}index\.js:4:/u)
+  }))
+
+  test('--metro builds react-native\'s Flow code as Metro\'s Babel lowers it', withTmp(async (t, tmp) => {
+    rnProject(tmp, {
+      index: [
+        "import Greeting from 'react-native/Libraries/Greeting'",
+        "import Mode from 'react-native/Libraries/Mode'",
+        "console.log(JSON.stringify({ forwardRef: Greeting.forwardRef, quiet: Greeting.render({ name: 'hi' }, 'a'), loud: Greeting.render({ name: 'hi', mode: Mode.Loud }, 'b'), cast: Mode.cast('Loud') }))",
+        '',
+      ].join('\n'),
+      files: {
+        'node_modules/react-native/Libraries/Greeting.js': [
+          '/**',
+          ' * @flow strict-local',
+          ' */',
+          "import type { Label } from './Label'",
+          "import * as React from 'react'",
+          "import Mode from './Mode'",
+          'hook useShout(text: string): Label {',
+          '  return text.toUpperCase()',
+          '}',
+          'component Greeting(ref: React.RefSetter<mixed>, name: string, mode: Mode = Mode.Quiet) {',
+          '  const label: Label = match (mode) {',
+          '    Mode.Quiet => name,',
+          '    Mode.Loud => useShout(name),',
+          '  }',
+          '  return { label, ref }',
+          '}',
+          'export default Greeting',
+          '',
+        ].join('\n'),
+        'node_modules/react-native/Libraries/Mode.js': '// @flow strict\nexport default enum Mode {\n  Quiet,\n  Loud,\n}\n',
+        'node_modules/react/package.json': JSON.stringify({ name: 'react', version: '19.2.3' }),
+        'node_modules/react/index.js': 'exports.forwardRef = (render) => ({ forwardRef: true, render })\n',
+        'node_modules/flow-enums-runtime/package.json': JSON.stringify({ name: 'flow-enums-runtime', version: '0.0.6' }),
+        'node_modules/flow-enums-runtime/index.js': [
+          'const createEnum = (members) => Object.freeze({ ...members, cast: (value) => (Object.values(members).includes(value) ? value : undefined) })',
+          'createEnum.Mirrored = (names) => createEnum(Object.fromEntries(names.map((name) => [name, name])))',
+          'module.exports = createEnum',
+          '',
+        ].join('\n'),
+      },
+    })
+    const bundled = await runCli(['bundle', '--metro', '--platforms=ios,android', '--output=app.code.br', 'index.js'], { cwd: tmp })
+    t.assert.equal(bundled.status, 0, bundled.stderr)
+    const r = await runCli(['build', '--format=cjs', '--metro=ios', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    t.assert.deepStrictEqual(JSON.parse(runNode(t, join(tmp, 'out.cjs'))), {
+      forwardRef: true,
+      quiet: { label: 'hi', ref: 'a' },
+      loud: { label: 'HI', ref: 'b' },
+      cast: 'Loud',
+    })
   }))
 
   test('--metro fails closed where the bundle carries no asset registry', withTmp(async (t, tmp) => {

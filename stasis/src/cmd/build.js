@@ -14,9 +14,10 @@ import { assetData, assetModule } from '@preventive/rn/metro-assets.js'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { METRO_RELEASE_DEFINE } from '../define.js'
-import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from '../flow.js'
+import { FLOW_EXTS, hasFlowPragma, stripFlow } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
+import { getParser, syntaxErrors } from '../scan.js'
 import { writeFile } from './output.js'
 
 export { bundleFromLockfile }
@@ -169,11 +170,11 @@ function createFlowTransform(esbuild) {
         return undefined
       } catch { /* stripped below */ }
     }
-    try {
-      return { contents: stripFlowTypes(text, { removeEmptyImports: true }), loader }
-    } catch {
-      return undefined
-    }
+    // oxc, as the scan checks it, so the build lowers what the bundle's scan lowered.
+    const lang = loader === 'jsx' ? 'jsx' : 'js'
+    const parses = (code) => syntaxErrors(getParser().parseSync(path, code, { sourceType: 'unambiguous', lang })).length === 0
+    const { stripped } = stripFlow(text, path, parses, { removeEmptyImports: true })
+    return stripped === undefined ? undefined : { contents: stripped, loader }
   }
 }
 

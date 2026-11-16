@@ -9,7 +9,7 @@ import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { hostMemo } from './vfs-bundle/lazy.js'
-import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from './flow.js'
+import { FLOW_EXTS, hasFlowPragma, stripFlow } from './flow.js'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
 
@@ -303,16 +303,6 @@ export class Scan {
     }
   }
 
-  // null where stripping fails: the caller keeps oxc's parse, saying so where that failed (`failed`).
-  #stripFlow(src, file, failed) {
-    try {
-      return stripFlowTypes(src)
-    } catch (cause) {
-      if (failed) console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`)
-      return null
-    }
-  }
-
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
   parseFile(file) {
     const ext = extname(file)
@@ -359,18 +349,19 @@ export class Scan {
 
     // --flow, as Metro's Babel reads the file: one marked `@flow` even where oxc parses it (`f<T>(x)` a comparison
     // there), any other only where oxc's parse failed. A re-parse that still fails keeps the original's errors.
+    let source = src
     let strippedSource = null
     if (this.flow && FLOW_EXTS.has(ext) && (errors.length > 0 || hasFlowPragma(src))) {
-      const flowSrc = this.#stripFlow(src, file, errors.length > 0)
-      const asFlow = flowSrc === null ? null : cleanParse(flowSrc, baseSourceType)
-      if (asFlow !== null) {
-        parsed = asFlow
+      const flow = stripFlow(src, file, (text) => cleanParse(text, baseSourceType))
+      if (flow.parsed !== null) {
+        ({ parsed, source, stripped: strippedSource } = flow)
         format = declared ?? detectedFormat(parsed)
         errors = []
-        strippedSource = flowSrc
+      } else if (flow.error && errors.length > 0) {
+        console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${flow.error.message})`)
       }
     }
-    return { format, parsed, errors, source: src, strippedSource }
+    return { format, parsed, errors, source, strippedSource }
   }
 
   #scanFile(url, queue) {

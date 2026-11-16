@@ -118,6 +118,7 @@
   },
   "homepage": "https://github.com/PreventiveMeasures/stasis#readme",
   "dependencies": {
+    "@babel/generator": "^7.29.7",
     "@exodus/bytes": "^1.16.0",
     "@exodus/stasis-core": "1.0.0-rc.2",
     "@exodus/stasis-plugins": "1.0.0-rc.2",
@@ -128,6 +129,7 @@
     "@preventive/upstream": "^1.7.0",
     "@preventive/vfs": "^1.1.0",
     "flow-remove-types": "^2.322.0",
+    "hermes-parser": "^0.36.1",
     "oxc-parser": "^0.152.0"
   },
   "peerDependencies": {

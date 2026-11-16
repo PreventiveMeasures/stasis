@@ -321,9 +321,9 @@ stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # -
 - An import listing types alone (`import { type A } from`) is dropped whole, as
   Babel's Flow transform drops it. A `--metro` bundle records no edge for it.
 - Stripping removes types only. Flow syntax that compiles to code (`component`
-  and `hook` declarations, `enum`s) stays, so such a file fails the build, as it
-  fails `stasis bundle --flow`. React Native 0.81's `View.js` and `VirtualView.js`
-  are two such files.
+  and `hook` declarations, `enum`s, `match`) stays, so such a file fails the
+  build, as it fails `stasis bundle --flow`, unless it is React Native's own,
+  which is lowered first.
 
 [`--babel`](#the-projects-babel-config---babel) compiles all of Flow instead:
 React Native's preset strips the types and compiles `component`, `hook` and
