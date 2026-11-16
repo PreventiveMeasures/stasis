@@ -979,8 +979,8 @@ A directory expands to every file under it, minus what a sweep leaves out:
   `stasis add src/examples` sweeps the directory it was pointed at, `stasis add
   src` skips an `examples` it merely found;
 - type declarations (`.d.ts`, `.d.mts`, `.d.cts`), `*.env` files, stasis's own
-  artifacts (`stasis.lock.json`, `*stasis*.br`) and the bundles this run
-  writes to;
+  artifacts (`stasis.lock.json`, `*.stasis.lock.json`, `*stasis*.br`) and the
+  bundles this run writes to;
 - what a native walk leaves out: `*.md`, `*.log`, `*.map`, `*.flow` and
   `*.swiftdoc` files (and `*.bat` off Windows), `LICENSE`/`LICENCE`/
   `THIRD-PARTY-LICENSES`, `yarn.lock`, and tool configs such as `.prettierrc`,

@@ -76,6 +76,9 @@ const CASES = {
   'non-string content': [v1({ 'x.js': 42 }), 'refused'],
   'a stasis.lock.json': [v1({ 'sub/STASIS.LOCK.JSON': '{}' }), 'refused'],
   'a stat record of a stasis.lock.json': [v1({ 'a.js': '1', 'stasis.lock.json': '' }, { formats: { 'stasis.lock.json': 'stat:file' } }), 'refused'],
+  'an app.stasis.lock.json in the project': [v1({ 'a.js': '1', 'app.stasis.lock.json': '{}' }), 'refused'],
+  'an x.stasis.lock.json in a dependency': [v1({ 'a.js': '1' }, { modules: dep({ 'index.js': '1', 'lib/x.stasis.lock.json': '{}' }) }), 'refused'],
+  'names only resembling a stasis.lock.json': [v1({ 'my-stasis.lock.json': '{}', 'stasis.lock.json.bak': '{}', 'src/stasis.lock.jsonc': '{}' }), 'extracted'],
   'an npm extension in a dependency': [v1({ 'src/a.js': '1' }, { modules: dep({ 'index.js': '1', '.npm-extension.mjs': 'x' }) }), 'refused'],
   'an npm extension in a node_modules-scope bundle': [{ version: 1, config: { scope: 'node_modules' }, modules: dep({ 'lib/.npm-extension.cjs': 'x' }), formats: {}, imports: {} }, 'refused'],
   'an npm extension in the project, in any case': [v1({ 'packages/x/.NPM-Extension.MTS': 'x' }), 'refused'],
@@ -190,7 +193,7 @@ test('stasis-extract.mjs refuses a stasis.lock.json, or a <name>.stasis.lock.jso
     writeBundle(join(tmp, 'app.stasis.code.br'), v1({ 'a.js': 'a\n', [lock]: '{}' }))
     const r = runScript(['-o', join(tmp, 'out'), join(tmp, 'app.stasis.code.br')])
     t.assert.equal(r.status, 1, lock)
-    t.assert.ok(r.stderr.includes(`extract: the bundle carries a lockfile: ${lock}`), r.stderr)
+    t.assert.ok(r.stderr.includes(`extract: the bundle carries a forbidden file: ${lock}`), r.stderr)
     t.assert.ok(!existsSync(join(tmp, 'out')))
   }
 }))
