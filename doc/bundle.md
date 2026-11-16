@@ -37,7 +37,7 @@ may carry, every offender named and nothing written, see
 | `--babel` | With `--metro`: resolve through the import aliases of the project's `babel.config.*` (`babel-plugin-module-resolver`). See [Metro](#metro---metro). |
 | `--babel-aliases=path.json` | With `--metro`: resolve through the import aliases a JSON file of the project lists, as `--babel` would, without running anything. See [Metro](#metro---metro). |
 | `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
-| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as Metro's Babel does: one marked `@flow`, and any other oxc can't parse. In `react-native`'s own files, Flow syntax that compiles to code is lowered where stripping alone fails. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as Metro's Babel does: one marked `@flow`, and any other oxc can't parse. Lowers `react-native`'s own Flow code where stripping alone fails. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
@@ -716,8 +716,8 @@ config, rewrites it first, as it would under Metro.
 It builds as Metro's release build (`react-native bundle --dev false`) does:
 
 - `--jsx` and `--flow` are on, as Metro's Babel parses JSX in every file and
-  strips Flow types: JSX in a `.js` file parses, Flow types are stripped, and
-  React Native's own Flow code is lowered. See [JSX and Flow](#jsx-and-flow).
+  strips Flow types: JSX in a `.js` file parses, and Flow types are stripped.
+  See [JSX and Flow](#jsx-and-flow).
 - `__DEV__` is defined as `false` and `process.env.NODE_ENV` as
   `"production"`, the values Metro's release build inlines, so what only a dev
   build imports (`if (__DEV__) require(...)`) is left out. A `--define`, or an
@@ -823,26 +823,14 @@ stored source stays the original bytes. `.ts`/`.tsx` files are never stripped.
 It strips with `flow-remove-types`, a dependency of stasis resolved from where
 stasis is installed, never from the project being bundled, and combines with
 `--jsx`, `--conditions` and `--mainFields`; `--metro` turns it on.
-Stripping removes types only: Flow syntax that compiles to code, as `component`
-and `hook` declarations, `enum`s and `match` do, stays, so a file using it still
-doesn't parse, except in `react-native`, whose own sources use it (`View.js` and
-`VirtualView.js` since 0.81, `Text.js` since 0.85):
-
-- A file of `react-native`, the package installed at `node_modules/react-native`
-  (not a package nested in it, nor one named like it), that stripping alone
-  leaves unparseable has that syntax lowered first, as Metro's Babel lowers it,
-  then its types stripped. A `component` or `hook` declaration becomes a
-  function, a component's `ref` going through `React.forwardRef` as React
-  Native's preset builds it; a `match` becomes conditionals; and an `enum`
-  becomes a call of `flow-enums-runtime`, as `babel-plugin-transform-flow-enums`
-  builds it, which the bundle records as an edge of the file and carries.
-- It lowers with `hermes-parser` and `@babel/generator`, stasis's own
-  dependencies as `flow-remove-types` is. The stored source stays the original
-  bytes, and a file stripping parses is never lowered.
-- React Native 0.85's own preset drops an `enum` instead: its Flow-stripping
-  plugin removes the declaration before `babel-plugin-transform-flow-enums`
-  reads it. So Metro's build loads no `flow-enums-runtime` for one, where the
-  bundle carries it.
+Stripping removes types only: Flow syntax that compiles to code (`component`
+and `hook` declarations, `enum`s, `match`) stays, so a file using it still
+doesn't parse, except in `react-native` (`node_modules/react-native`, not a
+package nested in it), whose own sources use it (`View.js`, `Text.js`): a file
+of it that stripping alone leaves unparseable has that syntax lowered first, as
+Metro's Babel lowers it, with stasis's own `hermes-parser`. A lowered `enum`
+requires `flow-enums-runtime`, which the bundle records and carries (React
+Native 0.85's preset drops the `enum` instead).
 
 A file the scanner can't parse fails the bundle (`JS bundle would be broken at
 load time`), however it is reached, an import inside a function included: its

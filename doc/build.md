@@ -322,17 +322,14 @@ stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # -
   Babel's Flow transform drops it. A `--metro` bundle records no edge for it.
 - Stripping removes types only. Flow syntax that compiles to code (`component`
   and `hook` declarations, `enum`s, `match`) stays, so such a file fails the
-  build, as it fails `stasis bundle --flow`, except in `react-native`: a file of
-  it that stripping alone leaves esbuild unable to parse has that syntax lowered
-  first, as `stasis bundle --flow` lowers it to read it (see
-  [JSX and Flow](bundle.md#jsx-and-flow)). React Native's `View.js`, `Text.js`
-  and `VirtualView.js` are such files. A lowered `enum` requires
-  `flow-enums-runtime`, which the bundle records for the file.
+  build, as it fails `stasis bundle --flow`, except in `react-native`, whose
+  files are lowered first where stripping alone fails, as `stasis bundle --flow`
+  lowers them (see [JSX and Flow](bundle.md#jsx-and-flow)).
 
 [`--babel`](#the-projects-babel-config---babel) compiles all of Flow instead:
-React Native's preset strips the types and compiles `component` and `hook`
-too, as Metro does (an `enum` it drops, as React Native 0.85's preset does). The project's config gets each file's bytes as they
-are, so `--flow` and `--babel` don't combine.
+React Native's preset strips the types and compiles `component` and `hook` too
+(an `enum` it drops), as Metro does. The project's config gets each file's
+bytes as they are, so `--flow` and `--babel` don't combine.
 
 ### Non-code assets (`--resources`)
 

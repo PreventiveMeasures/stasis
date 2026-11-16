@@ -9,7 +9,7 @@ import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { hostMemo } from './vfs-bundle/lazy.js'
-import { FLOW_EXTS, hasFlowPragma, inReactNative, lowerFlowSyntax, stripFlowTypes } from './flow.js'
+import { FLOW_EXTS, hasFlowPragma, stripFlow } from './flow.js'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
 
@@ -304,31 +304,6 @@ export class Scan {
     }
   }
 
-  // `src` with its Flow types stripped, as `parse` reads it (null where it fails), with the text the types were blanked
-  // in: src, or in a file of react-native where stripping alone fails, src with its Flow code lowered (flow.js). null
-  // where that fails too: the caller keeps oxc's parse, saying so where it failed (`failed`).
-  #parseFlow(src, file, failed, parse) {
-    let why
-    try {
-      const strippedSource = stripFlowTypes(src)
-      const parsed = parse(strippedSource)
-      if (parsed !== null) return { parsed, source: src, strippedSource }
-    } catch (cause) {
-      why = `could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`
-    }
-    if (inReactNative(file)) {
-      try {
-        const { lowered, stripped } = lowerFlowSyntax(src)
-        const parsed = parse(stripped)
-        if (parsed !== null) return { parsed, source: lowered, strippedSource: stripped }
-      } catch (cause) {
-        why = `could not lower the Flow syntax of ${file}; leaving it to oxc (${cause.message})`
-      }
-    }
-    if (failed && why !== undefined) console.warn(`[stasis] --flow: ${why}`)
-    return null
-  }
-
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
   parseFile(file) {
     const ext = extname(file)
@@ -378,11 +353,13 @@ export class Scan {
     let source = src
     let strippedSource = null
     if (this.flow && FLOW_EXTS.has(ext) && (errors.length > 0 || hasFlowPragma(src))) {
-      const asFlow = this.#parseFlow(src, file, errors.length > 0, (text) => cleanParse(text, baseSourceType))
-      if (asFlow !== null) {
-        ({ parsed, source, strippedSource } = asFlow)
+      const flow = stripFlow(src, file, (text) => cleanParse(text, baseSourceType))
+      if (flow.parsed !== null) {
+        ({ parsed, source, stripped: strippedSource } = flow)
         format = declared ?? detectedFormat(parsed)
         errors = []
+      } else if (flow.error && errors.length > 0) {
+        console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${flow.error.message})`)
       }
     }
     return { format, parsed, errors, source, strippedSource }
