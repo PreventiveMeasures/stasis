@@ -470,6 +470,71 @@ test("pnpm, hoisted: its copy of the lockfile names a git dependency's repositor
   await t.assert.rejects(build(dir), new RegExp(`pnpm-lock\\.yaml doesn't lock node_modules/dep as installed \\(at o/dep@${SHA.dep}; it locks o/dep@${SHA.fork}\\)`, 'u'))
 }))
 
+test("pnpm, hoisted: what hoists into the place of a dependency the install left out (`--prod`, `--no-optional`) is held by its name and version, as pnpm's copy of the lockfile lists what it installed", withTmp(async (t, tmp) => {
+  // dep@1.0.0 needs reg@1.0.1; the root's `kind`, where given, locks reg@1.0.0. Installed without that kind, pnpm hoists
+  // reg@1.0.1 to node_modules/reg, where an install with it nests it under dep.
+  const lockfile = (kind) => `lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      dep:
+        specifier: 1.0.0
+        version: 1.0.0
+${kind ? `    ${kind}:\n      reg:\n        specifier: 1.0.0\n        version: 1.0.0\n` : ''}
+packages:
+
+  dep@1.0.0:
+    resolution: {integrity: ${SRI}}
+${kind ? `\n  reg@1.0.0:\n    resolution: {integrity: ${SRI}}\n` : ''}
+  reg@1.0.1:
+    resolution: {integrity: ${OTHER}}
+
+snapshots:
+
+  dep@1.0.0:
+    dependencies:
+      reg: 1.0.1
+${kind ? `\n  reg@1.0.0:${kind === 'optionalDependencies' ? '\n    optional: true' : ' {}'}\n` : ''}
+  reg@1.0.1: {}
+`
+  const refused = (name) => new RegExp(`pnpm-lock\\.yaml doesn't lock node_modules/${name} as installed \\(1\\.0\\.1; it locks 1\\.0\\.0\\)`, 'u')
+  for (const kind of ['devDependencies', 'optionalDependencies']) {
+    const dir = join(tmp, kind)
+    const copy = join(dir, 'node_modules', '.pnpm', 'lock.yaml')
+    mkdirSync(dirname(copy), { recursive: true })
+    writeProject(dir, ['dep'])
+    writePackage(dir, 'node_modules/dep', { name: 'dep', requires: ['reg'] })
+    writePackage(dir, 'node_modules/reg', { name: 'reg', version: '1.0.1' })
+    writeFileSync(join(dir, 'node_modules', '.modules.yaml'), 'nodeLinker: hoisted\npackageManager: pnpm@11.28.4\n')
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), lockfile(kind))
+    // Its copy, of what it installed alone.
+    writeFileSync(copy, lockfile())
+    for (const [label, options] of BUILDS) {
+      // eslint-disable-next-line no-await-in-loop -- each build writes the bundle the next replaces
+      await bundled(dir, label, options)
+      t.assert.deepStrictEqual(recordsOf(modulesOf(dir, label)), [['node_modules/dep', 'dep@1.0.0', SRI, ['index.js']], ['node_modules/reg', 'reg@1.0.1', OTHER, ['index.js']]], `${kind}: ${label}`)
+    }
+    // A dependency it installed is still held where it is: dep at another version than the root locks.
+    writePackage(dir, 'node_modules/dep', { name: 'dep', version: '1.0.1', requires: ['reg'] })
+    // eslint-disable-next-line no-await-in-loop -- one kind at a time
+    await t.assert.rejects(build(dir), refused('dep'), `${kind}: dep`)
+    writePackage(dir, 'node_modules/dep', { name: 'dep', requires: ['reg'] })
+    // Its copy listing `kind` installed too, or none read: the root's reg is held where it is.
+    for (const written of [lockfile(kind), null]) {
+      rmSync(copy, { force: true })
+      if (written !== null) writeFileSync(copy, written)
+      // eslint-disable-next-line no-await-in-loop -- one copy at a time
+      await t.assert.rejects(build(dir), refused('reg'), `${kind}: ${written === null ? 'no copy' : 'every kind'}`)
+    }
+  }
+}))
+
 test('of two lockfiles beside a node_modules, a package is held to the one whose package manager alone left its record there, else the build stops', withTmp(async (t, dir) => {
   const both = /: package-lock\.json and yarn\.lock are both there, and which installed its node_modules isn't known$/u
   npmProject(dir)
