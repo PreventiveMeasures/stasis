@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
-import { Scan, getParser, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
+import { Scan, getParser, importsTypescriptByOutputName, rawTransferFits, scan } from '../stasis/src/scan.js'
 import { inReactNative } from '../stasis/src/flow.js'
 import { loadTsconfigCompilerOptions, loadTsconfigPaths, packageTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 import { withTmp } from './tmp.helper.js'
@@ -144,6 +144,21 @@ test('the parser\'s ASTs by raw transfer are those by JSON', (t) => {
   t.assert.ok(raw.errors.length > 0)
   t.assert.deepStrictEqual(raw.errors, json.errors)
   t.assert.deepStrictEqual(raw.program, json.program)
+})
+
+// Raw transfer's 6 GiB buffer can't be had on a 4 GiB machine: there the parser takes JSON. As a server's build parses,
+// in a worker, under an address space with no room for that buffer (Linux's `ulimit -v`) on a machine said to be 4 GiB.
+test('the parser parses where raw transfer\'s buffer can\'t be had', { skip: process.platform !== 'linux' && 'ulimit -v' }, (t) => {
+  t.assert.strictEqual(rawTransferFits(4 * 2 ** 30), false)
+  t.assert.strictEqual(rawTransferFits(16 * 2 ** 30), true)
+  const scanUrl = new URL('../stasis/src/scan.js', import.meta.url).href
+  const worker = `const os = require('node:os'); os.totalmem = () => 4 * 2 ** 30; require('node:module').syncBuiltinESMExports()
+    import(${JSON.stringify(scanUrl)}).then(({ getParser }) => require('node:worker_threads').parentPort.postMessage(getParser().parseSync('a.js', "require('a')", {}).program.body.length))`
+  const main = `new (require('node:worker_threads').Worker)(${JSON.stringify(worker)}, { eval: true }).on('message', (count) => console.log(count))`
+  const run = spawnSync('sh', ['-c', 'ulimit -v 5600000 && exec "$0" -e "$1"', process.execPath, main], { encoding: 'utf-8' })
+  t.assert.strictEqual(run.stderr, '')
+  t.assert.strictEqual(run.stdout, '1\n')
+  t.assert.strictEqual(run.status, 0)
 })
 
 test('scan does not load the target file (top-level side effects never fire)', (t) => {
