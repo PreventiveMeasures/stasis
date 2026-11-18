@@ -25,9 +25,11 @@ const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
 // Raw transfer reserves 6 GiB for the parser's buffer, of which a parse writes only what it takes. Linux refuses one
 // mapping past its RAM and swap, so on a smaller machine (a 4 GiB function) that buffer can't be had: a RangeError on
 // the main thread, and in a worker under Node 26 the worker terminated as out of heap, past any catch. The machine's
-// memory, or its process's where that is less, is to hold that buffer and the rest of the process.
+// memory, or its process's where that is less, is to hold that buffer and the rest of the process. Never on Vercel
+// (VERCEL_ENV set, in its builds and functions alike), whose functions are that small machine.
 const RAW_TRANSFER_MEMORY = 8 * 2 ** 30
-export const rawTransferFits = (memory = Math.min(totalmem(), process.constrainedMemory() || Infinity)) => memory >= RAW_TRANSFER_MEMORY
+export const rawTransferFits = (memory = Math.min(totalmem(), process.constrainedMemory() || Infinity), env = process.env) =>
+  env.VERCEL_ENV === undefined && memory >= RAW_TRANSFER_MEMORY
 
 // Required lazily so non-JS bundlers don't load the native oxc parser. Raw transfer, where the platform takes it and
 // its buffer fits, hands each AST over from the parser's own buffer rather than as JSON, which takes longer to parse
