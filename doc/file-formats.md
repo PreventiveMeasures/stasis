@@ -332,12 +332,12 @@ is recorded, and a lockfile or bundle that records one is refused wherever it is
 loaded (`… -- recorded in stasis.lock.json; rebuild it`), as is a bundler
 plugin's build reaching one.
 
-A pattern matches as `disallowedModules`' does: by the name a dependency is
-installed under (a pnpm alias's too) or its `package.json`'s. The project's own
-packages, linked into `node_modules` or not, are never excluded. An entry of
-`entries` may set it for its own build, beside the config's. A lazy tree of
-`stasis github-bundle` never fetches one that a bare specifier names by the name
-it is installed under, where Node's resolution reaches it; `--mainFields`' and
+A pattern matches as `disallowedModules`' does: by a dependency's `package.json`
+name or the directory it is really installed in, so a pnpm alias by its real
+package's name. The project's own packages, linked into `node_modules` or not,
+are never excluded. An entry of `entries` may set it for its own build, beside
+the config's. A lazy tree of `stasis github-bundle` never fetches one Node's
+resolution reaches, as it is told by its directory alone; `--mainFields`' and
 `--metro`'s resolver read a package to resolve into it, so fetch it, though the
 build still leaves it out.
 

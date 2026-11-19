@@ -65,7 +65,7 @@ const project = (dir, config) => writeTree(dir, {
   ...(config === undefined ? {} : { 'stasis.config.json': config }),
 })
 
-test('excludeModules takes a dependency by any name it goes by, never a workspace package', withTmp((t, tmp) => {
+test('excludeModules takes a dependency by its package.json name or the directory it is really installed in, never a workspace package', withTmp((t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'app', version: '1.0.0' },
     'node_modules/opt/index.js': '',
@@ -77,7 +77,7 @@ test('excludeModules takes a dependency by any name it goes by, never a workspac
   symlinkSync('.pnpm/real@1.0.0/node_modules/real', join(tmp, 'node_modules/nice'))
   symlinkSync('../packages/opt', join(tmp, 'node_modules/linked'))
   t.assert.equal(moduleExcluder([parsePolicy('cfg', { disallowedModules: ['opt'] })], tmp), null)
-  const excluded = moduleExcluder([parsePolicy('cfg', { excludeModules: ['opt', 'nice'] })], tmp)
+  const excluded = moduleExcluder([parsePolicy('cfg', { excludeModules: ['opt', 'real'] })], tmp)
   const at = (rel, options) => excluded(join(tmp, rel), options)?.dir
   t.assert.deepStrictEqual(excluded(join(tmp, 'node_modules/opt/index.js')), { dir: 'node_modules/opt', pattern: 'opt', label: 'cfg' })
   t.assert.equal(at('node_modules/opt'), 'node_modules/opt')
@@ -85,12 +85,11 @@ test('excludeModules takes a dependency by any name it goes by, never a workspac
   // By its package.json's name, which `installed` doesn't read.
   t.assert.equal(at('node_modules/renamed/index.js'), 'node_modules/renamed')
   t.assert.equal(at('node_modules/renamed/index.js', { installed: true }), undefined)
-  // A pnpm alias, by the name it is installed under, or a bare specifier found it by.
-  t.assert.equal(at('node_modules/nice/index.js', { installed: true }), 'node_modules/nice')
-  t.assert.equal(at('node_modules/.pnpm/real@1.0.0/node_modules/real/index.js'), undefined)
-  t.assert.equal(at('node_modules/.pnpm/real@1.0.0/node_modules/real/index.js', { alias: 'nice' }), 'node_modules/.pnpm/real@1.0.0/node_modules/real')
+  // A pnpm alias, by the directory it is really installed in, as disallowedModules matches it.
+  t.assert.equal(at('node_modules/nice/index.js', { installed: true }), 'node_modules/.pnpm/real@1.0.0/node_modules/real')
+  t.assert.equal(moduleExcluder([parsePolicy('cfg', { excludeModules: ['nice'] })], tmp)(join(tmp, 'node_modules/nice/index.js')), undefined)
   t.assert.equal(at('packages/opt/index.js'), undefined)
-  t.assert.equal(at('node_modules/linked/index.js', { alias: 'opt' }), undefined)
+  t.assert.equal(at('node_modules/linked/index.js'), undefined)
 }))
 
 test('bundleCommand misses an excluded dependency: a require() or import() of it falls through, a static import fails', withTmp(async (t, tmp) => {
@@ -198,7 +197,7 @@ test('CLI: stasis run --bundle=load misses an excluded dependency, in either sco
   await loads('node_modules')
 }))
 
-test('a pnpm alias is excluded by the name it is installed under; a linked workspace package, or the project itself, never', withTmp(async (t, tmp) => {
+test('a pnpm alias is excluded by its real name, through any resolver; a linked workspace package, or the project itself, never', withTmp(async (t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'app', version: '1.0.0', exports: './self.js' },
     'a.js': "let nice; try { nice = require('nice') } catch (e) { nice = e.code }\nconsole.log(nice, require('foo'), require('app'))\n",
@@ -209,13 +208,13 @@ test('a pnpm alias is excluded by the name it is installed under; a linked works
     'node_modules/.pnpm/opt@1.0.0/node_modules/opt/index.js': "module.exports = 'opt'\n",
     'packages/foo/package.json': { name: 'foo', version: '1.0.0' },
     'packages/foo/index.js': "module.exports = 'foo'\n",
-    'stasis.config.json': { excludeModules: ['nice', 'foo', 'app'] },
+    'stasis.config.json': { excludeModules: ['opt', 'foo', 'app'] },
   })
   symlinkSync('.pnpm/opt@1.0.0/node_modules/opt', join(tmp, 'node_modules/nice'))
   symlinkSync('../packages/foo', join(tmp, 'node_modules/foo'))
   await bundleCommand({ cwd: tmp, entries: ['a.js'], output: join(tmp, 'a.br') })
   t.assert.deepStrictEqual(sourcesOf(join(tmp, 'a.br')), ['a.js', 'packages/foo/index.js', 'self.js'])
-  // And through --mainFields' resolver, which gives the alias's real path alone.
+  // And through --mainFields' resolver.
   await bundleCommand({ cwd: tmp, entries: ['n.js'], mainFields: ['main'], output: join(tmp, 'n.br') })
   t.assert.deepStrictEqual(sourcesOf(join(tmp, 'n.br')), ['n.js'])
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))

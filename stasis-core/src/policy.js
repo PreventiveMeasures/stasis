@@ -236,9 +236,9 @@ function packageDirOf(rel) {
 export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModules excludes ${dir} (${JSON.stringify(pattern)})`
 
 // The excluded dependency an absolute path is in, else undefined; null where no policy excludes one. A dependency goes
-// by the name it is installed under (a pnpm alias's), its real directory's and its package.json's; a link of the
-// project's own by what it links to; a workspace package linked into node_modules never. `installed`: reads no
-// package.json (a lazy tree would fetch it). `alias`: the name a bare specifier found it by.
+// by its package.json name and the directory it is really installed in, as disallowedModules matches (a pnpm alias by
+// its real one); a link by what it links to; a workspace package linked into node_modules never. `installed`: reads
+// no package.json (a lazy tree would fetch it).
 export function moduleExcluder(policies, root, host = diskHost) {
   const excluding = policies.filter((policy) => policy?.excludesModules)
   if (excluding.length === 0) return null
@@ -263,21 +263,20 @@ export function moduleExcluder(policies, root, host = diskHost) {
     const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
     return typeof name === 'string' && name !== '' ? name : undefined
   })
-  const at = (absolute, installed, alias) => {
+  const at = (absolute, installed) => {
     const rel = hasNodeModulesSegment(absolute) ? fromRoot(absolute) : undefined
     const split = rel === undefined ? null : splitNodeModulesPath(rel) ?? packageDirOf(rel)
     const real = split === null ? undefined : realDir(split.dir)
     const dir = real === undefined ? undefined : splitNodeModulesPath(`${real}/package.json`)?.dir
     if (dir === undefined) return undefined
     for (const policy of excluding) {
-      const pattern = [split.name, installedName(dir), alias].map((name) => policy.excludedBy(name)).find(Boolean) ??
-        (installed ? undefined : policy.excludedBy(nameOf(dir)))
-      if (pattern !== undefined) return { dir: split.dir, pattern, label: policy.label }
+      const pattern = policy.excludedBy(installedName(dir)) ?? (installed ? undefined : policy.excludedBy(nameOf(dir)))
+      if (pattern !== undefined) return { dir, pattern, label: policy.label }
     }
     return undefined
   }
-  return (absolute, { installed = false, alias } = {}) => {
-    const hit = at(absolute, installed, alias)
+  return (absolute, { installed = false } = {}) => {
+    const hit = at(absolute, installed)
     if (hit !== undefined || installed) return hit
     // A link, wherever it is, by the file it links to.
     const real = realpath(absolute)

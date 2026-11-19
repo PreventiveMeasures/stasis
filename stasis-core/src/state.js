@@ -661,11 +661,11 @@ export class State {
     return file !== undefined && splitNodeModulesPath(file) !== null
   }
 
-  // `alias`: the name a bare specifier found it by. Cached: a require() asks up to three times.
-  excludedModule(url, alias) {
+  // Cached: a require() asks up to three times.
+  excludedModule(url) {
     if (!this.config.policy?.excludesModules || !url.startsWith('file:')) return undefined
     this.#excluder ??= moduleExcluder([this.config.policy], this.root, this.#host)
-    return upsert(this.#excluded, `${alias}\0${url}`, () => this.#excluder(fileURLToPath(url), { alias }) ?? null) ?? undefined
+    return upsert(this.#excluded, url, () => this.#excluder(fileURLToPath(url)) ?? null) ?? undefined
   }
 
   #excluded = new Map()

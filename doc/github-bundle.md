@@ -314,8 +314,8 @@ With it:
   The config's hold a bundle of entries it doesn't name too. An entry's
   `excludeModules` is its build's, the config's every build's, each taking those
   dependencies for absent (see [Excluded modules](file-formats.md#excluded-modules)),
-  and a lazy tree fetches none of them that Node's resolution reaches by the
-  name it is installed under (`--mainFields` and `--metro` read one to resolve it).
+  and a lazy tree fetches none of them that Node's resolution reaches
+  (`--mainFields` and `--metro` read one to resolve it).
 
 ### A file's project
 
