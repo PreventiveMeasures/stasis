@@ -226,13 +226,16 @@ test('CLI: stasis run --fs reads a file of an excluded dependency as missing, an
     'r.js': [
       "const fs = require('node:fs')",
       "let read; try { read = fs.readFileSync('node_modules/opt/package.json', 'utf8') } catch (e) { read = e.code }",
-      "console.log(read, fs.existsSync('node_modules/opt'), fs.existsSync('node_modules/left/package.json'))",
+      "let linked; try { linked = fs.readFileSync('link.js', 'utf8') } catch (e) { linked = e.code }",
+      "console.log(read, linked, fs.existsSync('node_modules/opt'), fs.existsSync('node_modules/left/package.json'))",
       '',
     ].join('\n'),
   })
+  // A link of the project's own to one's file, as a link to a missing one.
+  symlinkSync('node_modules/opt/index.js', join(tmp, 'link.js'))
   const ran = await runCli(['run', '--lock=add', '--bundle=add', '--fs=sync', 'r.js'], tmp)
   t.assert.equal(ran.status, 0, ran.stderr)
-  t.assert.equal(ran.stdout, 'ENOENT false true\n')
+  t.assert.equal(ran.stdout, 'ENOENT ENOENT false true\n')
   t.assert.ok(existsSync(join(tmp, 'stasis.code.br')))
   t.assert.ok(![...readBundle(join(tmp, 'stasis.code.br')).sources.keys()].some((path) => path.startsWith('node_modules/opt')))
 }))

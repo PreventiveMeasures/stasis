@@ -668,7 +668,22 @@ export class State {
     return upsert(this.#excluded, `${alias}\0${url}`, () => this.#excluder(fileURLToPath(url), { alias }) ?? null) ?? undefined
   }
 
+  // A file read by its path: as excludedModule, or by the file it links to.
+  excludedFile(url) {
+    if (!this.config.policy?.excludesModules) return undefined
+    return this.excludedModule(url) ?? upsert(this.#excludedLinks, url, () => {
+      let real
+      try {
+        real = this.#host.realpath(fileURLToPath(url))
+      } catch {
+        return null
+      }
+      return this.excludedModule(pathToFileURL(real).toString()) ?? null
+    }) ?? undefined
+  }
+
   #excluded = new Map()
+  #excludedLinks = new Map()
   #excluder
 
   // findPackageJSON is unreliable for a directory (EISDIR, or the parent's); an unreadable one is refused as it does.
