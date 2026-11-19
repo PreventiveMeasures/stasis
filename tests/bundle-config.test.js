@@ -10,7 +10,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Config } from '@exodus/stasis-core/config'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
-import { bundlePlan, readConfigEntries } from '../stasis/src/cmd/bundle-options.js'
+import { bundlePlan, readConfigDefine, readConfigEntries } from '../stasis/src/cmd/bundle-options.js'
 import { withTmp } from './tmp.helper.js'
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin', 'stasis.js')
@@ -283,9 +283,9 @@ test('bundleCommand refuses builds with entries, or whose bundles are rooted apa
     { message: /^bundleCommand: index\.js and cli\.js can't be bundled together: their bundles' paths are relative to different roots/u })
 }))
 
-test('Config takes stasis bundle\'s entries, and nothing from them', (t) => {
+test('Config takes stasis bundle\'s entries and define, and nothing from them', (t) => {
   const config = new Config({ env: {}, lock: 'add', bundle: 'add' })
-  config.loadConfig(JSON.stringify({ entries: { 'index.js': { metro: true } }, scope: 'full' }))
+  config.loadConfig(JSON.stringify({ entries: { 'index.js': { metro: true } }, define: ['__DEV__=false'], scope: 'full' }))
   t.assert.deepStrictEqual([config.lock, config.bundleMode, config.scope], ['add', 'add', 'full'])
   t.assert.throws(() => new Config({ env: {}, lock: 'add' }).loadConfig(JSON.stringify({ bundle: { 'index.js': {} } })), /bundle can not be set here/u)
 })
@@ -487,4 +487,84 @@ test('CLI: stasis bundle --define leaves out the imports of the branches it keep
   const bad = await runCli(['bundle', '--define=process.env.NODE_ENV=production', 'b.js'], tmp)
   t.assert.equal(bad.status, 1)
   t.assert.match(bad.stderr, /Error: --define's value for process\.env\.NODE_ENV must be JSON/u)
+}))
+
+test("readConfigEntries gives every JS entry the config's own define, which no entry's own may be beside", withTmp((t, tmp) => {
+  const define = ['__DEV__=false', 'process.env.NODE_ENV="production"']
+  mixed(tmp, { define, entries: { 'src/a.js': { jsx: true }, 'src/b.js': {}, 'src/A.sol': {} } })
+  t.assert.deepStrictEqual([...readConfigEntries(tmp)].map(([key, { values }]) => [key, values]), [
+    ['src/a.js', { jsx: true, define }],
+    ['src/b.js', { define }],
+    ['src/A.sol', {}],
+  ])
+  t.assert.deepStrictEqual(readConfigDefine(tmp), define)
+  // Without entries too: it is every entry's, named there or not.
+  writeTree(tmp, { 'stasis.config.json': { define: '__DEV__=false' } })
+  t.assert.equal(readConfigEntries(tmp), null)
+  t.assert.deepStrictEqual(readConfigDefine(tmp), ['__DEV__=false'])
+  t.assert.equal(readConfigDefine(join(tmp, 'src')), undefined)
+  const refused = (config, message) => {
+    writeTree(tmp, { 'stasis.config.json': config })
+    t.assert.throws(() => readConfigEntries(tmp), { message })
+    t.assert.throws(() => readConfigDefine(tmp), { message })
+  }
+  // An entry's own, whichever entry, and whatever it gives.
+  refused({ define: '__DEV__=false', entries: { 'src/a.js': {}, 'src/b.js': { define: [] } } },
+    'stasis.config.json: define can\'t be combined with entries "src/b.js"\'s define: give every entry\'s in define, or each entry\'s in its own options')
+  refused({ define: { __DEV__: false } }, 'stasis.config.json: define must be a string or an array of strings')
+  refused({ define: [] }, 'stasis.config.json: define: --define must give at least one KEY=VALUE (e.g. --define=__DEV__=false)')
+  refused({ define: ['__DEV__=yes'] }, 'stasis.config.json: define: --define\'s value for __DEV__ must be JSON: a string, quoted (--define=__DEV__=\'"production"\'), a number, true, false or null, not "yes"')
+}))
+
+test("bundlePlan builds every JS entry with the config's own define, named in its entries or not, and refuses --define beside it", withTmp((t, tmp) => {
+  mixed(tmp, { define: ['__DEV__=false'], entries: { 'src/a.js': { jsx: true }, 'src/b.js': {} } })
+  const named = bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/b.js'], values: {}, config: readConfigEntries(tmp) })
+  t.assert.deepStrictEqual(named.builds.map((b) => [b.entries, b.jsx, b.define]), [[['src/a.js'], true, { __DEV__: false }], [['src/b.js'], false, { __DEV__: false }]])
+  const message = "--define can't be given, as stasis.config.json's define gives every entry's: set it there"
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['src/a.js'], values: { define: ['__DEV__=false'] }, config: readConfigEntries(tmp) }), { message })
+  // Entries it names none of: of a config naming others, or none.
+  const unnamed = bundlePlan({ cwd: tmp, entries: ['src/c.js'], values: { jsx: true }, config: readConfigEntries(tmp) })
+  t.assert.deepStrictEqual([unnamed.entries, unnamed.jsx, unnamed.define], [['src/c.js'], true, { __DEV__: false }])
+  writeTree(tmp, { 'stasis.config.json': { define: '__DEV__=false' } })
+  // Only the JS ones: a .sol entry has no defines.
+  const both = bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/A.sol'], values: {}, config: readConfigEntries(tmp) })
+  t.assert.deepStrictEqual(both.builds.map((b) => [b.entries, b.define]), [[['src/a.js'], { __DEV__: false }], [['src/A.sol'], undefined]])
+  t.assert.equal(bundlePlan({ cwd: tmp, entries: ['src/A.sol'], values: {}, config: null }).define, undefined)
+  for (const entries of [['src/a.js'], ['src/A.sol']]) {
+    t.assert.throws(() => bundlePlan({ cwd: tmp, entries, values: { define: ['__DEV__=false'] }, config: null }), { message }, entries[0])
+  }
+}))
+
+test("CLI: stasis bundle builds every entry with stasis.config.json's own define, named in its entries or not", withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'index.js': "if (__DEV__) require('./dev.js')\nif (process.env.NODE_ENV !== 'production') require('./notProd.js')\nrequire('./b.js')\n",
+    'cli.js': "if (__DEV__) import('./dev.js')\n",
+    'dev.js': 'module.exports = 1\n',
+    'notProd.js': 'module.exports = 1\n',
+    'b.js': 'module.exports = 1\n',
+  })
+  const define = ['__DEV__=false', 'process.env.NODE_ENV="production"']
+  const bundled = async (config, args) => {
+    writeTree(tmp, { 'stasis.config.json': config })
+    const r = await runCli(['bundle', '--output=out.br', ...args], tmp)
+    t.assert.equal(r.status, 0, r.stderr)
+    return [...readBundle(join(tmp, 'out.br')).sources.keys()].toSorted()
+  }
+  t.assert.deepStrictEqual(await bundled({ define }, ['index.js', 'cli.js']), ['b.js', 'cli.js', 'index.js'])
+  t.assert.deepStrictEqual(await bundled({ define, entries: { 'index.js': {}, 'cli.js': {} } }, []), ['b.js', 'cli.js', 'index.js'])
+  // Under --metro, in the place of its default for the name it gives.
+  writeTree(tmp, { 'stasis.config.json': { define: '__DEV__=true', entries: { 'index.js': { metro: true, platforms: ['ios'] } } } })
+  const metro = await runCli(['bundle', '--output=metro.br'], tmp)
+  t.assert.equal(metro.status, 0, metro.stderr)
+  t.assert.deepStrictEqual([...readBundle(join(tmp, 'metro.br')).sources.keys()].toSorted(), ['b.js', 'dev.js', 'index.js'])
+  const refused = async (config, args, message) => {
+    writeTree(tmp, { 'stasis.config.json': config })
+    const r = await runCli(['bundle', '--output=no.br', ...args], tmp)
+    t.assert.equal(r.status, 1)
+    t.assert.match(r.stderr, message)
+    t.assert.equal(existsSync(join(tmp, 'no.br')), false)
+  }
+  await refused({ define }, ['--define=__DEV__=false', 'index.js'], /^Error: --define can't be given, as stasis\.config\.json's define gives every entry's: set it there$/mu)
+  await refused({ define, entries: { 'index.js': {}, 'cli.js': { define: '__DEV__=true' } } }, ['index.js'], /^Error: stasis\.config\.json: define can't be combined with entries "cli\.js"'s define/mu)
 }))

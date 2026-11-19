@@ -222,9 +222,34 @@ function entryFlags(what, options) {
   return values
 }
 
+// A config's own `define`, every JS entry's: the --define flags it gives them, or undefined where it sets none. An
+// entry setting its own beside it is refused, which of the two it builds with being no guess to make.
+function configDefine(config) {
+  const define = config?.define
+  if (define === undefined) return undefined
+  const what = `${CONFIG_FILE}: define`
+  if (typeof define !== 'string' && !(Array.isArray(define) && define.every((v) => typeof v === 'string'))) {
+    throw new Error(`${what} must be a string or an array of strings`)
+  }
+  const flags = [define].flat()
+  parseDefineFlags(what, flags)
+  const entries = isPlainObject(config.entries) ? config.entries : {}
+  const own = Object.keys(entries).find((entry) => isPlainObject(entries[entry]) && Object.hasOwn(entries[entry], 'define'))
+  if (own !== undefined) {
+    throw new Error(`${what} can't be combined with entries ${JSON.stringify(own)}'s define: give every entry's in define, or each entry's in its own options`)
+  }
+  return flags
+}
+
+// The `define` of the stasis.config.json in `cwd`, as the --define flags it gives every JS entry, or undefined.
+export const readConfigDefine = (cwd = process.cwd(), host = diskHost) => configDefine(readConfigFile(undefined, cwd, host))
+
 // The `entries` of the stasis.config.json in `cwd`, by entryKey; an entry's own Policy is held beside the config's.
+// A JS entry takes the config's own `define` as its own.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
-  const entries = readConfigFile(undefined, cwd, host)?.entries
+  const config = readConfigFile(undefined, cwd, host)
+  const define = configDefine(config)
+  const entries = config?.entries
   if (entries === undefined) return null
   if (!isPlainObject(entries)) throw new Error(`${CONFIG_FILE}: entries must be an object of each entry's stasis bundle options`)
   const named = new Map()
@@ -234,6 +259,7 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
     if (key === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
     if (named.has(key)) throw new Error(`${what} names the same entry as ${JSON.stringify(named.get(key).entry)}`)
     const values = entryFlags(what, options)
+    if (define !== undefined && isJsEntry(key)) values.define = define
     const policy = parsePolicy(what, options)
     named.set(key, { entry, values, ...(policy !== null && { policy }) })
   }
@@ -241,16 +267,21 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
 }
 
 // Where `config` names every entry, each is built with its options there, the flags given only the bundle's own
-// and the consent its CONSENT_FLAGS need; where it names none, all are built with the flags.
+// and the consent its CONSENT_FLAGS need; where it names none, all are built with the flags. Either way, JS entries
+// take the `define` of the stasis.config.json in `cwd`, which no --define may be given beside.
 export function bundlePlan({ cwd = process.cwd(), entries, values, config = null }) {
   const lang = entriesLanguage(entries, cwd)
   const output = outputOptions(values, lang)
+  const define = readConfigDefine(cwd)
+  if (define !== undefined && values.define !== undefined) throw new Error(`--define can't be given, as ${CONFIG_FILE}'s define gives every entry's: set it there`)
+  // As readConfigEntries gives it to the entries it names.
+  const defined = (part) => (define !== undefined && part.every(isJsEntry) ? { ...values, define } : values)
   const { keys, first } = configuredKeys(cwd, entries, config)
-  if (first === undefined && !lang.jsAndSol) return { ...output, entries, ...buildOptions(values, lang) }
+  if (first === undefined && !lang.jsAndSol) return { ...output, entries, ...buildOptions(defined(entries), lang) }
   if (first === undefined) {
     return { ...output, builds: [...Map.groupBy(entries, isJsEntry).values()].map((part) => {
       try {
-        return { entries: part, ...buildOptions(values, entriesLanguage(part, cwd)) }
+        return { entries: part, ...buildOptions(defined(part), entriesLanguage(part, cwd)) }
       } catch (cause) {
         throw new Error(`${cause.message}, and ${part[0]} is not of one: give the JS and .sol entries' options apart, in ${CONFIG_FILE}'s entries`, { cause })
       }
@@ -312,11 +343,33 @@ const optionText = (key, value) => (key === 'define'
   ? Object.entries(value).map(([name, v]) => `--define=${name}=${JSON.stringify(v)}`).join(' ')
   : flagText(OPTION_FLAGS[key], Array.isArray(value) ? value.join(',') : value))
 
+// The `define` of the stasis.config.json in `cwd`, parsed, for a bundle of a project it runs nothing of: a define
+// given (off its default) must be the same.
+function configuredDefine(name, { cwd, host, options }) {
+  const flags = prefixed(`${name}: `, () => readConfigDefine(cwd, host))
+  if (flags === undefined) return undefined
+  const define = parseDefineFlags(null, flags)
+  const given = comparable('define', options.define)
+  if (given !== 'null' && given !== comparable('define', define)) {
+    throw new Error(`${name}: ${optionText('define', options.define)} is given, but ${CONFIG_FILE}'s define builds every entry with ${optionText('define', define)}`)
+  }
+  return define
+}
+
+// `options`, of a build of entries the config's `entries` doesn't name, for a bundle of a project it runs nothing of
+// (vfs-bundle's): with the config's `define` where they are JS, as configuredBuilds gives the entries it names.
+export function withConfigDefine(name, options, { cwd, host = diskHost }) {
+  const define = configuredDefine(name, { cwd, host, options })
+  return define === undefined || !Array.isArray(options.entries) || !options.entries.every(isJsEntry) ? options : { ...options, define }
+}
+
 // The builds of `entries` (by default, all it names) the config names, for a bundle of a project it runs nothing
 // of (vfs-bundle's), or null where it names none. Each option given off its default must be what each entry sets.
 export function configuredBuilds(name, { cwd, host = diskHost, entries, options = {} }) {
   const config = prefixed(`${name}: `, () => readConfigEntries(cwd, host))
   if (config === null || (entries !== undefined && !Array.isArray(entries))) return null
+  // Before each entry's, which takes it as its own.
+  configuredDefine(name, { cwd, host, options })
   if (entries === undefined) {
     entries = [...config.keys()]
     if (entries.length === 0) return { entries, builds: [] }

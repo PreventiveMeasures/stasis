@@ -422,6 +422,39 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.match(r.stderr, /--define must be KEY=VALUE/)
   }))
 
+  test("build takes the artifact's stasis.config.json's own define for every entry, named in its entries or not, under the flags given", withTmp(async (t, tmp) => {
+    // A bundle carrying the config, as one of a config setting `extra` does.
+    const write = (config) => writeFileSync(join(tmp, 'app.code.br'), brotliCompressSync(JSON.stringify({
+      version: 1,
+      config: { scope: 'full' },
+      entries: ['src/entry.js'],
+      sources: { '.': { name: 'x', version: '0.0.0', files: { 'src/entry.js': "console.log(__DEV__ ? 'DEV' : 'PROD')\n", 'stasis.config.json': JSON.stringify(config) } } },
+      modules: {},
+      formats: { 'src/entry.js': 'module', 'stasis.config.json': 'json' },
+      imports: { '*': {} },
+    })))
+    for (const config of [{ extra: [], define: ['__DEV__=false'] }, { extra: [], define: '__DEV__=false', entries: { 'src/entry.js': { jsx: true } } }, { extra: [], define: '__DEV__=false', entries: { 'src/other.js': {} } }]) {
+      write(config)
+      // eslint-disable-next-line no-await-in-loop -- one artifact, rewritten for each config
+      const r = await runCli(['build', '--output=out.js', 'app.code.br'], { cwd: tmp })
+      t.assert.equal(r.status, 0, r.stderr)
+      t.assert.match(r.stderr, /src\/entry\.js: --define=__DEV__=false, as stasis\.config\.json's define sets/u, JSON.stringify(config))
+      t.assert.equal(runNode(t, join(tmp, 'out.js')).trim(), 'PROD')
+    }
+    const own = await runCli(['build', '--define=__DEV__=true', '--output=own.js', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(own.status, 0, own.stderr)
+    t.assert.doesNotMatch(own.stderr, /as stasis\.config\.json's define sets/u)
+    t.assert.equal(runNode(t, join(tmp, 'own.js')).trim(), 'DEV')
+    write({ define: ['__DEV__=false'], entries: { 'src/other.js': { define: '__DEV__=true' } } })
+    const both = await runCli(['build', '--output=both.js', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(both.status, 0)
+    t.assert.match(both.stderr, /stasis build: the artifact's stasis\.config\.json: define can't be combined with entries "src\/other\.js"'s define/u)
+    write({ define: { __DEV__: false } })
+    const bad = await runCli(['build', '--output=bad.js', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(bad.status, 0)
+    t.assert.match(bad.stderr, /stasis build: the artifact's stasis\.config\.json: define must be a string or an array of strings/u)
+  }))
+
   test('build externalizes a non-recorded specifier only when --external names it', withTmp(async (t, tmp) => {
     // The entry imports `ext-pkg`, which the artifact does NOT record (a capture-time
     // external). esbuild can't resolve it on disk (bare build dir), so the build fails --

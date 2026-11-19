@@ -193,27 +193,34 @@ function configEntryOptions(state, entry) {
     throw new Error(`stasis build: the artifact's ${CONFIG_FILE} is not valid JSON`, { cause })
   }
   const entries = config?.entries
-  if (entries === undefined) return null
-  if (!isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
-  const name = Object.keys(entries).find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry)
-  if (name === undefined) return null
+  // The config's own `define` is every entry's, named in its entries or not, and no entry's own is beside it.
+  const shared = config?.define !== undefined
+  if (entries === undefined && !shared) return null
+  if (entries !== undefined && !isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
+  const name = entries === undefined ? undefined : Object.keys(entries).find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry)
+  if (name === undefined && !shared) return null
   const what = `the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(name)}`
-  const options = entries[name]
+  const options = name === undefined ? {} : entries[name]
   if (!isPlainObject(options)) throw new Error(`stasis build: ${what} must be an object of options`)
   for (const flag of ['jsx', 'flow', 'metro']) {
     if (options[flag] !== undefined && typeof options[flag] !== 'boolean') throw new Error(`stasis build: ${what}: ${flag} must be true or false`)
   }
-  const strings = (flag) => {
-    const value = options[flag] ?? []
+  const stringsOf = (value = [], whose) => {
     if (typeof value !== 'string' && !(Array.isArray(value) && value.every((v) => typeof v === 'string'))) {
-      throw new Error(`stasis build: ${what}: ${flag} must be a string or an array of strings`)
+      throw new Error(`stasis build: ${whose} must be a string or an array of strings`)
     }
     return [value].flat()
   }
+  const strings = (flag) => stringsOf(options[flag], `${what}: ${flag}`)
+  const sharedWhat = `the artifact's ${CONFIG_FILE}: define`
+  if (shared) {
+    const own = Object.keys(entries ?? {}).find((key) => isPlainObject(entries[key]) && Object.hasOwn(entries[key], 'define'))
+    if (own !== undefined) throw new Error(`stasis build: ${sharedWhat} can't be combined with entries ${JSON.stringify(own)}'s define`)
+  }
   const define = {}
-  for (const pair of strings('define')) {
+  for (const pair of shared ? stringsOf(config.define, sharedWhat) : strings('define')) {
     const eq = pair.indexOf('=')
-    if (eq <= 0) throw new Error(`stasis build: ${what}: define must be KEY=VALUE (got '${pair}')`)
+    if (eq <= 0) throw new Error(`stasis build: ${shared ? sharedWhat : `${what}: define`} must be KEY=VALUE (got '${pair}')`)
     define[pair.slice(0, eq)] = pair.slice(eq + 1)
   }
   let platforms
@@ -221,7 +228,7 @@ function configEntryOptions(state, entry) {
     platforms = [...new Set(strings('platforms').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
     if (platforms.length === 0) throw new Error(`stasis build: ${what} sets metro but names no platforms`)
   }
-  return { name, jsx: options.jsx === true, flow: options.flow === true, define, platforms }
+  return { name, jsx: options.jsx === true, flow: options.flow === true, define, shared, platforms }
 }
 
 // Run `stasis build`: esbuild over one recorded entry, following the artifact's recorded import graph exactly,
@@ -270,11 +277,13 @@ export async function buildCommand({
       flow = true
       taken.push('--flow')
     }
+    const defined = []
     for (const [key, value] of Object.entries(configured.define)) {
       if (Object.hasOwn(define, key)) continue
       define = { ...define, [key]: value }
-      taken.push(`--define=${key}=${value}`)
+      defined.push(`--define=${key}=${value}`)
     }
+    if (!configured.shared) taken.push(...defined)
     const { platforms } = configured
     if (platforms !== undefined) {
       const choices = platforms.map((name) => `--metro=${name}`).join(' or ')
@@ -287,6 +296,7 @@ export async function buildCommand({
       }
     }
     if (taken.length > 0) console.warn(`[stasis] ${selectedEntry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(configured.name)} sets`)
+    if (configured.shared && defined.length > 0) console.warn(`[stasis] ${selectedEntry}: ${defined.join(' ')}, as ${CONFIG_FILE}'s define sets`)
   }
   // As `stasis bundle --metro` reads the files; METRO_RELEASE_DEFINE's names too, since outside Metro's
   // prelude `__DEV__` is no global at all.

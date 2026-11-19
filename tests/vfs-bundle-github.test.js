@@ -623,6 +623,34 @@ test("buildGitHubBundle refuses an option given that stasis.config.json's entrie
   t.assert.deepStrictEqual([...defined.bundle.entries], ['cli.js'])
 })
 
+test("buildGitHubBundle builds every JS entry with stasis.config.json's own define, named in its entries or not, a define given the same", async (t) => {
+  const repo = (config) => ({
+    ...configuredRepo(),
+    'main.js': "if (__DEV__) require('./dev.js')\n",
+    'cli.js': "if (__DEV__) require('./dev.js')\nrequire('./b')\n",
+    'dev.js': 'module.exports = 2\n',
+    'stasis.config.json': json(config),
+  })
+  const sources = async (config, options = {}) => [...(await build({ client: fakeClient(repo(config)), ...options })).bundle.sources.keys()].toSorted()
+  // The package.json's main.js where its entries name none, else those they name, given or not.
+  t.assert.deepStrictEqual(await sources({ define: '__DEV__=false' }), ['main.js'])
+  t.assert.deepStrictEqual(await sources({ define: ['__DEV__=false'], entries: { './cli.js': {} } }), ['b.js', 'cli.js'])
+  t.assert.deepStrictEqual(await sources({ define: ['__DEV__=false'], entries: { './cli.js': {} } }, { entries: ['cli.js'], define: { __DEV__: false } }), ['b.js', 'cli.js'])
+  t.assert.deepStrictEqual(await sources({ define: '__DEV__=false' }, { entries: ['cli.js'], define: { __DEV__: false } }), ['b.js', 'cli.js'])
+  t.assert.deepStrictEqual(await sources({ define: '__DEV__=true' }, { entries: ['cli.js'] }), ['b.js', 'cli.js', 'dev.js'])
+  // Another define given is refused, its entries naming them or not.
+  const other = "--define=__DEV__=true is given, but stasis.config.json's define builds every entry with --define=__DEV__=false"
+  await Promise.all([
+    [{ define: '__DEV__=false' }, { entries: ['cli.js'] }, 'buildVfsBundle'],
+    [{ define: '__DEV__=false' }, {}, 'buildVfsBundle'],
+    [{ define: '__DEV__=false', entries: { './cli.js': {} } }, { entries: ['cli.js'] }, 'buildVfsBundle'],
+    [{ define: '__DEV__=false', entries: { './cli.js': {} } }, {}, 'buildGitHubBundle'],
+  ].map(([config, options, by]) => t.assert.rejects(build({ client: fakeClient(repo(config)), define: { __DEV__: true }, ...options }),
+    new RegExp(`^Error: ${by}: ${RegExp.escape(other)}$`, 'u'), JSON.stringify([config, options]))))
+  await t.assert.rejects(build({ client: fakeClient(repo({ define: '__DEV__=false', entries: { './cli.js': { define: '__DEV__=true' } } })) }),
+    /^Error: buildGitHubBundle: stasis\.config\.json: define can't be combined with entries "\.\/cli\.js"'s define: /u)
+})
+
 test("buildGitHubBundle refuses stasis.config.json's entries that run a program: no option allows them", async (t) => {
   const running = {
     babel: [{ 'index.js': { metro: true, babel: true, platforms: ['ios'] } }, "the project's Babel config"],
