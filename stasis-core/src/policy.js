@@ -263,10 +263,8 @@ export function moduleExcluder(policies, root, host = diskHost) {
     const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
     return typeof name === 'string' && name !== '' ? name : undefined
   })
-  return (absolute, { installed = false, alias } = {}) => {
-    if (!hasNodeModulesSegment(absolute)) absolute = realpath(absolute)
-    if (absolute === undefined || !hasNodeModulesSegment(absolute)) return undefined
-    const rel = fromRoot(absolute)
+  const at = (absolute, installed, alias) => {
+    const rel = hasNodeModulesSegment(absolute) ? fromRoot(absolute) : undefined
     const split = rel === undefined ? null : splitNodeModulesPath(rel) ?? packageDirOf(rel)
     const real = split === null ? undefined : realDir(split.dir)
     const dir = real === undefined ? undefined : splitNodeModulesPath(`${real}/package.json`)?.dir
@@ -277,6 +275,13 @@ export function moduleExcluder(policies, root, host = diskHost) {
       if (pattern !== undefined) return { dir: split.dir, pattern, label: policy.label }
     }
     return undefined
+  }
+  return (absolute, { installed = false, alias } = {}) => {
+    const hit = at(absolute, installed, alias)
+    if (hit !== undefined || installed) return hit
+    // A link, wherever it is, by the file it links to.
+    const real = realpath(absolute)
+    return real === undefined || real === absolute ? undefined : at(real, false)
   }
 }
 

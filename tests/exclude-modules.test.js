@@ -169,15 +169,16 @@ test('CLI: stasis run misses an excluded dependency, records nothing of it, and 
   t.assert.match(staticImport.stderr, new RegExp(`Cannot find module 'opt' imported from .*b\\.mjs \\(${RegExp.escape(EXCLUDES)}\\)[^]*code: 'ERR_MODULE_NOT_FOUND'`, 'u'))
 }))
 
-test('CLI: stasis run --fs reads an excluded dependency\'s files as missing, a link to one too', withTmp((t, tmp) => {
+test('CLI: stasis run --fs reads an excluded dependency\'s files as missing, a link to one from anywhere too', withTmp((t, tmp) => {
   project(tmp, { excludeModules: ['opt'] })
   writeTree(tmp, {
     'r.js': "const fs = require('node:fs')\nconst read = (path) => { try { return fs.readFileSync(path, 'utf8') } catch (e) { return e.code } }\n" +
-      "console.log(read('node_modules/opt/package.json'), read('link.js'), fs.existsSync('node_modules/opt'), fs.existsSync('node_modules/left'))\n",
+      "console.log(read('node_modules/opt/package.json'), read('link.js'), read('node_modules/left/link.js'), fs.existsSync('node_modules/opt'), fs.existsSync('node_modules/left'))\n",
   })
   symlinkSync('node_modules/opt/index.js', join(tmp, 'link.js'))
+  symlinkSync('../opt/index.js', join(tmp, 'node_modules/left/link.js'))
   const ran = runCli(['run', '--lock=add', '--bundle=add', '--fs=sync', 'r.js'], tmp)
-  t.assert.equal(ran.stdout, 'ENOENT ENOENT false true\n', ran.stderr)
+  t.assert.equal(ran.stdout, 'ENOENT ENOENT ENOENT false true\n', ran.stderr)
   t.assert.ok(!sourcesOf(join(tmp, 'stasis.code.br')).some((path) => path.startsWith('node_modules/opt')))
 }))
 
