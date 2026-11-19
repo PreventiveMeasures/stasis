@@ -170,8 +170,8 @@ them, as a plain install does.
 It is the file's alone. The project's own settings for it (`.npmrc`'s `omit`,
 `production` or `only`, `.yarnrc`'s `--production`) stay refused, as they
 change a developer's install too. Nor is it `process.env.NODE_ENV`, which an
-entry's [`define`](bundle.md#entry-options-stasisconfigjson) sets, or its
-`metro` by default: the two are independent.
+entry's [`define`](bundle.md#entry-options-stasisconfigjson) sets (or the
+config's own), or its `metro` by default: the two are independent.
 
 ### `.yarnclean`
 
@@ -302,6 +302,9 @@ With it:
   builds with `--metro --platforms=ios,android`.
 - The entries given are all named there, or none is, the two never mixed.
   Where none is, they are built with the options given, as without it.
+- The config's own [`define`](bundle.md#defines---define) is every JS entry's,
+  named there or not: a `--define` given must be the same, or the build is
+  refused.
 - An entry setting `babel`, `metro-resolver`, `cargo` or `cargo-target` is
   refused, whatever the flags: each runs a program (the project's Babel config,
   its `metro-resolver`, `cargo`, `rustc`), and nothing of the repo runs here.

@@ -61,6 +61,9 @@ the ones that say how the code is built:
 stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # --define=process.env.API=... from the config
 ```
 
+- The config's own `define` (see [Defines](bundle.md#defines---define)) is
+  read as every entry's `define`, whether its `entries` names the entry or not.
+  A config that sets it beside an entry's own is refused.
 - A flag given always wins: an explicit `--loader=.js:...` takes precedence over
   `jsx`, and a `--define` over the config's value for its key.
 - An explicit `--metro` must be one of the config's `platforms`, since those are

@@ -1747,7 +1747,7 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
 // `project` is a Vfs, which `vfs` is, or the disk, for `stasis bundle --deptree`, which gives the `plan` of builds.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false, why } = {}) {
   const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinFromTree, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
-  const { configuredBuilds } = await import('./bundle-options.js')
+  const { configuredBuilds, withConfigDefine } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkTarget(name, { os, cpu, libc })
   checkCache(name, cache)
@@ -1760,9 +1760,10 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const packageManagers = specs.map((spec) => spec.packageManager)
   const pms = packageManagers.map((one) => packageManagerOf(name, one))
   if (lazy) for (const one of packageManagers) checkLazy(name, one)
-  // The builds stasis.config.json's `entries` makes, whose union takes `extra` once; else the options given.
+  // The builds stasis.config.json's `entries` makes, whose union takes `extra` once; else the options given, with
+  // its `define` all the same.
   const configured = plan === undefined ? configuredBuilds(name, { cwd, host: project, entries: options.entries, options }) : null
-  const { builds, bundleExtra } = plan ?? { builds: configured?.builds ?? [options], bundleExtra: configured !== null }
+  const { builds, bundleExtra } = plan ?? { builds: configured?.builds ?? [withConfigDefine(name, options, { cwd, host: project })], bundleExtra: configured !== null }
   if (builds.length === 0) throw new Error(`${name}: no entries given, and ${CONFIG_FILE}'s entries name none`)
   // That the Vfs can be globbed for `extra` is checked before anything is fetched.
   if (parseExtraOption(CONFIG_FILE, readConfigFile(name, cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()

@@ -16,7 +16,7 @@ const envBool = (name, value) => {
 
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
-// `lockFile` and `bundle` are flag/env-only; `extra`, `entries`, TREE_FLAGS and `lockfiles` are file-only.
+// `lockFile` and `bundle` are flag/env-only; `extra`, `entries`, `define`, TREE_FLAGS and `lockfiles` are file-only.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: SCOPES },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: LOCK_MODES },
@@ -34,7 +34,7 @@ const OPTIONS = {
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
 const TREE_FLAGS = ['installDevDependencies', 'lazyDependencies', 'generatePrisma']
-const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...TREE_FLAGS, 'lockfiles', ...POLICY_KEYS]
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', 'define', ...TREE_FLAGS, 'lockfiles', ...POLICY_KEYS]
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes explicitly.
 const CONFIG_FILE_LOCK = 'frozen'
 
@@ -171,7 +171,7 @@ export class Config {
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
       // `stasis bundle`'s, validated there; the policy's, below.
-      if (key === 'entries' || POLICY_KEYS.includes(key)) continue
+      if (key === 'entries' || key === 'define' || POLICY_KEYS.includes(key)) continue
       // A run takes node_modules as installed, but a value github-bundle would refuse is refused here too.
       if (TREE_FLAGS.includes(key)) {
         if (typeof config[key] !== 'boolean') throw new TypeError(`stasis.config.json: ${key} must be true or false, got ${JSON.stringify(config[key])}`)

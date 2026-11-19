@@ -35,6 +35,7 @@ it, or take it for another path.
 | `brotliQuality` | integer `0`–`11` | `6` | `EXODUS_STASIS_BROTLI_QUALITY` |
 | `extra` | array of paths and glob patterns | unset | none |
 | `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
+| `define` | `"K=V"` or an array of them: every JS entry's `--define`s, which no entry's own `define` may be beside (see [Defines](bundle.md#defines---define)) | unset | none |
 | `installDevDependencies` | boolean | `true` | none |
 | `lazyDependencies` | boolean | `true` | none |
 | `generatePrisma` | boolean | `true` | none |

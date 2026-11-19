@@ -44,7 +44,7 @@ one misses, as one of a package that is not installed does, see
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
-| `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. Under `--metro`, `__DEV__` and `process.env.NODE_ENV` have Metro's release values unless given. See [Defines](#defines---define). |
+| `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. Under `--metro`, `__DEV__` and `process.env.NODE_ENV` have Metro's release values unless given. `stasis.config.json`'s `define` gives every entry's instead. See [Defines](#defines---define). |
 | `--package-json` | Also bundle each bundled module's `package.json`, and the nearest one above each bundled file (an `esm/package.json`), even ones the scan never reached. |
 | `--brotli-quality=0..11` | Compression level, default `6`. |
 
@@ -222,7 +222,8 @@ taking a value, a string as on the command line, and one taking a list
 (`platforms`, `conditions`, `mainFields`, `resources`, `cargo-features`) an
 array of strings too. `define`, repeated rather than comma-separated, takes an
 array of its `K=V` strings (`["__DEV__=false", "process.env.NODE_ENV=\"production\""]`),
-or one. `output`, `lockfile`, `lockfile-only`, `brotli-quality` and `add` say
+or one. The config's own `define`, beside `entries`, gives every JS entry its
+defines instead: see [Defines](#defines---define). `output`, `lockfile`, `lockfile-only`, `brotli-quality` and `add` say
 how the bundle is written, not how an entry is built, so they stay flags, as
 `deptree` does.
 
@@ -884,6 +885,24 @@ import is carried anyway. A name a Babel plugin of the project inlines
 (`babel-plugin-transform-define`, Expo's `process.env.EXPO_OS`) can be defined
 the same way. One the build doesn't inline leaves out files Metro still
 bundles.
+
+`stasis.config.json`'s own `define` gives every JS entry the same defines,
+those its `entries` names and those it doesn't (it may have no `entries` at
+all), as `--define` for each would:
+
+```json
+{ "define": ["__DEV__=false", "process.env.NODE_ENV=\"production\""], "entries": { "index.js": { "metro": true, "platforms": ["ios"] }, "cli.js": {} } }
+```
+
+- It takes a `K=V` string or an array of them, as an entry's `define` does.
+- An entry's own `define` can't be set beside it, whichever entry and whatever
+  it gives: the config is refused, rather than one taking the other's place.
+  Either every entry's defines are the config's, or each entry's its own.
+- `--define` can't be given beside it either: set it there. `stasis
+  github-bundle` takes a `--define` that is the same, and refuses another.
+- A `.sol`, `.php`, `.sh`, `.rs` or `.teal` entry takes nothing of it.
+- Under `--metro`, a name it gives takes the place of Metro's default, as an
+  entry's `define` does.
 
 A bundle built with defines holds what those values run, and no more. Where
 they don't hold (a dev build against a bundle built for release, or
