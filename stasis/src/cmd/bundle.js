@@ -513,12 +513,6 @@ function reportScanIssues({ fatal, tolerated, typescript, leftOut }, { label = '
   }
 }
 
-// The reason a scan takes the file at an absolute path for absent, by any of `policies`' ignoreModules; null for none.
-function ignoresOf(policies, root, host) {
-  const ignorer = moduleIgnorer(policies, root, host)
-  return ignorer && ((absolute, options) => (ignorer(absolute, options) === undefined ? undefined : 'ignored by ignoreModules'))
-}
-
 // Trimmed, empties dropped, so a sloppy programmatic caller can't push a bogus token into the resolver.
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
@@ -546,7 +540,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // takes what its config's ignoreModules ignores for absent.
   const stateOptions = { bundle: 'replace', lock: 'ignore', ownLock: true, ...(scope && { scope }), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
-  const ignores = ignoresOf([state.config.policy, policy], state.root, host)
+  const ignores = moduleIgnorer([state.config.policy, policy], state.root, host)
   const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined, ignores })
   // A round of a lazy tree that asked for a package already is void: the rest is moot.
   if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
@@ -1098,7 +1092,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
   // What the config's and the build's ignoreModules ignore, every scan takes for absent: the configs' and toolchain's too.
-  const ignores = ignoresOf([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
+  const ignores = moduleIgnorer([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
 
   const formatsByRel = new Map()
   const resourceRels = new Set()

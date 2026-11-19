@@ -209,16 +209,14 @@ class Policy {
   }
 
   // The dependency the file at `path` (from the root, as an artifact spells it) is of, where ignoreModules takes
-  // it for absent: by its installed name or its package.json's, `nameOf(dir)`, as disallowedModules matches.
+  // it for absent: by its installed name, else its package.json's, `nameOf(dir)`, as disallowedModules matches.
   ignoredAt(path, nameOf) {
     const patterns = this.#rules.get(IGNORE)
     const split = patterns === undefined ? null : splitNodeModulesPath(path)
     if (split === null) return undefined
-    for (const name of [split.name, nameOf(split.dir)]) {
-      const match = name === undefined ? undefined : patterns.find(({ test }) => test(name))
-      if (match !== undefined) return { dir: split.dir, name, pattern: match.pattern, label: this.label }
-    }
-    return undefined
+    const matching = (name) => (name === undefined ? undefined : patterns.find(({ test }) => test(name)))
+    const match = matching(split.name) ?? matching(nameOf(split.dir))
+    return match && { dir: split.dir, pattern: match.pattern, label: this.label }
   }
 
   assert(contents, hint = '') {
@@ -239,33 +237,31 @@ class Policy {
 
 export const ignoredText = ({ label, dir, pattern }) => `${label}: ignoreModules ignores ${dir} (${JSON.stringify(pattern)})`
 
-// For a build: the ignoreModules match of the file at an absolute path, by any of `policies`, or undefined where
-// none takes it for absent; null where none ignores any module. A path is the root's, as its real path or not.
+// The name each package directory's package.json gives it (from `root`), read leniently: undefined for none.
+export const packageNamesOf = (root, host = diskHost) => memoized((dir) => {
+  const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
+  return typeof name === 'string' && name !== '' ? name : undefined
+})
+
+const NO_NAME = () => undefined
+
+// For a build's scan: the reason it takes the file at an absolute path for absent, by any of `policies`'
+// ignoreModules, or undefined; null where none ignores any module. A path is the root's, as its real path or not.
 export function moduleIgnorer(policies, root, host = diskHost) {
   const ignoring = policies.filter((policy) => policy?.ignoresModules)
   if (ignoring.length === 0) return null
   const bases = [root]
   try {
-    const real = host.realpath(root)
-    if (real !== root) bases.push(real)
+    bases.push(host.realpath(root))
   } catch { /* a missing root reaches nothing */ }
-  const nameOf = (base) => memoized((dir) => {
-    const name = readPackageJson(base, `${dir}/package.json`, { host })?.name
-    return typeof name === 'string' && name !== '' ? name : undefined
-  })
-  const namesFrom = bases.map(nameOf)
+  // One directory, by either base.
+  const nameOf = packageNamesOf(root, host)
   // `installed`: by the name it is installed under alone, reading nothing (a lazy tree fetches what is read).
   return (absolute, { installed = false } = {}) => {
-    for (const [i, base] of bases.entries()) {
-      const rel = toPosix(relative(base, absolute))
-      if (relativeEscapes(rel)) continue
-      for (const policy of ignoring) {
-        const hit = policy.ignoredAt(rel, installed ? () => undefined : namesFrom[i])
-        if (hit !== undefined) return hit
-      }
-      return undefined
-    }
-    return undefined
+    if (!hasNodeModulesSegment(absolute)) return undefined
+    const rel = bases.map((base) => toPosix(relative(base, absolute))).find((at) => !relativeEscapes(at))
+    if (rel === undefined || !ignoring.some((policy) => policy.ignoredAt(rel, installed ? NO_NAME : nameOf) !== undefined)) return undefined
+    return 'ignored by ignoreModules'
   }
 }
 

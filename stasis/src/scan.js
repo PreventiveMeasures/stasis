@@ -4,8 +4,8 @@ import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
 import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
-import { inNodeModules, isSourceFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
+import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -315,23 +315,29 @@ export class Scan {
     }
   }
 
-  // Where Node resolves a bare specifier, the first node_modules/<name> above the parent but for a package's
-  // reference to itself, as ignoreModules takes it by the name it is installed under: told before resolving it,
-  // which reads the package (a lazy tree fetches it). One installed under another name is told once resolved.
+  // `${dir}\0${name}` -> #ignoredPackage's reason, null for none: a directory's files share the answer.
+  #ignoredPackages = new Map()
+
+  // Where Node resolves a bare specifier, the first node_modules/<name> above the parent, as ignoreModules takes it
+  // by the name it is installed under: told before resolving it, which reads the package (a lazy tree fetches it).
+  // One installed under another name is told once resolved.
   #ignoredPackage(parentFile, spec) {
-    if (this.ignores === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#') || /^[a-z][a-z\d+.-]*:/iu.test(spec)) return undefined
-    const parts = spec.split('/')
-    const name = parts.slice(0, spec.startsWith('@') ? 2 : 1).join('/')
-    if (parts.slice(0, spec.startsWith('@') ? 2 : 1).some((part) => part === '' || part === '.' || part === '..')) return undefined
+    if (this.ignores === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
+    const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
+    const dir = dirname(parentFile)
+    const reason = upsert(this.#ignoredPackages, `${dir}\0${name}`, () => {
+      const found = locatePackage(dir, name, this.host)
+      let real
+      try {
+        real = found && this.host.realpath(found.pkgDir)
+      } catch { /* a dangling link resolves nothing */ }
+      // By its real path, as the edge it resolves to is: a workspace package linked into node_modules is the project's.
+      return (real && this.ignores(join(real, 'package.json'), { installed: true })) ?? null
+    })
+    if (reason === null) return undefined
+    // A package's reference to itself resolves to it, whatever of its name is installed above.
     const own = this.host.findPackageJSON(parentFile)
-    if (own && readJson(own, this.host)?.name === name) return undefined
-    for (let dir = dirname(parentFile); ; dir = dirname(dir)) {
-      if (basename(dir) !== 'node_modules') {
-        const candidate = join(dir, 'node_modules', name)
-        if (this.host.stat(candidate)?.isDirectory()) return this.ignores(join(candidate, 'package.json'), { installed: true })
-      }
-      if (dirname(dir) === dir) return undefined
-    }
+    return own && readJson(own, this.host)?.name === name ? undefined : reason
   }
 
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.

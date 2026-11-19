@@ -367,14 +367,12 @@ function assertInfraMatchesBundle(url) {
 // ignoreModules takes a dependency for absent: a resolution into one misses as Node's does, so a require() or
 // import() falls through where it catches the miss, and a static import fails. Never `recording`: a miss the
 // program catches is no capture failure.
-function missIfIgnored(specifier, parentURL, url, required) {
-  const hit = url?.startsWith('file:') ? state?.ignoredModule(url) : undefined
+function missIfIgnored(specifier, parentURL, url, conditions) {
+  const hit = state.ignoredModule(url)
   if (hit === undefined) return
-  const parent = parentURL?.startsWith('file:') ? fileURLToPath(parentURL) : parentURL
-  throw Object.assign(new Error(`Cannot find module '${specifier}' imported from ${parent} (${ignoredText(hit)})`), { code: required ? 'MODULE_NOT_FOUND' : 'ERR_MODULE_NOT_FOUND' })
+  const parent = parentURL.startsWith('file:') ? fileURLToPath(parentURL) : parentURL
+  throw Object.assign(new Error(`Cannot find module '${specifier}' imported from ${parent} (${ignoredText(hit)})`), { code: conditions.includes('require') ? 'MODULE_NOT_FOUND' : 'ERR_MODULE_NOT_FOUND' })
 }
-
-const requireContext = (conditions) => Array.isArray(conditions) && conditions.includes('require')
 
 function resolve(specifier, context, nextResolve) {
   const { parentURL, conditions, importAttributes } = context
@@ -412,7 +410,7 @@ function resolve(specifier, context, nextResolve) {
     // inNodeModules(), not a raw substring: a symlinked workspace source is read from disk.
     if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) {
       const res = nextResolve(specifier)
-      if (parentURL) missIfIgnored(specifier, parentURL, res.url, requireContext(conditions))
+      if (parentURL) missIfIgnored(specifier, parentURL, res.url, conditions)
       return res
     }
     // The entry skips nextResolve, so it needn't be on disk.
@@ -439,7 +437,7 @@ function resolve(specifier, context, nextResolve) {
 
   assert.equal(res.importAttributes, undefined) // unsupported yet
   if (parentURL) assert.ok(state)
-  if (parentURL) missIfIgnored(specifier, parentURL, url, requireContext(conditions))
+  if (parentURL) missIfIgnored(specifier, parentURL, url, conditions)
   if (infraUrls.has(url)) {
     if (infraSources.has(url)) {
       // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
@@ -478,6 +476,8 @@ export function install() {
   // The --fs patches wait for initState: their mode may come from stasis.config.json.
 }
 
+const REQUIRE = ['require']
+
 // registerHooks doesn't intercept the require() the ESM->CJS translator builds, which resolves against disk.
 function patchCjsResolution() {
   const original = Module._resolveFilename
@@ -505,11 +505,11 @@ function patchCjsResolution() {
       }
     }
     const resolved = original.call(this, request, parent, ...rest)
-    if (state && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
+    if (state && (!loadMode || state.config.policy?.ignoresModules) && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
       const parentURL = pathToFileURL(parent.filename).toString()
       const url = pathToFileURL(resolved).toString()
       // A preload's own require()s are runner infrastructure, which takes nothing for absent.
-      if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfIgnored(request, parentURL, url, true)
+      if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfIgnored(request, parentURL, url, REQUIRE)
       // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
       if (!loadMode) state.observeResolution(parentURL, request, url)
     }

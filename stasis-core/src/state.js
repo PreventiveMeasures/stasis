@@ -13,7 +13,7 @@ import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
-import { linksOn } from './policy.js'
+import { linksOn, packageNamesOf } from './policy.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -662,21 +662,19 @@ export class State {
   }
 
   // The config's ignoreModules match of the dependency `url` is in, or undefined: the hooks take one for absent.
+  // Asked of each resolution, more than once of a require()'s: kept by URL.
   ignoredModule(url) {
     const policy = this.config.policy
-    if (policy === null || !policy.ignoresModules) return undefined
-    const file = this.#canonicalFileMaybe(url)
-    return file === undefined ? undefined : policy.ignoredAt(toPosix(file), this.#packageNameOf)
+    if (!policy?.ignoresModules) return undefined
+    this.#packageNames ??= packageNamesOf(this.root, this.#host)
+    return upsert(this.#ignored, url, () => {
+      const file = this.#canonicalFileMaybe(url)
+      return (file === undefined ? undefined : policy.ignoredAt(toPosix(file), this.#packageNames)) ?? null
+    }) ?? undefined
   }
 
-  // Leniently: a resolution into a package whose package.json is broken still goes by its installed name.
-  #packageNameOf = memoized((dir) => {
-    let name
-    try {
-      name = readPackageJSON(this.#host, resolve(this.root, dir, 'package.json')).name
-    } catch { /* none, or unreadable */ }
-    return typeof name === 'string' && name !== '' ? name : undefined
-  })
+  #ignored = new Map()
+  #packageNames
 
   // findPackageJSON is unreliable for a directory (EISDIR, or the parent's); an unreadable one is refused as it does.
   #nearestPackageJsonFor(dirAbsolute) {

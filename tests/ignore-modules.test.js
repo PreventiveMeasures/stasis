@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -14,6 +14,7 @@ import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { bundlePlan, readConfigEntries } from '../stasis/src/cmd/bundle-options.js'
 import { withTmp } from './tmp.helper.js'
+import { captureWarningsAsync } from './warnings.helper.js'
 
 // stasis.config.json's ignoreModules: dependencies taken for absent. No build or run reaches one, so no
 // lockfile or bundle carries one, and an import of one misses as an import of a package not installed does:
@@ -43,18 +44,6 @@ const runCli = async (args, cwd) => {
   child.stderr.on('data', (d) => (stderr += d))
   const [status] = await once(child, 'close')
   return { status, stdout, stderr }
-}
-
-// The console.warn lines `fn` says.
-const warned = async (t, fn) => {
-  const said = []
-  t.mock.method(console, 'warn', (...args) => said.push(args.join(' ')))
-  try {
-    await fn()
-  } finally {
-    console.warn.mock.restore()
-  }
-  return said.join('\n')
 }
 
 // `opt` is the dependency taken for absent, reaching `optdep`, which nothing else reaches; `left` is another.
@@ -87,11 +76,11 @@ test('ignoreModules takes a dependency by either name it goes by, as disallowedM
   t.assert.ok(policy.ignoresModules)
   t.assert.equal(parsePolicy('cfg', { disallowedModules: ['opt'] }).ignoresModules, false)
   const none = () => undefined
-  t.assert.deepStrictEqual(policy.ignoredAt('node_modules/opt/index.js', none), { dir: 'node_modules/opt', name: 'opt', pattern: 'opt', label: 'cfg' })
+  t.assert.deepStrictEqual(policy.ignoredAt('node_modules/opt/index.js', none), { dir: 'node_modules/opt', pattern: 'opt', label: 'cfg' })
   t.assert.equal(policy.ignoredAt('node_modules/.pnpm/opt@1.0.0/node_modules/opt/lib/x.js', none).dir, 'node_modules/.pnpm/opt@1.0.0/node_modules/opt')
   t.assert.equal(policy.ignoredAt('node_modules/@skip/thing/index.js', none).pattern, '@skip/*')
   // Installed under another name, by its package.json's.
-  t.assert.equal(policy.ignoredAt('node_modules/nice/index.js', () => 'opt').name, 'opt')
+  t.assert.equal(policy.ignoredAt('node_modules/nice/index.js', () => 'opt').dir, 'node_modules/nice')
   t.assert.equal(policy.ignoredAt('node_modules/left/index.js', none), undefined)
   // The project's own files are no dependency's.
   t.assert.equal(policy.ignoredAt('opt/index.js', none), undefined)
@@ -115,7 +104,7 @@ test('bundleCommand takes an ignored dependency for absent: a require() or impor
   const out = join(tmp, 'stasis.code.br')
   // Built through a State, and with --mainFields' resolver, without one.
   const builds = async (options) => {
-    const said = await warned(t, () => bundleCommand({ cwd: tmp, entries: ['a.js'], ...options }))
+    const said = (await captureWarningsAsync(() => bundleCommand({ cwd: tmp, entries: ['a.js'], ...options }))).warnings.join('\n')
     t.assert.match(said, /unresolved import\(s\)(?: \(mainFields\))?; they will fall through at load time:\n {2}require opt from a\.js \(ignored by ignoreModules\)/u, JSON.stringify(options))
     const bundle = readBundle(out)
     t.assert.deepStrictEqual(sorted(bundle.sources.keys()), ['a.js', 'node_modules/left/index.js'], 'neither opt nor what only it reaches')
@@ -201,4 +190,21 @@ test('CLI: stasis run --bundle=load of a bundle with an ignored dependency falls
   await loads('full')
   // In node_modules scope, a.js is read from disk, and resolves opt there.
   await loads('node_modules')
+}))
+
+test('a workspace package linked into node_modules is the project\'s own, which ignoreModules never takes for absent', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'a.js': "console.log(require('foo'))\n",
+    'packages/foo/package.json': { name: 'foo', version: '1.0.0', main: 'index.js' },
+    'packages/foo/index.js': "module.exports = 'foo'\n",
+    'stasis.config.json': { ignoreModules: ['foo'] },
+  })
+  mkdirSync(join(tmp, 'node_modules'))
+  symlinkSync('../packages/foo', join(tmp, 'node_modules/foo'))
+  await bundleCommand({ cwd: tmp, entries: ['a.js'], output: join(tmp, 'a.br') })
+  t.assert.deepStrictEqual(sorted(readBundle(join(tmp, 'a.br')).sources.keys()), ['a.js', 'packages/foo/index.js'])
+  const ran = await runCli(['run', '--lock=add', 'a.js'], tmp)
+  t.assert.equal(ran.status, 0, ran.stderr)
+  t.assert.equal(ran.stdout, 'foo\n')
 }))
