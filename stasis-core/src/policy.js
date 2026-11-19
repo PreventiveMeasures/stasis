@@ -243,9 +243,9 @@ function packageDirOf(rel) {
 export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModules excludes ${dir} (${JSON.stringify(pattern)})`
 
 // The excluded dependency an absolute path is in, else undefined; null where no policy excludes one. A dependency goes
-// by its package.json name and the directory it is really installed in, as disallowedModules matches (a pnpm alias by
-// its real one); a link by what it links to; a workspace package linked into node_modules never. `installed`: reads
-// no package.json (a lazy tree would fetch it).
+// by its package.json name and the directory it is really installed in, as disallowedModules matches: a path by its
+// real one (a link's, a pnpm alias's), else (missing, or `installed`, reading nothing a lazy tree would fetch) by its
+// package's. A workspace package linked into node_modules is never one.
 export function moduleExcluder(policies, root, host = diskHost) {
   const excluding = policies.filter((policy) => policy?.excludesModules)
   if (excluding.length === 0) return null
@@ -261,33 +261,26 @@ export function moduleExcluder(policies, root, host = diskHost) {
       return undefined
     }
   }
+  const dirOf = (rel) => (rel === undefined ? undefined : (splitNodeModulesPath(rel) ?? packageDirOf(rel))?.dir)
   // A package's own directory, which a lazy tree reads without fetching it.
   const realDir = memoized((dir) => {
-    const real = realpath(join(root, dir))
-    return real && fromRoot(real)
+    const real = dir && realpath(join(root, dir))
+    const rel = real && fromRoot(real)
+    return rel && dirOf(`${rel}/package.json`)
   })
   const nameOf = memoized((dir) => {
     const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
     return typeof name === 'string' && name !== '' ? name : undefined
   })
-  const at = (absolute, installed) => {
-    const rel = hasNodeModulesSegment(absolute) ? fromRoot(absolute) : undefined
-    const split = rel === undefined ? null : splitNodeModulesPath(rel) ?? packageDirOf(rel)
-    const real = split === null ? undefined : realDir(split.dir)
-    const dir = real === undefined ? undefined : splitNodeModulesPath(`${real}/package.json`)?.dir
+  return (absolute, { installed = false } = {}) => {
+    const real = installed ? undefined : realpath(absolute)
+    const dir = real === undefined ? realDir(dirOf(fromRoot(absolute))) : dirOf(fromRoot(real))
     if (dir === undefined) return undefined
     for (const policy of excluding) {
       const pattern = policy.excludedBy(installedName(dir)) ?? (installed ? undefined : policy.excludedBy(nameOf(dir)))
       if (pattern !== undefined) return { dir, pattern, label: policy.label }
     }
     return undefined
-  }
-  return (absolute, { installed = false } = {}) => {
-    const hit = at(absolute, installed)
-    if (hit !== undefined || installed) return hit
-    // A link, wherever it is, by the file it links to.
-    const real = realpath(absolute)
-    return real === undefined || real === absolute ? undefined : at(real, false)
   }
 }
 
