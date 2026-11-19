@@ -480,8 +480,6 @@ export function install() {
   // The --fs patches wait for initState: their mode may come from stasis.config.json.
 }
 
-const REQUIRE = ['require']
-
 // registerHooks doesn't intercept the require() the ESM->CJS translator builds, which resolves against disk.
 function patchCjsResolution() {
   const original = Module._resolveFilename
@@ -513,7 +511,7 @@ function patchCjsResolution() {
       const parentURL = pathToFileURL(parent.filename).toString()
       const url = pathToFileURL(resolved).toString()
       // Not a preload's own require()s.
-      if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfExcluded(request, parentURL, url, REQUIRE)
+      if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfExcluded(request, parentURL, url, ['require'])
       // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
       if (!loadMode) state.observeResolution(parentURL, request, url)
     }

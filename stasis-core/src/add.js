@@ -137,24 +137,22 @@ function globPaths(host, pattern, cwd, baseDir, exclude) {
 
 // A sweep drops what it FINDS auto-excluded: dir rules below the named root (`add src/examples` sweeps it, `add src`
 // skips it), file rules by name and to `outputs`. A path `exclude` takes goes, named or swept, with all under it.
-// `excluder`: policy.js's moduleExcluder, whose dependencies are absent: named, missing (`absent` holds why); swept,
-// never found.
+// `excluder`: policy.js's moduleExcluder, whose dependencies are absent: named, missing (keyed with why); swept, never found.
 function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude, excluder = null, host = diskHost } = {}) {
   const files = new Map() // rel -> stats, the walk's own, reused by validation
   const excluded = new Set()
-  const absent = new Map()
   const isOutput = outputMatcher(baseDir, outputs)
-  const absentOf = excludedFrom(baseDir, excluder, host)
+  const absentOf = excludedFrom(baseDir, excluder)
   for (const rel of rels) {
     // A walk meets a directory before what's under it, so it checks each path alone; a named one, its directories too.
     if (exclude !== undefined && rel.split('/').some((_, i, segments) => exclude(segments.slice(0, i + 1).join('/')))) continue
     const dirAbs = join(baseDir, rel)
-    let stats = statStrict(host, dirAbs, rel) ?? undefined
     const hit = absentOf(rel)
     if (hit !== undefined) {
-      absent.set(rel, hit)
-      stats = undefined
+      files.set(`${rel} (${excludedText(hit)})`, undefined)
+      continue
     }
+    const stats = statStrict(host, dirAbs, rel) ?? undefined
     // A NAMED path is kept (naming is the override; a missing one keeps undefined stats for validation to report).
     if (stats === undefined || !stats.isDirectory()) {
       if (keepNamedOutputs || !isOutput(rel, stats)) files.set(rel, stats)
@@ -180,24 +178,10 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
   }
   // Inclusion is monotone: a path any entry kept stays kept, so `add src src/examples` keeps the subtree in either order.
   for (const file of files.keys()) excluded.delete(file)
-  return { files, excluded, absent }
+  return { files, excluded }
 }
 
-// The moduleExcluder match of a project path, by the path and the file it links to; undefined throughout without one.
-function excludedFrom(baseDir, excluder, host) {
-  if (excluder === null) return () => undefined
-  return memoized((rel) => {
-    const abs = join(baseDir, rel)
-    let real
-    try {
-      real = host.realpath(abs)
-    } catch { /* missing: by its path alone */ }
-    return excluder(abs) ?? (real === undefined || real === abs ? undefined : excluder(real))
-  })
-}
-
-// A missing file as validation names it: one moduleExcluder excludes, with why.
-export const missingText = (rel, absent) => (absent?.has(rel) ? `${rel} (${excludedText(absent.get(rel))})` : rel)
+const excludedFrom = (baseDir, excluder) => (excluder === null ? () => undefined : memoized((rel) => excluder(join(baseDir, rel))))
 
 const listPaths = (rels) => sortedByPath(rels).join(', ')
 
@@ -228,7 +212,7 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost, exclude
   // Memoized: a walk asks of each path, a sweep again, and a named path of every directory above it.
   const exclude = exclusions.length === 0 ? undefined : memoized((rel) => exclusions.some((pattern) => host.matchesGlob(rel, pattern)))
   // A glob never matches what an excluded dependency holds, as it matches no missing file.
-  const absentOf = excludedFrom(baseDir, excluder, host)
+  const absentOf = excludedFrom(baseDir, excluder)
   const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
     const matches = globPaths(host, pattern, baseDir, baseDir, exclude).filter((match) => absentOf(toPosix(match)) === undefined)
     return matches.length === 0 ? [pattern] : sortedByPath(matches)
@@ -237,7 +221,7 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost, exclude
 }
 
 // The WHOLE set is classified before any target is touched; only a symlink escaping the root fails on the spot.
-export function validateFiles({ baseDir, realBase, files, absent, resources, withIntegrity, label = 'add', host = diskHost }) {
+export function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add', host = diskHost }) {
   const codeFiles = new Map()
   const resourceFiles = new Map()
   const integrities = new Map()
@@ -248,7 +232,7 @@ export function validateFiles({ baseDir, realBase, files, absent, resources, wit
   const kept = (path, read) => (types.has(path) ? types.get(path) : types.set(path, read()).get(path))
   for (const [rel, stats] of files) {
     if (stats === undefined) {
-      missing.push(missingText(rel, absent))
+      missing.push(rel)
       continue
     }
     const executable = isExecutableMode(stats)
@@ -294,13 +278,13 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     .filter((file) => file !== undefined)
     .map((file) => toPosix(relative(baseDir, resolve(baseDir, file)))))
 
-  const { files, excluded, absent } = expandDirectories(baseDir, normalizeEntries(entries, cwd), outputs, { excluder: moduleExcluder([policy], baseDir) })
+  const { files, excluded } = expandDirectories(baseDir, normalizeEntries(entries, cwd), outputs, { excluder: moduleExcluder([policy], baseDir) })
   if (files.size === 0) {
     throw new Error(`add: no files to add (directory entries matched ${excluded.size === 0
       ? 'nothing' : `only auto-excluded files: ${listPaths(excluded)}`})`)
   }
 
-  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase, files, absent, resources, withIntegrity: hasLock })
+  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase, files, resources, withIntegrity: hasLock })
 
   // Every target's merge is computed first, then the writes run -- see prepareBundleFile.
   const summary = []

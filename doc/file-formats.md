@@ -314,57 +314,30 @@ name, so a rule copied from one file to the other may not refuse the same files.
 
 ### Excluded modules
 
-`excludeModules` names dependencies to take for absent, as though they were not
-installed: an optional one a `require()` in a `try` reaches, or one a package
-re-exports lazily that nothing of the program uses.
+`excludeModules` names dependencies to take as not installed, such as an optional
+one a `require()` in a `try` reaches:
 
 ```json
-{ "excludeModules": ["bufferutil", "utf-8-validate", "@react-native-community/cli-server-api"] }
+{ "excludeModules": ["bufferutil", "@react-native-community/cli-server-api"] }
 ```
 
 A file of one is missing wherever stasis looks for a file, as one not there is,
-but named for why (`excludeModules excludes node_modules/bufferutil
-("bufferutil")`):
+with the reason in the error (`excludeModules excludes node_modules/bufferutil
+("bufferutil")`). So an import of one is a miss, which `stasis bundle` lets a
+`require()` or `import()` fall through and fails for a static import (`excluded
+by excludeModules`), and `stasis run` throws as Node does for a missing package
+(`MODULE_NOT_FOUND`, `ERR_MODULE_NOT_FOUND`). `stasis add` and `extra` don't find
+one, nor does a `--fs` read, nor `stasis bundle` an entry in one. Nothing of one
+is recorded, and a lockfile or bundle that records one is refused wherever it is
+loaded (`… -- recorded in stasis.lock.json; rebuild it`), as is a bundler
+plugin's build reaching one.
 
-- An import that resolves into one misses. `stasis bundle` takes the miss as it
-  takes any other (`excluded by excludeModules`): a `require()` or `import()` of
-  one falls through at load time, with a warning, and a static `import` or
-  `export … from` of one, in a file the entries load eagerly, fails the build
-  (`JS bundle would be broken at load time`). Nothing of it is read, nor
-  anything only it reaches. An entry in one is not found.
-- `stasis run`, in every lock and bundle mode, fails the resolution as Node
-  fails one of a missing package: `MODULE_NOT_FOUND` for a `require()` or
-  `require.resolve()`, `ERR_MODULE_NOT_FOUND` for an `import` (and, under
-  `--bundle=load`, as for any miss there). A program that catches it goes on,
-  and the run records nothing of the package. A static import of one fails the
-  run. A preload is not held to it, but what it loaded is no more found for the
-  app. Under `--fs`, a read, stat or `existsSync` of one's files answers as
-  for a missing file.
-- `stasis add` and `extra`: one named (a file, a directory, a glob matching
-  nothing else, or a link to one) is not found; a sweep never finds one.
-- `--metro`'s toolchain, Babel plugins and the files Metro adds are passed over
-  where they are one's, as where they are not installed.
-
-A pattern is a module pattern, matching as `disallowedModules`' does: a
-dependency by the name it is installed under (a pnpm alias's too, though its real
-directory is named otherwise) or its `package.json`'s. The project's own packages
-are no dependencies, linked into `node_modules` or not, and none of their files
-is excluded. An entry of `entries` may set it too: its own build takes those for
-absent, beside the config's, which every build takes.
-
-What carries one already is refused, as what conflicts is: a lockfile or bundle
-that records one, wherever stasis loads it (`stasis run` in every mode, `stasis
-bundle --add`, `stasis add`), as `excludeModules excludes bufferutil@4.0.9 at
-node_modules/bufferutil ("bufferutil") -- recorded in stasis.lock.json; rebuild
-it`. So is a build of the bundler plugins that reaches one: they resolve on their
-own, and stasis refuses the file as they record it.
-
-A lazy tree of `stasis github-bundle` fetches none that a bare specifier names by
-the name it is installed under, where Node's resolution reaches it. One installed
-under another name, or reached through `--mainFields`'s or `--metro`'s resolver,
-is fetched to be told apart, though never bundled. A tree laid out whole
-(`--no-lazy`, `lazyDependencies: false`, `stasis bundle --deptree`) fetches every
-package, these too.
+A pattern matches as `disallowedModules`' does: by the name a dependency is
+installed under (a pnpm alias's too) or its `package.json`'s. The project's own
+packages, linked into `node_modules` or not, are never excluded. An entry of
+`entries` may set it for its own build, beside the config's. A lazy tree of
+`stasis github-bundle` never fetches one that a bare specifier names by the name
+it is installed under.
 
 ## `stasis.lock.json`
 

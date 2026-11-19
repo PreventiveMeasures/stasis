@@ -1592,7 +1592,7 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   const baseDir = resolve(cwd)
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
-  const { files: named, absent } = expandExtra(baseDir, patterns, written, host, moduleExcluder([parsePolicy(CONFIG_FILE, config)], baseDir, host))
+  const named = expandExtra(baseDir, patterns, written, host, moduleExcluder([parsePolicy(CONFIG_FILE, config)], baseDir, host)).files
   // Bundle#sources builds its Map afresh on each read.
   const bundled = built.bundle.sources
   // A file `extra` names that the build carries itself is attributed to both.
@@ -1602,7 +1602,7 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   let { bundle } = built
   let extraLock
   if (files.size > 0) {
-    const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, absent, resources: allowlist, label: 'extra', host })
+    const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources: allowlist, label: 'extra', host })
     const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
     const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules, host })
     extraLock = deferredLockfile(extra)

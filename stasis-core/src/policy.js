@@ -207,15 +207,8 @@ class Policy {
     return this.#rules.has(EXCLUDE)
   }
 
-  // The first of `names` (a thunk: read only where those before don't match) excludeModules matches.
-  excludedBy(names) {
-    const patterns = this.#rules.get(EXCLUDE)
-    for (const name of patterns === undefined ? [] : names) {
-      const value = typeof name === 'function' ? name() : name
-      const match = value === undefined ? undefined : patterns.find(({ test }) => test(value))
-      if (match !== undefined) return match.pattern
-    }
-    return undefined
+  excludedBy(name) {
+    return name === undefined ? undefined : this.#rules.get(EXCLUDE)?.find(({ test }) => test(name))?.pattern
   }
 
   assert(contents, hint = '') {
@@ -242,11 +235,10 @@ function packageDirOf(rel) {
 
 export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModules excludes ${dir} (${JSON.stringify(pattern)})`
 
-// The dependency a path (absolute, under the root or its real path) is in where any of `policies` excludes it:
-// { dir, pattern, label }, else undefined; null where none excludes modules. A dependency goes by the name it is
-// installed under there and at its real path (a pnpm alias), and its package.json's; a workspace package linked into
-// node_modules is the project's own. `installed`: reads no package.json (a lazy tree would fetch it). `alias`: the
-// name a bare specifier found it by.
+// The excluded dependency an absolute path is in, else undefined; null where no policy excludes one. A dependency goes
+// by the name it is installed under (a pnpm alias's), its real directory's and its package.json's; a link of the
+// project's own by what it links to; a workspace package linked into node_modules never. `installed`: reads no
+// package.json (a lazy tree would fetch it). `alias`: the name a bare specifier found it by.
 export function moduleExcluder(policies, root, host = diskHost) {
   const excluding = policies.filter((policy) => policy?.excludesModules)
   if (excluding.length === 0) return null
@@ -255,28 +247,33 @@ export function moduleExcluder(policies, root, host = diskHost) {
     bases.push(host.realpath(root))
   } catch { /* a missing root reaches nothing */ }
   const fromRoot = (absolute) => bases.map((base) => toPosix(relative(base, absolute))).find((rel) => !relativeEscapes(rel))
-  // A package's own directory, which a lazy tree reads without fetching it.
-  const realDir = memoized((dir) => {
+  const realpath = (path) => {
     try {
-      return fromRoot(host.realpath(join(root, dir)))
+      return host.realpath(path)
     } catch {
       return undefined
     }
+  }
+  // A package's own directory, which a lazy tree reads without fetching it.
+  const realDir = memoized((dir) => {
+    const real = realpath(join(root, dir))
+    return real && fromRoot(real)
   })
   const nameOf = memoized((dir) => {
     const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
     return typeof name === 'string' && name !== '' ? name : undefined
   })
   return (absolute, { installed = false, alias } = {}) => {
-    if (!hasNodeModulesSegment(absolute)) return undefined
+    if (!hasNodeModulesSegment(absolute)) absolute = realpath(absolute)
+    if (absolute === undefined || !hasNodeModulesSegment(absolute)) return undefined
     const rel = fromRoot(absolute)
     const split = rel === undefined ? null : splitNodeModulesPath(rel) ?? packageDirOf(rel)
     const real = split === null ? undefined : realDir(split.dir)
     const dir = real === undefined ? undefined : splitNodeModulesPath(`${real}/package.json`)?.dir
     if (dir === undefined) return undefined
-    const names = [split.name, installedName(dir), alias, ...(installed ? [] : [() => nameOf(dir)])]
     for (const policy of excluding) {
-      const pattern = policy.excludedBy(names)
+      const pattern = [split.name, installedName(dir), alias].map((name) => policy.excludedBy(name)).find(Boolean) ??
+        (installed ? undefined : policy.excludedBy(nameOf(dir)))
       if (pattern !== undefined) return { dir: split.dir, pattern, label: policy.label }
     }
     return undefined
