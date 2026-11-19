@@ -5,7 +5,7 @@ import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
 import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
 import { excludedText } from '@exodus/stasis-core/policy'
-import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, isPathWithin, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
 import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
@@ -319,23 +319,29 @@ export class Scan {
     }
   }
 
-  // `${dir}\0${name}` -> moduleExcluder's match, or null.
-  #excludedPackages = new Map()
+  // `${dir}\0${name}` -> #installedExcluded's, or null.
+  #installed = new Map()
 
-  // Before resolving, which reads the package (a lazy tree fetches it); addChild catches an alias.
-  #excludedPackage(parentFile, spec) {
-    if (this.excludes === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
+  // The real directory of the package Node finds a bare specifier in, where excludeModules excludes it by the name it
+  // is installed under (a pnpm alias's, which its real path loses). Reads nothing in it: a lazy tree would fetch it.
+  #installedExcluded(parentFile, spec) {
+    if (this.excludes === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return null
     const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
     const dir = dirname(parentFile)
-    const excluded = upsert(this.#excludedPackages, `${dir}\0${name}`, () => {
+    return upsert(this.#installed, `${dir}\0${name}`, () => {
       const found = locatePackage(dir, name, this.host)
-      return (found && this.excludes(join(found.pkgDir, 'package.json'), { installed: true })) ?? null
+      if (!found || this.excludes(join(found.pkgDir, 'package.json'), { installed: true }) === undefined) return null
+      return this.host.realpath(found.pkgDir)
     })
-    if (excluded === null) return undefined
-    // A package's reference to itself, which Node resolves through its own exports first.
+  }
+
+  // Before Node's resolution reads the package; but for a package's reference to itself, which resolves through its
+  // own exports first.
+  #excludedPackage(parentFile, spec) {
+    if (this.#installedExcluded(parentFile, spec) === null) return undefined
     const own = this.host.findPackageJSON(parentFile)
     const pkg = own && readJson(own, this.host)
-    return pkg?.name === name && pkg.exports !== undefined ? undefined : EXCLUDED_REASON
+    return pkg?.name === spec.split('/', spec.startsWith('@') ? 2 : 1).join('/') && pkg.exports !== undefined ? undefined : EXCLUDED_REASON
   }
 
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
@@ -479,9 +485,13 @@ export class Scan {
       // An `empty` edge (a browser/RN `false` redirect) is recorded but neither queued nor counted as unresolved.
       if (this.customResolve) {
         const r = this.customResolve(file, s.spec, conditions)
+        const child = r?.url && fileURLToPath(r.url)
+        // Its target is a real path: one in the package it found by an excluded installed name is excluded too.
+        const installed = child && this.#installedExcluded(file, s.spec)
         if (r?.builtin) edges.push({ ...s, builtin: true })
         else if (r?.empty) edges.push({ ...s, empty: true })
-        else if (r?.url) addChild(s, key, r.url, fileURLToPath(r.url))
+        else if (installed && isPathWithin(installed, child)) addExcluded(s, EXCLUDED_REASON)
+        else if (r?.url) addChild(s, key, r.url, child)
         else addUnresolved(s, 'MODULE_NOT_FOUND', conditions, this.missTargets ? this.customResolve.missTargets?.(file, s.spec, conditions) : undefined)
         continue
       }

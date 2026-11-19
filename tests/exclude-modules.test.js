@@ -203,6 +203,7 @@ test('a pnpm alias is excluded by the name it is installed under; a linked works
     'package.json': { name: 'app', version: '1.0.0', exports: './self.js' },
     'a.js': "let nice; try { nice = require('nice') } catch (e) { nice = e.code }\nconsole.log(nice, require('foo'), require('app'))\n",
     'self.js': "module.exports = 'self'\n",
+    'n.js': "try { require('nice') } catch {}\n",
     'node_modules/app/package.json': { name: 'app', version: '2.0.0' },
     'node_modules/.pnpm/opt@1.0.0/node_modules/opt/package.json': { name: 'opt', version: '1.0.0' },
     'node_modules/.pnpm/opt@1.0.0/node_modules/opt/index.js': "module.exports = 'opt'\n",
@@ -214,6 +215,9 @@ test('a pnpm alias is excluded by the name it is installed under; a linked works
   symlinkSync('../packages/foo', join(tmp, 'node_modules/foo'))
   await bundleCommand({ cwd: tmp, entries: ['a.js'], output: join(tmp, 'a.br') })
   t.assert.deepStrictEqual(sourcesOf(join(tmp, 'a.br')), ['a.js', 'packages/foo/index.js', 'self.js'])
+  // And through --mainFields' resolver, which gives the alias's real path alone.
+  await bundleCommand({ cwd: tmp, entries: ['n.js'], mainFields: ['main'], output: join(tmp, 'n.br') })
+  t.assert.deepStrictEqual(sourcesOf(join(tmp, 'n.br')), ['n.js'])
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
   t.assert.equal(runCli(['run', '--lock=add', 'a.js'], tmp).stdout, 'MODULE_NOT_FOUND foo self\n')
 }))
