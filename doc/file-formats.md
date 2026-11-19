@@ -337,7 +337,9 @@ installed under (a pnpm alias's too) or its `package.json`'s. The project's own
 packages, linked into `node_modules` or not, are never excluded. An entry of
 `entries` may set it for its own build, beside the config's. A lazy tree of
 `stasis github-bundle` never fetches one that a bare specifier names by the name
-it is installed under.
+it is installed under, where Node's resolution reaches it; `--mainFields`' and
+`--metro`'s resolver read a package to resolve into it, so fetch it, though the
+build still leaves it out.
 
 ## `stasis.lock.json`
 
