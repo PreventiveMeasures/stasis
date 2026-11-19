@@ -4,6 +4,7 @@ import { once } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { stripVTControlCharacters } from 'node:util'
 
 import { addCommand } from '@exodus/stasis-core/add'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -16,9 +17,10 @@ import { bundlePlan, readConfigEntries } from '../stasis/src/cmd/bundle-options.
 import { withTmp } from './tmp.helper.js'
 import { captureWarningsAsync } from './warnings.helper.js'
 
-// stasis.config.json's ignoreModules: dependencies taken for absent. No build or run reaches one, so no
+// stasis.config.json's excludeModules: dependencies taken for absent. No build or run reaches one, so no
 // lockfile or bundle carries one, and an import of one misses as an import of a package not installed does:
-// past a require() or import(), where the program can catch it, it falls through; a static import fails.
+// past a require() or import(), where the program can catch it, it falls through; a static import fails. A run
+// reads a lockfile or bundle as though one was never recorded in it.
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin', 'stasis.js')
 
@@ -43,7 +45,7 @@ const runCli = async (args, cwd) => {
   child.stdout.on('data', (d) => (stdout += d))
   child.stderr.on('data', (d) => (stderr += d))
   const [status] = await once(child, 'close')
-  return { status, stdout, stderr }
+  return { status, stdout, stderr: stripVTControlCharacters(stderr) }
 }
 
 // `opt` is the dependency taken for absent, reaching `optdep`, which nothing else reaches; `left` is another.
@@ -71,41 +73,41 @@ const project = (dir, config) => writeTree(dir, {
   ...(config === undefined ? {} : { 'stasis.config.json': config }),
 })
 
-test('ignoreModules takes a dependency by either name it goes by, as disallowedModules does', (t) => {
-  const policy = parsePolicy('cfg', { ignoreModules: ['opt', '@skip/*'] })
-  t.assert.ok(policy.ignoresModules)
-  t.assert.equal(parsePolicy('cfg', { disallowedModules: ['opt'] }).ignoresModules, false)
+test('excludeModules takes a dependency by either name it goes by, as disallowedModules does', (t) => {
+  const policy = parsePolicy('cfg', { excludeModules: ['opt', '@skip/*'] })
+  t.assert.ok(policy.excludesModules)
+  t.assert.equal(parsePolicy('cfg', { disallowedModules: ['opt'] }).excludesModules, false)
   const none = () => undefined
-  t.assert.deepStrictEqual(policy.ignoredAt('node_modules/opt/index.js', none), { dir: 'node_modules/opt', pattern: 'opt', label: 'cfg' })
-  t.assert.equal(policy.ignoredAt('node_modules/.pnpm/opt@1.0.0/node_modules/opt/lib/x.js', none).dir, 'node_modules/.pnpm/opt@1.0.0/node_modules/opt')
-  t.assert.equal(policy.ignoredAt('node_modules/@skip/thing/index.js', none).pattern, '@skip/*')
+  t.assert.deepStrictEqual(policy.excludedAt('node_modules/opt/index.js', none), { dir: 'node_modules/opt', pattern: 'opt', label: 'cfg' })
+  t.assert.equal(policy.excludedAt('node_modules/.pnpm/opt@1.0.0/node_modules/opt/lib/x.js', none).dir, 'node_modules/.pnpm/opt@1.0.0/node_modules/opt')
+  t.assert.equal(policy.excludedAt('node_modules/@skip/thing/index.js', none).pattern, '@skip/*')
   // Installed under another name, by its package.json's.
-  t.assert.equal(policy.ignoredAt('node_modules/nice/index.js', () => 'opt').dir, 'node_modules/nice')
-  t.assert.equal(policy.ignoredAt('node_modules/left/index.js', none), undefined)
+  t.assert.equal(policy.excludedAt('node_modules/nice/index.js', () => 'opt').dir, 'node_modules/nice')
+  t.assert.equal(policy.excludedAt('node_modules/left/index.js', none), undefined)
   // The project's own files are no dependency's.
-  t.assert.equal(policy.ignoredAt('opt/index.js', none), undefined)
-  t.assert.throws(() => parsePolicy('cfg', { ignoreModules: ['node_modules/opt'] }), { message: 'cfg: ignoreModules: "node_modules/opt" is no package name or pattern of names (such as "left-pad", "@babel/*")' })
-  t.assert.throws(() => parsePolicy('cfg', { ignoreModules: 'opt' }), { message: 'cfg: ignoreModules must be an array of non-empty strings' })
+  t.assert.equal(policy.excludedAt('opt/index.js', none), undefined)
+  t.assert.throws(() => parsePolicy('cfg', { excludeModules: ['node_modules/opt'] }), { message: 'cfg: excludeModules: "node_modules/opt" is no package name or pattern of names (such as "left-pad", "@babel/*")' })
+  t.assert.throws(() => parsePolicy('cfg', { excludeModules: 'opt' }), { message: 'cfg: excludeModules must be an array of non-empty strings' })
   // An artifact carrying one is refused.
   t.assert.throws(() => policy.assertPath('node_modules/opt/index.js', { dir: 'node_modules/opt', name: 'opt', version: '1.0.0' }), {
-    message: 'cfg: ignoreModules ignores opt@1.0.0 at node_modules/opt ("opt")',
+    message: 'cfg: excludeModules excludes opt@1.0.0 at node_modules/opt ("opt")',
   })
 })
 
-test('Config takes ignoreModules from stasis.config.json alone', (t) => {
+test('Config takes excludeModules from stasis.config.json alone', (t) => {
   const config = new Config({ env: {}, lock: 'add' })
-  config.loadConfig(JSON.stringify({ ignoreModules: ['opt'] }))
-  t.assert.equal(config.policy.key, JSON.stringify({ ignoreModules: ['opt'] }))
-  t.assert.throws(() => new Config({ env: {}, lock: 'add', ignoreModules: ['opt'] }), /Unknown Config options: ignoreModules/u)
+  config.loadConfig(JSON.stringify({ excludeModules: ['opt'] }))
+  t.assert.equal(config.policy.key, JSON.stringify({ excludeModules: ['opt'] }))
+  t.assert.throws(() => new Config({ env: {}, lock: 'add', excludeModules: ['opt'] }), /Unknown Config options: excludeModules/u)
 })
 
-test('bundleCommand takes an ignored dependency for absent: a require() or import() of it falls through, a static import fails', withTmp(async (t, tmp) => {
-  project(tmp, { ignoreModules: ['opt'] })
+test('bundleCommand takes an excluded dependency for absent: a require() or import() of it falls through, a static import fails', withTmp(async (t, tmp) => {
+  project(tmp, { excludeModules: ['opt'] })
   const out = join(tmp, 'stasis.code.br')
   // Built through a State, and with --mainFields' resolver, without one.
   const builds = async (options) => {
     const said = (await captureWarningsAsync(() => bundleCommand({ cwd: tmp, entries: ['a.js'], ...options }))).warnings.join('\n')
-    t.assert.match(said, /unresolved import\(s\)(?: \(mainFields\))?; they will fall through at load time:\n {2}require opt from a\.js \(ignored by ignoreModules\)/u, JSON.stringify(options))
+    t.assert.match(said, /unresolved import\(s\)(?: \(mainFields\))?; they will fall through at load time:\n {2}require opt from a\.js \(excluded by excludeModules\)/u, JSON.stringify(options))
     const bundle = readBundle(out)
     t.assert.deepStrictEqual(sorted(bundle.sources.keys()), ['a.js', 'node_modules/left/index.js'], 'neither opt nor what only it reaches')
     t.assert.deepStrictEqual(sorted(bundle.modules.keys()), ['.', 'node_modules/left'])
@@ -117,7 +119,7 @@ test('bundleCommand takes an ignored dependency for absent: a require() or impor
     t.assert.deepStrictEqual(sorted(readBundle(out).sources.keys()), ['d.mjs', 'lazy.mjs'])
 
     await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['b.mjs'], output: join(tmp, 'b.br'), ...options }), {
-      message: /^JS bundle would be broken at load time(?: \(mainFields\))?:\n {2}unresolved import opt from b\.mjs \(ignored by ignoreModules\)$/u,
+      message: /^JS bundle would be broken at load time(?: \(mainFields\))?:\n {2}unresolved import opt from b\.mjs \(excluded by excludeModules\)$/u,
     })
     t.assert.ok(!existsSync(join(tmp, 'b.br')))
   }
@@ -125,39 +127,68 @@ test('bundleCommand takes an ignored dependency for absent: a require() or impor
   await builds({ mainFields: ['main'] })
 }))
 
-test('bundleCommand takes for absent what an entry\'s own ignoreModules ignores, in its own build alone', withTmp(async (t, tmp) => {
-  project(tmp, { entries: { 'a.js': { ignoreModules: ['opt'] }, 'f.js': {} } })
+test('bundleCommand takes for absent what an entry\'s own excludeModules excludes, in its own build alone', withTmp(async (t, tmp) => {
+  project(tmp, { entries: { 'a.js': { excludeModules: ['opt'] }, 'f.js': {} } })
   const config = readConfigEntries(tmp)
-  t.assert.equal(config.get('a.js').policy.key, JSON.stringify({ ignoreModules: ['opt'] }))
+  t.assert.equal(config.get('a.js').policy.key, JSON.stringify({ excludeModules: ['opt'] }))
   await bundleCommand({ cwd: tmp, builds: bundlePlan({ cwd: tmp, entries: ['a.js', 'f.js'], values: {}, config }).builds })
   const bundle = readBundle(join(tmp, 'stasis.code.br'))
   // f.js reaches opt, which a.js's build takes for absent.
   t.assert.ok(bundle.sources.has('node_modules/opt/index.js'))
   t.assert.equal(bundle.imports.get('*')?.get('a.js')?.has('opt') ?? false, false)
   t.assert.equal(bundle.imports.get('*').get('f.js').get('opt'), 'node_modules/opt/index.js')
-  // The config's ignoreModules is every entry's: an entry's build reaching it statically fails.
-  project(tmp, { ignoreModules: ['opt'], entries: { 'a.js': {}, 'b.mjs': { jsx: true } } })
+  // The config's excludeModules is every entry's: an entry's build reaching it statically fails.
+  project(tmp, { excludeModules: ['opt'], entries: { 'a.js': {}, 'b.mjs': { jsx: true } } })
   const { builds } = bundlePlan({ cwd: tmp, entries: ['a.js', 'b.mjs'], values: {}, config: readConfigEntries(tmp) })
   t.assert.equal(builds.length, 2)
-  await t.assert.rejects(bundleCommand({ cwd: tmp, builds }), /unresolved import opt from b\.mjs \(ignored by ignoreModules\)/u)
+  await t.assert.rejects(bundleCommand({ cwd: tmp, builds }), /unresolved import opt from b\.mjs \(excluded by excludeModules\)/u)
 }))
 
-test('a lockfile or bundle that carries an ignored dependency is refused, as one carrying a disallowed one', withTmp(async (t, tmp) => {
+test('a State reads a lockfile or bundle as though an excluded dependency was never recorded, and records none', withTmp(async (t, tmp) => {
   project(tmp)
   await bundleCommand({ cwd: tmp, entries: ['f.js'], lockfile: 'stasis.lock.json' })
-  writeTree(tmp, { 'stasis.config.json': { ignoreModules: ['opt'] } })
-  const hint = /^stasis\.config\.json: ignoreModules ignores opt@1\.0\.0 at node_modules\/opt \("opt"\) -- recorded in stasis\.(?:lock\.json|code\.br); rebuild it \(lock=replace \/ bundle=replace\)$/u
-  for (const modes of [{ lock: 'frozen', bundle: 'ignore' }, { lock: 'ignore', bundle: 'load' }, { lock: 'add', bundle: 'add' }]) {
-    t.assert.throws(() => new State(tmp, { ...modes, env: {}, claim: false }), { message: hint }, JSON.stringify(modes))
+  writeTree(tmp, { 'stasis.config.json': { excludeModules: ['opt'] } })
+  for (const modes of [{ lock: 'frozen', bundle: 'ignore' }, { lock: 'frozen', bundle: 'load' }, { lock: 'ignore', bundle: 'frozen' }, { lock: 'add', bundle: 'add' }]) {
+    const state = new State(tmp, { ...modes, env: {}, claim: false })
+    t.assert.deepStrictEqual(sorted(state.modules.keys()), ['.', 'node_modules/optdep'], JSON.stringify(modes))
+    t.assert.ok(![...state.imports.values()].some((byParent) => byParent.get('f.js')?.has('opt')), JSON.stringify(modes))
   }
-  // A State never records one, nor stasis add.
   const state = new State(tmp, { lock: 'replace', bundle: 'replace', env: {}, claim: false })
-  t.assert.throws(() => state.addFile(urlOf(tmp, 'node_modules/opt/index.js')), { message: 'stasis.config.json: ignoreModules ignores opt@1.0.0 at node_modules/opt ("opt")' })
-  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['node_modules/opt/index.js'] }), /ignoreModules ignores opt@1\.0\.0 at node_modules\/opt/u)
+  t.assert.throws(() => state.addFile(urlOf(tmp, 'node_modules/opt/index.js')), { message: 'stasis.config.json: excludeModules excludes opt@1.0.0 at node_modules/opt ("opt")' })
+  // What stasis add and stasis bundle --add write to is refused instead, as for a disallowed one.
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['package.json'] }), /excludeModules excludes opt@1\.0\.0 at node_modules\/opt \("opt"\) -- recorded in stasis\.code\.br already/u)
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'], add: true }), /excludeModules excludes opt@1\.0\.0 at node_modules\/opt \("opt"\) -- recorded in stasis\.code\.br already/u)
 }))
 
-test('CLI: stasis run takes an ignored dependency for absent, and records nothing of it', withTmp(async (t, tmp) => {
-  project(tmp, { ignoreModules: ['opt'] })
+test('CLI: stasis run in add mode drops what a lockfile and bundle recorded of a dependency since excluded', withTmp(async (t, tmp) => {
+  project(tmp)
+  const recorded = await runCli(['run', '--lock=add', '--bundle=add', 'a.js'], tmp)
+  t.assert.equal(recorded.stdout, `opt optdep ${join(tmp, 'node_modules/opt/index.js')} left\n`, recorded.stderr)
+  writeTree(tmp, { 'stasis.config.json': { excludeModules: ['opt'] } })
+  const runs = async (...modes) => {
+    const ran = await runCli(['run', ...modes, 'a.js'], tmp)
+    t.assert.equal(ran.status, 0, ran.stderr)
+    t.assert.equal(ran.stdout, 'absent MODULE_NOT_FOUND unresolved MODULE_NOT_FOUND left\n', modes.join(' '))
+  }
+  await runs('--lock=frozen', '--bundle=frozen')
+  await runs('--lock=frozen', '--bundle=load')
+  await runs('--lock=add', '--bundle=add')
+  for (const artifact of [readLock(tmp), readBundle(join(tmp, 'stasis.code.br'))]) {
+    t.assert.ok(!artifact.modules.has('node_modules/opt'))
+    t.assert.ok(![...artifact.imports.values()].some((byParent) => byParent.get('a.js')?.has('opt')))
+  }
+}))
+
+test('CLI: stasis run takes an excluded dependency for absent though a preload loaded it from the same directory', withTmp(async (t, tmp) => {
+  project(tmp, { excludeModules: ['opt'] })
+  writeTree(tmp, { 'preload.mjs': "import { createRequire } from 'node:module'\ncreateRequire(import.meta.url)('opt')\n" })
+  const ran = await runCli(['run', '--lock=add', '--import=./preload.mjs', 'a.js'], tmp)
+  t.assert.equal(ran.status, 0, ran.stderr)
+  t.assert.equal(ran.stdout, 'absent MODULE_NOT_FOUND unresolved MODULE_NOT_FOUND left\n')
+}))
+
+test('CLI: stasis run takes an excluded dependency for absent, and records nothing of it', withTmp(async (t, tmp) => {
+  project(tmp, { excludeModules: ['opt'] })
   const ran = await runCli(['run', '--lock=add', 'a.js'], tmp)
   t.assert.equal(ran.status, 0, ran.stderr)
   t.assert.equal(ran.stdout, 'absent MODULE_NOT_FOUND unresolved MODULE_NOT_FOUND left\n')
@@ -175,13 +206,13 @@ test('CLI: stasis run takes an ignored dependency for absent, and records nothin
 
   const staticImport = await runCli(['run', '--lock=add', 'b.mjs'], tmp)
   t.assert.notEqual(staticImport.status, 0)
-  t.assert.match(staticImport.stderr, /Cannot find module 'opt' imported from .*b\.mjs \(stasis\.config\.json: ignoreModules ignores node_modules\/opt \("opt"\)\)/u)
+  t.assert.match(staticImport.stderr, /Cannot find module 'opt' imported from .*b\.mjs \(stasis\.config\.json: excludeModules excludes node_modules\/opt \("opt"\)\)/u)
   t.assert.match(staticImport.stderr, /code: 'ERR_MODULE_NOT_FOUND'/u)
 }))
 
-test('CLI: stasis run --bundle=load of a bundle with an ignored dependency falls through, in either scope', withTmp(async (t, tmp) => {
+test('CLI: stasis run --bundle=load of a bundle with an excluded dependency falls through, in either scope', withTmp(async (t, tmp) => {
   const loads = async (scope) => {
-    project(tmp, { ignoreModules: ['opt'], scope })
+    project(tmp, { excludeModules: ['opt'], scope })
     await bundleCommand({ cwd: tmp, entries: ['a.js'] })
     const ran = await runCli(['run', '--lock=ignore', '--bundle=load', ...(scope === 'full' ? [] : ['--dependencies']), 'a.js'], tmp)
     t.assert.equal(ran.status, 0, ran.stderr)
@@ -192,13 +223,13 @@ test('CLI: stasis run --bundle=load of a bundle with an ignored dependency falls
   await loads('node_modules')
 }))
 
-test('a workspace package linked into node_modules is the project\'s own, which ignoreModules never takes for absent', withTmp(async (t, tmp) => {
+test('a workspace package linked into node_modules is the project\'s own, which excludeModules never takes for absent', withTmp(async (t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'app', version: '1.0.0' },
     'a.js': "console.log(require('foo'))\n",
     'packages/foo/package.json': { name: 'foo', version: '1.0.0', main: 'index.js' },
     'packages/foo/index.js': "module.exports = 'foo'\n",
-    'stasis.config.json': { ignoreModules: ['foo'] },
+    'stasis.config.json': { excludeModules: ['foo'] },
   })
   mkdirSync(join(tmp, 'node_modules'))
   symlinkSync('../packages/foo', join(tmp, 'node_modules/foo'))

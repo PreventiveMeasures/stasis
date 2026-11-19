@@ -167,12 +167,12 @@ export class Scan {
   // `resolve`: a replacement for Node's resolver (resolve-fields.js), owning builtins. Without `typescript`, tsc's
   // mapping only hints where a miss would land (#typescriptCandidate). `babel`: built by Babel (Metro), whose transforms
   // erase an import listing types alone, but in a TypeScript file `keepsTypeImports(file)` holds.
-  // `ignores(path)`: why a file is taken as absent, or undefined.
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false, ignores = null } = {}) {
+  // `excludes(path)`: why a file is taken as absent, or undefined.
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false, excludes = null } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.defines = parseDefine('scan', define)
-    Object.assign(this, { typescriptResolve, jsx, flow, typescript, typescriptPaths, missTargets, resources, babel, keepsTypeImports, host, memo, ignores })
+    Object.assign(this, { typescriptResolve, jsx, flow, typescript, typescriptPaths, missTargets, resources, babel, keepsTypeImports, host, memo, excludes })
     this.#types = hostMemo(host)
   }
 
@@ -316,21 +316,21 @@ export class Scan {
   }
 
   // `${dir}\0${name}` -> reason, or null.
-  #ignoredPackages = new Map()
+  #excludedPackages = new Map()
 
   // Before resolving, which reads the package (a lazy tree fetches it); addChild catches an alias.
-  #ignoredPackage(parentFile, spec) {
-    if (this.ignores === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
+  #excludedPackage(parentFile, spec) {
+    if (this.excludes === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
     const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
     const dir = dirname(parentFile)
-    const reason = upsert(this.#ignoredPackages, `${dir}\0${name}`, () => {
+    const reason = upsert(this.#excludedPackages, `${dir}\0${name}`, () => {
       const found = locatePackage(dir, name, this.host)
       let real
       try {
         real = found && this.host.realpath(found.pkgDir)
       } catch { /* a dangling link resolves nothing */ }
       // A workspace package linked into node_modules is the project's own.
-      return (real && this.ignores(join(real, 'package.json'), { installed: true })) ?? null
+      return (real && this.excludes(join(real, 'package.json'), { installed: true })) ?? null
     })
     if (reason === null) return undefined
     // A self-reference resolves to the package itself.
@@ -447,14 +447,14 @@ export class Scan {
     const edges = []
     const specMaps = new Map() // condition key -> specifier -> child URL
     // A miss, never read.
-    const addIgnored = (s, reason) => {
+    const addExcluded = (s, reason) => {
       edges.push({ ...s, error: reason })
       this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
     }
     const addChild = (s, key, childURL, childPath) => {
-      const ignored = this.ignores?.(childPath)
-      if (ignored !== undefined) {
-        addIgnored(s, ignored)
+      const excluded = this.excludes?.(childPath)
+      if (excluded !== undefined) {
+        addExcluded(s, excluded)
         return
       }
       edges.push({ ...s, child: childURL })
@@ -490,9 +490,9 @@ export class Scan {
         edges.push({ ...s, builtin: true })
         continue
       }
-      const ignored = this.#ignoredPackage(file, s.spec)
-      if (ignored !== undefined) {
-        addIgnored(s, ignored)
+      const excluded = this.#excludedPackage(file, s.spec)
+      if (excluded !== undefined) {
+        addExcluded(s, excluded)
         continue
       }
       let childPath

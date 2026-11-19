@@ -22,7 +22,7 @@ import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-u
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { linksOn, moduleIgnorer, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
+import { linksOn, moduleExcluder, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
@@ -536,11 +536,11 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   // bundle:'replace' reads no stasis.code.br on disk; lock:'ignore' leaves the lockfile to heldToLockfile;
-  // never written, the State claims nothing, and assertPolicies checks the bundle. Before the scan, for ignoreModules.
+  // never written, the State claims nothing, and assertPolicies checks the bundle. Before the scan, for excludeModules.
   const stateOptions = { bundle: 'replace', lock: 'ignore', ownLock: true, ...(scope && { scope }), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
-  const ignores = moduleIgnorer([state.config.policy, policy], state.root, host)
-  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined, ignores })
+  const excludes = moduleExcluder([state.config.policy, policy], state.root, host)
+  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined, excludes })
   // A round of a lazy tree that asked for a package already is void: the rest is moot.
   if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
   // A root holding a stasis file is the project's own choice, whose config the build takes.
@@ -1089,7 +1089,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (!metroResolver) typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
-  const ignores = moduleIgnorer([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
+  const excludes = moduleExcluder([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
 
   const formatsByRel = new Map()
   const resourceRels = new Set()
@@ -1117,7 +1117,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // but reports and refuses nothing, and stops before it reads the files in.
   const voided = () => Boolean(memo) && host.touches() > 0
   const scanWithin = (roots, options, label) => {
-    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, ignores, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
+    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, excludes, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
     for (const url of outside) toRel(pathOf(url))
     if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir, generated }), leftOut }, { baseDir, label, root: ' at .' })
     return { scanner, leftOut }

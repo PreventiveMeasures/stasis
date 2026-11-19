@@ -310,7 +310,7 @@ export class State {
   #absorbLockfile(lock, lockPath) {
     if (lock && !this.config.useLockfile && !this.config.ignoreLockfile) throw new Error(`Unexpected ${lockPath} with config.lock = 'none'`)
     if (!lock || !this.config.useLockfile || this.config.replaceLockfile) return
-    const lockfile = Lockfile.parse(lock)
+    const lockfile = this.#withoutExcluded(Lockfile.parse(lock))
     if (this.config.frozen) assert.equal(lockfile.config.scope, this.config.scope)
     this.#assertLoaded(lockfile, lockPath)
 
@@ -353,7 +353,7 @@ export class State {
 
   // v0 has no per-file formats or import map: serving one widens the trust boundary.
   #parseServedBundle(bytes, path, runner = 'stasis run', remedy = REBUNDLE) {
-    const bundle = parseBundleBytes(bytes)
+    const bundle = this.#withoutExcluded(parseBundleBytes(bytes))
     assert.equal(bundle.version, Bundle.VERSION, `${runner} requires a v1 bundle; ${path} is v${bundle.version}. ${remedy}`)
     assert.equal(bundle.config.scope, this.config.scope)
     this.#assertLoaded(bundle, path)
@@ -582,6 +582,34 @@ export class State {
   }
 
   // Before a run verifies against, serves or (adding to it) rewrites an artifact the Policy refuses.
+  // In place: a run reads an artifact as though an excluded dependency was never recorded, so `add` drops it.
+  #withoutExcluded(artifact) {
+    const policy = this.config.policy
+    if (!policy?.excludesModules) return artifact
+    const dirs = new Set([...artifact.modules].filter(([dir, { name }]) => hasNodeModulesSegment(dir) && policy.excludesPackage({ dir, name })).map(([dir]) => dir))
+    if (dirs.size === 0) return artifact
+    const files = new Set([...dirs].flatMap((dir) => Object.keys(artifact.modules.get(dir).files).map((rel) => moduleFileKey(dir, rel))))
+    const gone = (path) => files.has(path) || dirs.has(path) || dirs.has(splitNodeModulesPath(path)?.dir)
+    for (const dir of dirs) artifact.modules.delete(dir)
+    for (const set of [artifact.entries, artifact.executable]) for (const path of set) if (gone(path)) set.delete(path)
+    for (const path of artifact.formats.keys()) if (gone(path)) artifact.formats.delete(path)
+    for (const [key, byParent] of artifact.imports) {
+      for (const [parent, specifiers] of byParent) {
+        if (gone(parent)) byParent.delete(parent)
+        else {
+          for (const [specifier, target] of specifiers) {
+            if (typeof target !== 'string') for (const [platform, file] of target) if (gone(file)) target.delete(platform)
+            if (typeof target === 'string' ? gone(target) : target.size === 0) specifiers.delete(specifier)
+          }
+          if (specifiers.size === 0) byParent.delete(parent)
+        }
+      }
+      if (byParent.size === 0) artifact.imports.delete(key)
+    }
+    for (const list of Object.values(artifact.reason ?? {})) if (Array.isArray(list)) list.splice(0, Infinity, ...list.filter((path) => !gone(path)))
+    return artifact
+  }
+
   #assertLoaded(artifact, path) {
     this.#policy?.assertArtifact(artifact, { hint: ` -- recorded in ${relative(this.root, resolve(path))}; rebuild it (lock=replace / bundle=replace)`, links: this.#links })
   }
@@ -662,17 +690,17 @@ export class State {
   }
 
   // Cached: a require() asks up to three times.
-  ignoredModule(url) {
+  excludedModule(url) {
     const policy = this.config.policy
-    if (!policy?.ignoresModules) return undefined
+    if (!policy?.excludesModules) return undefined
     this.#packageNames ??= packageNamesOf(this.root, this.#host)
-    return upsert(this.#ignored, url, () => {
+    return upsert(this.#excluded, url, () => {
       const file = this.#canonicalFileMaybe(url)
-      return (file === undefined ? undefined : policy.ignoredAt(toPosix(file), this.#packageNames)) ?? null
+      return (file === undefined ? undefined : policy.excludedAt(toPosix(file), this.#packageNames)) ?? null
     }) ?? undefined
   }
 
-  #ignored = new Map()
+  #excluded = new Map()
   #packageNames
 
   // findPackageJSON is unreliable for a directory (EISDIR, or the parent's); an unreadable one is refused as it does.

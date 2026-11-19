@@ -6,10 +6,10 @@ import { diskHost } from './host.js'
 import { memoized, relativeEscapes, toPosix } from './util.js'
 
 // Each rule is checked on its own, and an artifact meets every Policy that applies: none overrides another.
-export const POLICY_KEYS = ['allowedPaths', 'disallowedPaths', 'allowedModules', 'disallowedModules', 'ignoreModules']
+export const POLICY_KEYS = ['allowedPaths', 'disallowedPaths', 'allowedModules', 'disallowedModules', 'excludeModules']
 const PATH_KEYS = new Set(['allowedPaths', 'disallowedPaths'])
 const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
-const IGNORE = 'ignoreModules'
+const EXCLUDE = 'excludeModules'
 
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
@@ -198,18 +198,24 @@ class Policy {
         : offenders.map(({ item, by }) => `${packageText(item)}${by}`)
       const many = `${texts.length} ${isPath ? 'paths' : 'packages'}: ${listed(texts)}`
       if (allowing) problems.push(texts.length === 1 ? `${key} does not allow ${texts[0]}` : `${key} allows none of ${many}`)
-      else problems.push(`${key} ${key === IGNORE ? 'ignores' : 'refuses'} ${texts.length === 1 ? texts[0] : many}`)
+      else problems.push(`${key} ${key === EXCLUDE ? 'excludes' : 'refuses'} ${texts.length === 1 ? texts[0] : many}`)
     }
     return problems
   }
 
-  get ignoresModules() {
-    return this.#rules.has(IGNORE)
+  get excludesModules() {
+    return this.#rules.has(EXCLUDE)
+  }
+
+  // A dependency's record, by its name or the one it is installed under.
+  excludesPackage({ dir, name }) {
+    const patterns = this.#rules.get(EXCLUDE)
+    return patterns !== undefined && [name, installedName(dir)].some((each) => each !== undefined && patterns.some(({ test }) => test(each)))
   }
 
   // By installed name, else the package.json's, as disallowedModules matches.
-  ignoredAt(path, nameOf) {
-    const patterns = this.#rules.get(IGNORE)
+  excludedAt(path, nameOf) {
+    const patterns = this.#rules.get(EXCLUDE)
     const split = patterns === undefined ? null : splitNodeModulesPath(path)
     if (split === null) return undefined
     const matching = (name) => (name === undefined ? undefined : patterns.find(({ test }) => test(name)))
@@ -233,7 +239,7 @@ class Policy {
   }
 }
 
-export const ignoredText = ({ label, dir, pattern }) => `${label}: ignoreModules ignores ${dir} (${JSON.stringify(pattern)})`
+export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModules excludes ${dir} (${JSON.stringify(pattern)})`
 
 export const packageNamesOf = (root, host = diskHost) => memoized((dir) => {
   const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
@@ -242,10 +248,10 @@ export const packageNamesOf = (root, host = diskHost) => memoized((dir) => {
 
 const NO_NAME = () => undefined
 
-// For a scan: null where no policy ignores modules. A path may be under the root or its real path.
-export function moduleIgnorer(policies, root, host = diskHost) {
-  const ignoring = policies.filter((policy) => policy?.ignoresModules)
-  if (ignoring.length === 0) return null
+// For a scan: null where no policy excludes modules. A path may be under the root or its real path.
+export function moduleExcluder(policies, root, host = diskHost) {
+  const excluding = policies.filter((policy) => policy?.excludesModules)
+  if (excluding.length === 0) return null
   const bases = [root]
   try {
     bases.push(host.realpath(root))
@@ -255,8 +261,8 @@ export function moduleIgnorer(policies, root, host = diskHost) {
   return (absolute, { installed = false } = {}) => {
     if (!hasNodeModulesSegment(absolute)) return undefined
     const rel = bases.map((base) => toPosix(relative(base, absolute))).find((at) => !relativeEscapes(at))
-    if (rel === undefined || !ignoring.some((policy) => policy.ignoredAt(rel, installed ? NO_NAME : nameOf) !== undefined)) return undefined
-    return 'ignored by ignoreModules'
+    if (rel === undefined || !excluding.some((policy) => policy.excludedAt(rel, installed ? NO_NAME : nameOf) !== undefined)) return undefined
+    return 'excluded by excludeModules'
   }
 }
 
