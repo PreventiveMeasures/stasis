@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 
 import { State } from './state.js'
+import { ignoredText } from './policy.js'
 import { installFsHooks } from './fs.js'
 import { inScope } from './state-util.js'
 import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
@@ -363,6 +364,18 @@ function assertInfraMatchesBundle(url) {
   }
 }
 
+// ignoreModules takes a dependency for absent: a resolution into one misses as Node's does, so a require() or
+// import() falls through where it catches the miss, and a static import fails. Never `recording`: a miss the
+// program catches is no capture failure.
+function missIfIgnored(specifier, parentURL, url, required) {
+  const hit = url?.startsWith('file:') ? state?.ignoredModule(url) : undefined
+  if (hit === undefined) return
+  const parent = parentURL?.startsWith('file:') ? fileURLToPath(parentURL) : parentURL
+  throw Object.assign(new Error(`Cannot find module '${specifier}' imported from ${parent} (${ignoredText(hit)})`), { code: required ? 'MODULE_NOT_FOUND' : 'ERR_MODULE_NOT_FOUND' })
+}
+
+const requireContext = (conditions) => Array.isArray(conditions) && conditions.includes('require')
+
 function resolve(specifier, context, nextResolve) {
   const { parentURL, conditions, importAttributes } = context
   // A DIRECTORY parent can't shadow an app parent; any other pre-entry parent ([eval]'s import) fails closed below.
@@ -397,7 +410,11 @@ function resolve(specifier, context, nextResolve) {
 
   if (state?.config.loadBundle) {
     // inNodeModules(), not a raw substring: a symlinked workspace source is read from disk.
-    if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) return nextResolve(specifier)
+    if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) {
+      const res = nextResolve(specifier)
+      if (parentURL) missIfIgnored(specifier, parentURL, res.url, requireContext(conditions))
+      return res
+    }
     // The entry skips nextResolve, so it needn't be on disk.
     let url
     let format
@@ -422,6 +439,7 @@ function resolve(specifier, context, nextResolve) {
 
   assert.equal(res.importAttributes, undefined) // unsupported yet
   if (parentURL) assert.ok(state)
+  if (parentURL) missIfIgnored(specifier, parentURL, url, requireContext(conditions))
   if (infraUrls.has(url)) {
     if (infraSources.has(url)) {
       // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
@@ -487,9 +505,13 @@ function patchCjsResolution() {
       }
     }
     const resolved = original.call(this, request, parent, ...rest)
-    // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
-    if (state && !loadMode && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
-      state.observeResolution(pathToFileURL(parent.filename).toString(), request, pathToFileURL(resolved).toString())
+    if (state && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
+      const parentURL = pathToFileURL(parent.filename).toString()
+      const url = pathToFileURL(resolved).toString()
+      // A preload's own require()s are runner infrastructure, which takes nothing for absent.
+      if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfIgnored(request, parentURL, url, true)
+      // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
+      if (!loadMode) state.observeResolution(parentURL, request, url)
     }
     return resolved
   }

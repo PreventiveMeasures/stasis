@@ -311,7 +311,11 @@ With it:
   `stasis.config.json`'s own the whole bundle, each rule on its own, as
   [`stasis bundle`](bundle.md#entry-options-stasisconfigjson) holds them (see
   [Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules)).
-  The config's hold a bundle of entries it doesn't name too.
+  The config's hold a bundle of entries it doesn't name too. An entry's
+  `ignoreModules` is its build's, the config's every build's, each taking those
+  dependencies for absent (see [Ignored modules](file-formats.md#ignored-modules)),
+  and a lazy tree fetches none of them that it can tell by the name it is
+  installed under.
 
 ### A file's project
 

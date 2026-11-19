@@ -661,6 +661,23 @@ export class State {
     return file !== undefined && splitNodeModulesPath(file) !== null
   }
 
+  // The config's ignoreModules match of the dependency `url` is in, or undefined: the hooks take one for absent.
+  ignoredModule(url) {
+    const policy = this.config.policy
+    if (policy === null || !policy.ignoresModules) return undefined
+    const file = this.#canonicalFileMaybe(url)
+    return file === undefined ? undefined : policy.ignoredAt(toPosix(file), this.#packageNameOf)
+  }
+
+  // Leniently: a resolution into a package whose package.json is broken still goes by its installed name.
+  #packageNameOf = memoized((dir) => {
+    let name
+    try {
+      name = readPackageJSON(this.#host, resolve(this.root, dir, 'package.json')).name
+    } catch { /* none, or unreadable */ }
+    return typeof name === 'string' && name !== '' ? name : undefined
+  })
+
   // findPackageJSON is unreliable for a directory (EISDIR, or the parent's); an unreadable one is refused as it does.
   #nearestPackageJsonFor(dirAbsolute) {
     for (let dir = dirAbsolute; ; dir = dirname(dir)) {

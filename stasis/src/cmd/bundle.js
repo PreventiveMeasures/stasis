@@ -22,7 +22,7 @@ import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-u
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
+import { linksOn, moduleIgnorer, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
@@ -513,6 +513,16 @@ function reportScanIssues({ fatal, tolerated, typescript, leftOut }, { label = '
   }
 }
 
+// The reason a scan takes the file at an absolute path for absent, by any of `policies`' ignoreModules; null for none.
+function ignoresOf(policies, root, host) {
+  const ignorer = moduleIgnorer(policies, root, host)
+  if (ignorer === null) return null
+  return (absolute, options) => {
+    const hit = ignorer(absolute, options)
+    return hit === undefined ? undefined : `ignored by ignoreModules ${JSON.stringify(hit.pattern)}`
+  }
+}
+
 // Trimmed, empties dropped, so a sloppy programmatic caller can't push a bogus token into the resolver.
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
@@ -526,7 +536,8 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 }
 
 // Through a State, the graph scanned statically: no user code runs. `memo` keeps scans across a lazy tree's rounds.
-export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated } = {}) {
+// `policy`: the build's own (its entries'), whose ignoreModules it takes beside the config's.
+export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated, policy = null } = {}) {
   assertEntries('buildJsBundle', entries, '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', (e) => JS_EXTENSIONS.has(extname(e)), 'JS/TS file')
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
@@ -534,14 +545,17 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   const resourceSet = parseResourcesOption('buildJsBundle', resources)
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
-  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined })
-  // A round of a lazy tree that asked for a package already is void: the rest is moot.
-  if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
   // bundle:'replace' reads no stasis.code.br on disk; lock:'ignore' leaves the lockfile to heldToLockfile;
-  // never written, the State claims nothing, and assertPolicies checks the bundle.
+  // never written, the State claims nothing, and assertPolicies checks the bundle. Made before the scan, which
+  // takes what its config's ignoreModules ignores for absent.
   const stateOptions = { bundle: 'replace', lock: 'ignore', ownLock: true, ...(scope && { scope }), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
-  // A root holding a stasis file is the project's own choice, whose config the build takes.
+  const ignores = ignoresOf([state.config.policy, policy], state.root, host)
+  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined, ignores })
+  // A round of a lazy tree that asked for a package already is void: the rest is moot.
+  if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
+  // A root holding a stasis file is the project's own choice, whose config the build takes. (Without one, it has
+  // no config, nor ignoreModules, at either root.)
   if (innermostRoot && !STASIS_ROOT_FILES.some((file) => host.stat(join(state.root, file)) !== null)) {
     const root = innermostRootOf(baseDir, [...scanned.files.keys()].map((url) => host.realpath(fileURLToPath(url))), state.root, host)
     // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
@@ -1057,7 +1071,7 @@ function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, 
 
 // A JS/TS Bundle via the legacy-field resolver (`--mainFields`/`--metro`), scanned once per platform: an edge
 // is flat where the platforms agree, else a `{ platform: target }` map. -> { bundle, lockfile: () => Lockfile }
-async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo, generated }) {
+async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo, generated, policy = null }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
@@ -1087,6 +1101,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (!metroResolver) typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
+  // What the config's and the build's ignoreModules ignore, every scan takes for absent: the configs' and toolchain's too.
+  const ignores = ignoresOf([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
 
   const formatsByRel = new Map()
   const resourceRels = new Set()
@@ -1114,7 +1130,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // but reports and refuses nothing, and stops before it reads the files in.
   const voided = () => Boolean(memo) && host.touches() > 0
   const scanWithin = (roots, options, label) => {
-    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
+    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, ignores, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
     for (const url of outside) toRel(pathOf(url))
     if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir, generated }), leftOut }, { baseDir, label, root: ' at .' })
     return { scanner, leftOut }
@@ -1610,7 +1626,7 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
 }
 
 // From disk, with stasis.config.json's `extra` unless `extra` is false (one of several builds), not yet pinned.
-async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
+async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, policy, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
   if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
@@ -1618,7 +1634,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
   if (kind === 'teal') return withExtraOf({ bundle: await buildTealBundle({ cwd, entries }) })
   if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
-  const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
+  const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, policy, extra, outputsAt })
   return built.stateBuilt ? built : withExtraOf(built, resources)
 }
 

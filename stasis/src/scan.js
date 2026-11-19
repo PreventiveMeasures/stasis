@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
-import { packageType } from '@exodus/stasis-core/bundle-util'
+import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
 import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
 import { inNodeModules, isSourceFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
@@ -167,11 +167,12 @@ export class Scan {
   // `resolve`: a replacement for Node's resolver (resolve-fields.js), owning builtins. Without `typescript`, tsc's
   // mapping only hints where a miss would land (#typescriptCandidate). `babel`: built by Babel (Metro), whose transforms
   // erase an import listing types alone, but in a TypeScript file `keepsTypeImports(file)` holds.
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false } = {}) {
+  // `ignores`: the reason an absolute path's file is taken for absent (policy.js's moduleIgnorer), or undefined.
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false, ignores = null } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.defines = parseDefine('scan', define)
-    Object.assign(this, { typescriptResolve, jsx, flow, typescript, typescriptPaths, missTargets, resources, babel, keepsTypeImports, host, memo })
+    Object.assign(this, { typescriptResolve, jsx, flow, typescript, typescriptPaths, missTargets, resources, babel, keepsTypeImports, host, memo, ignores })
     this.#types = hostMemo(host)
   }
 
@@ -314,6 +315,25 @@ export class Scan {
     }
   }
 
+  // Where Node resolves a bare specifier, the first node_modules/<name> above the parent but for a package's
+  // reference to itself, as ignoreModules takes it by the name it is installed under: told before resolving it,
+  // which reads the package (a lazy tree fetches it). One installed under another name is told once resolved.
+  #ignoredPackage(parentFile, spec) {
+    if (this.ignores === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#') || /^[a-z][a-z\d+.-]*:/iu.test(spec)) return undefined
+    const parts = spec.split('/')
+    const name = parts.slice(0, spec.startsWith('@') ? 2 : 1).join('/')
+    if (parts.slice(0, spec.startsWith('@') ? 2 : 1).some((part) => part === '' || part === '.' || part === '..')) return undefined
+    const own = this.host.findPackageJSON(parentFile)
+    if (own && readJson(own, this.host)?.name === name) return undefined
+    for (let dir = dirname(parentFile); ; dir = dirname(dir)) {
+      if (basename(dir) !== 'node_modules') {
+        const candidate = join(dir, 'node_modules', name)
+        if (this.host.stat(candidate)?.isDirectory()) return this.ignores(join(candidate, 'package.json'), { installed: true })
+      }
+      if (dirname(dir) === dir) return undefined
+    }
+  }
+
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
   parseFile(file) {
     const ext = extname(file)
@@ -422,7 +442,17 @@ export class Scan {
     const formatContext = ['module', 'module-typescript'].includes(format) ? 'import' : 'require'
     const edges = []
     const specMaps = new Map() // condition key -> specifier -> child URL
+    // A file ignoreModules takes for absent is a miss, never read: as a miss, a static import of it is fatal.
+    const addIgnored = (s, reason) => {
+      edges.push({ ...s, error: reason })
+      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
+    }
     const addChild = (s, key, childURL, childPath) => {
+      const ignored = this.ignores?.(childPath)
+      if (ignored !== undefined) {
+        addIgnored(s, ignored)
+        return
+      }
       edges.push({ ...s, child: childURL })
       nestedMap(specMaps, key).set(s.spec, childURL)
       if (RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
@@ -454,6 +484,11 @@ export class Scan {
       }
       if (isBuiltin(s.spec)) {
         edges.push({ ...s, builtin: true })
+        continue
+      }
+      const ignored = this.#ignoredPackage(file, s.spec)
+      if (ignored !== undefined) {
+        addIgnored(s, ignored)
         continue
       }
       let childPath

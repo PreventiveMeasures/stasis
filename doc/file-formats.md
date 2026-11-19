@@ -43,6 +43,7 @@ it, or take it for another path.
 | `disallowedPaths` | array of paths and glob patterns | unset | none |
 | `allowedModules` | array of package names and glob patterns | unset | none |
 | `disallowedModules` | array of package names and glob patterns | unset | none |
+| `ignoreModules` | array of package names and glob patterns | unset | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -205,12 +206,13 @@ and `stasis bundle --deptree` check as they lay it out (see
 non-empty array of paths. Without it, the one lockfile is detected, as ever.
 
 Unknown keys are rejected. A key set by both file and env var must match.
-`extra`, `entries`, `installDevDependencies`, `lazyDependencies`, `generatePrisma`, `lockfiles` and the four rules below are set in the file alone. Only
+`extra`, `entries`, `installDevDependencies`, `lazyDependencies`, `generatePrisma`, `lockfiles`, the four rules below and `ignoreModules` are set in the file alone. Only
 `scope` is persisted into the lockfile/bundle `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
 `brotliQuality` are run-time flags, not attested, `extra`'s effect is the
 files it adds, `installDevDependencies`' the packages a build can reach,
 `lazyDependencies`' the packages fetched, `generatePrisma`'s the clients
-generated, `lockfiles`' the trees laid out, and the rules' the artifacts refused.
+generated, `lockfiles`' the trees laid out, the rules' the artifacts refused,
+and `ignoreModules`' the imports that miss.
 
 ### Allowed and disallowed paths and modules
 
@@ -309,6 +311,47 @@ bundle --metro` holds the app's Metro graph to as well (see
 [Metro](bundle.md#metro---metro)): they match as `@preventive/rn` matches, with
 no `[...]` classes or `\` escapes, and the project's own files by its package's
 name, so a rule copied from one file to the other may not refuse the same files.
+
+### Ignored modules
+
+`ignoreModules` names dependencies to take for absent, as though they were not
+installed: an optional one a `require()` in a `try` reaches, or one a package
+re-exports lazily that nothing of the program uses.
+
+```json
+{ "ignoreModules": ["bufferutil", "utf-8-validate", "@react-native-community/cli-server-api"] }
+```
+
+- An import that resolves into one misses, as an import of a package that is not
+  installed does. Nothing of it is read, bundled or locked, nor anything only it
+  reaches.
+- `stasis bundle` takes such a miss as it takes any other (`ignored by
+  ignoreModules "bufferutil"`, where it names it). A `require()` or `import()`
+  of one falls through at load time, with a warning. A static `import` or
+  `export … from` of one, in a file the entries load eagerly, fails the build:
+  `JS bundle would be broken at load time`.
+- `stasis run`, in every lock and bundle mode, fails the resolution as Node
+  fails one of a missing package: `MODULE_NOT_FOUND` for a `require()` or
+  `require.resolve()`, `ERR_MODULE_NOT_FOUND` for an `import`. A program that
+  catches it goes on, and the run writes what it recorded, without the package.
+  A static import of one fails the run, as it would without the package.
+- A pattern is a module pattern, matching as `disallowedModules`' does: a
+  dependency by its `package.json` name or by the name it is installed under,
+  either. The project's own packages are no dependencies, and none of their
+  files is taken for absent.
+- A lockfile or bundle that carries one is refused, as one carrying a module
+  `disallowedModules` refuses is (`ignoreModules ignores bufferutil@4.0.9 at
+  node_modules/bufferutil ("bufferutil")`), and so is a file of one that `extra`
+  or `stasis add` names, or a `stasis run --fs` read, or a build of the bundler
+  plugins reaches (they resolve on their own, and take nothing for absent).
+- An entry of `entries` may set it too: its own build takes those for absent,
+  beside the config's, which every build takes.
+- A lazy tree of `stasis github-bundle` fetches none that a bare specifier
+  names by the name it is installed under, where Node's resolution reaches it.
+  One installed under another name, or reached through `--mainFields`'s or
+  `--metro`'s resolver, is fetched to be told apart, though never bundled. A
+  tree laid out whole (`--no-lazy`, `lazyDependencies: false`, `stasis bundle
+  --deptree`) fetches every package, these too.
 
 ## `stasis.lock.json`
 
