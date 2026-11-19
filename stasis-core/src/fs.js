@@ -109,7 +109,9 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const abs = toAbsPath(path)
     if (abs === null || !isPathWithin(state.root, abs)) return null
     const url = pathToFileURL(abs).toString()
-    if (isSkippedFsPath(state, abs) || state.excludedModule(url) !== undefined) return { mode: 'absent' }
+    if (isSkippedFsPath(state, abs)) return { mode: 'absent' }
+    // Resolvable still: Node's require() realpaths it, and the resolution then misses as MODULE_NOT_FOUND.
+    if (state.excludedModule(url) !== undefined) return { mode: 'absent', resolvable: true }
     if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
     if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
     return null
@@ -199,7 +201,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   // The real realpath while on disk, else the lexical abs (ancestor symlinks not re-resolved then).
   const servedRealpathSync = (realFn) => function realpathSync(path, options) {
     const t = classify(path)
-    if (t?.mode === 'absent') throw enoent('realpath', path)
+    if (t?.mode === 'absent' && !t.resolvable) throw enoent('realpath', path)
     if (!served(t)) return realFn(path, options)
     try { return realFn(path, options) } catch { return encodeRealpath(t.abs, options) }
   }
@@ -338,7 +340,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const servedRealpath = (realFn) => function realpath(path, options, callback) {
       const [opts, cb] = cbArgs(options, callback)
       const t = typeof cb === 'function' ? classify(path) : null
-      if (t?.mode === 'absent') return later(cb, enoent('realpath', path))
+      if (t?.mode === 'absent' && !t.resolvable) return later(cb, enoent('realpath', path))
       if (served(t)) return realFn(path, opts, (err, resolved) => cb(null, err ? encodeRealpath(t.abs, opts) : resolved))
       return realFn(path, options, callback)
     }
@@ -347,7 +349,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
 
     fs.promises.realpath = async function realpath(path, options) {
       const t = classify(path)
-      if (t?.mode === 'absent') throw enoent('realpath', path)
+      if (t?.mode === 'absent' && !t.resolvable) throw enoent('realpath', path)
       if (!served(t)) return realRealpathP(path, options)
       try { return await realRealpathP(path, options) } catch { return encodeRealpath(t.abs, options) }
     }

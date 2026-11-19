@@ -177,9 +177,13 @@ test('CLI: stasis run --fs reads an excluded dependency\'s files as missing, a l
   })
   symlinkSync('node_modules/opt/index.js', join(tmp, 'link.js'))
   symlinkSync('../opt/index.js', join(tmp, 'node_modules/left/link.js'))
-  const ran = runCli(['run', '--lock=add', '--bundle=add', '--fs=sync', 'r.js'], tmp)
-  t.assert.equal(ran.stdout, 'ENOENT ENOENT ENOENT false true\n', ran.stderr)
-  t.assert.ok(!sourcesOf(join(tmp, 'stasis.code.br')).some((path) => path.startsWith('node_modules/opt')))
+  for (const fs of ['sync', 'async']) {
+    const ran = runCli(['run', '--lock=replace', '--bundle=replace', `--fs=${fs}`, 'r.js'], tmp)
+    t.assert.equal(ran.stdout, 'ENOENT ENOENT ENOENT false true\n', ran.stderr)
+    t.assert.ok(!sourcesOf(join(tmp, 'stasis.code.br')).some((path) => path.startsWith('node_modules/opt')))
+    // A require() of one still misses as a module does.
+    t.assert.equal(runCli(['run', '--lock=replace', '--bundle=replace', `--fs=${fs}`, 'a.js'], tmp).stdout, ABSENT, fs)
+  }
 }))
 
 test('CLI: stasis run --bundle=load misses an excluded dependency, in either scope', withTmp(async (t, tmp) => {
