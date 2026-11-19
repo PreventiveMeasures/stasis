@@ -526,7 +526,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 }
 
 // Through a State, the graph scanned statically: no user code runs. `memo` keeps scans across a lazy tree's rounds.
-// `policy`: the build's own (its entries'), whose ignoreModules it takes beside the config's.
+// `policy`: the entries' own, beside the config's.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated, policy = null } = {}) {
   assertEntries('buildJsBundle', entries, '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', (e) => JS_EXTENSIONS.has(extname(e)), 'JS/TS file')
   const baseDir = resolve(cwd)
@@ -536,16 +536,14 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   // bundle:'replace' reads no stasis.code.br on disk; lock:'ignore' leaves the lockfile to heldToLockfile;
-  // never written, the State claims nothing, and assertPolicies checks the bundle. Made before the scan, which
-  // takes what its config's ignoreModules ignores for absent.
+  // never written, the State claims nothing, and assertPolicies checks the bundle. Before the scan, for ignoreModules.
   const stateOptions = { bundle: 'replace', lock: 'ignore', ownLock: true, ...(scope && { scope }), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
   const ignores = moduleIgnorer([state.config.policy, policy], state.root, host)
   const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined, ignores })
   // A round of a lazy tree that asked for a package already is void: the rest is moot.
   if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
-  // A root holding a stasis file is the project's own choice, whose config the build takes. (Without one, it has
-  // no config, nor ignoreModules, at either root.)
+  // A root holding a stasis file is the project's own choice, whose config the build takes.
   if (innermostRoot && !STASIS_ROOT_FILES.some((file) => host.stat(join(state.root, file)) !== null)) {
     const root = innermostRootOf(baseDir, [...scanned.files.keys()].map((url) => host.realpath(fileURLToPath(url))), state.root, host)
     // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
@@ -1091,7 +1089,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (!metroResolver) typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
-  // What the config's and the build's ignoreModules ignore, every scan takes for absent: the configs' and toolchain's too.
   const ignores = moduleIgnorer([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
 
   const formatsByRel = new Map()

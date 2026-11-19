@@ -364,9 +364,7 @@ function assertInfraMatchesBundle(url) {
   }
 }
 
-// ignoreModules takes a dependency for absent: a resolution into one misses as Node's does, so a require() or
-// import() falls through where it catches the miss, and a static import fails. Never `recording`: a miss the
-// program catches is no capture failure.
+// Not `recording`: the program may catch the miss.
 function missIfIgnored(specifier, parentURL, url, conditions) {
   const hit = state.ignoredModule(url)
   if (hit === undefined) return
@@ -508,7 +506,7 @@ function patchCjsResolution() {
     if (state && (!loadMode || state.config.policy?.ignoresModules) && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
       const parentURL = pathToFileURL(parent.filename).toString()
       const url = pathToFileURL(resolved).toString()
-      // A preload's own require()s are runner infrastructure, which takes nothing for absent.
+      // Not a preload's own require()s.
       if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfIgnored(request, parentURL, url, REQUIRE)
       // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
       if (!loadMode) state.observeResolution(parentURL, request, url)

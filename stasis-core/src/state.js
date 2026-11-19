@@ -661,8 +661,7 @@ export class State {
     return file !== undefined && splitNodeModulesPath(file) !== null
   }
 
-  // The config's ignoreModules match of the dependency `url` is in, or undefined: the hooks take one for absent.
-  // Asked of each resolution, more than once of a require()'s: kept by URL.
+  // Cached: a require() asks up to three times.
   ignoredModule(url) {
     const policy = this.config.policy
     if (!policy?.ignoresModules) return undefined

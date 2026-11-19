@@ -167,7 +167,7 @@ export class Scan {
   // `resolve`: a replacement for Node's resolver (resolve-fields.js), owning builtins. Without `typescript`, tsc's
   // mapping only hints where a miss would land (#typescriptCandidate). `babel`: built by Babel (Metro), whose transforms
   // erase an import listing types alone, but in a TypeScript file `keepsTypeImports(file)` holds.
-  // `ignores`: the reason an absolute path's file is taken for absent (policy.js's moduleIgnorer), or undefined.
+  // `ignores(path)`: why a file is taken as absent, or undefined.
   constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false, ignores = null } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
@@ -315,12 +315,10 @@ export class Scan {
     }
   }
 
-  // `${dir}\0${name}` -> #ignoredPackage's reason, null for none: a directory's files share the answer.
+  // `${dir}\0${name}` -> reason, or null.
   #ignoredPackages = new Map()
 
-  // Where Node resolves a bare specifier, the first node_modules/<name> above the parent, as ignoreModules takes it
-  // by the name it is installed under: told before resolving it, which reads the package (a lazy tree fetches it).
-  // One installed under another name is told once resolved.
+  // Before resolving, which reads the package (a lazy tree fetches it); addChild catches an alias.
   #ignoredPackage(parentFile, spec) {
     if (this.ignores === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
     const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
@@ -331,11 +329,11 @@ export class Scan {
       try {
         real = found && this.host.realpath(found.pkgDir)
       } catch { /* a dangling link resolves nothing */ }
-      // By its real path, as the edge it resolves to is: a workspace package linked into node_modules is the project's.
+      // A workspace package linked into node_modules is the project's own.
       return (real && this.ignores(join(real, 'package.json'), { installed: true })) ?? null
     })
     if (reason === null) return undefined
-    // A package's reference to itself resolves to it, whatever of its name is installed above.
+    // A self-reference resolves to the package itself.
     const own = this.host.findPackageJSON(parentFile)
     return own && readJson(own, this.host)?.name === name ? undefined : reason
   }
@@ -448,7 +446,7 @@ export class Scan {
     const formatContext = ['module', 'module-typescript'].includes(format) ? 'import' : 'require'
     const edges = []
     const specMaps = new Map() // condition key -> specifier -> child URL
-    // A file ignoreModules takes for absent is a miss, never read: as a miss, a static import of it is fatal.
+    // A miss, never read.
     const addIgnored = (s, reason) => {
       edges.push({ ...s, error: reason })
       this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
