@@ -21,6 +21,9 @@ language: the bundle (and its `--lockfile`) carries them too. Its `allowedPaths`
 `disallowedPaths`, `allowedModules` and `disallowedModules` restrict what the bundle
 may carry, every offender named and nothing written, see
 [Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules).
+Its `excludeModules` names dependencies the build takes for absent: an import of
+one misses, as one of a package that is not installed does, see
+[Excluded modules](file-formats.md#excluded-modules).
 
 | Flag | Meaning |
 | - | - |
@@ -257,7 +260,9 @@ With it:
   they are no flags, and hold what its own build carries, its graph without the
   config's `extra`, beside the config's own, none overriding another. Entries
   with the same options and the same rules are built together, and an error of
-  their rules names them all.
+  their rules names them all. Its `excludeModules` is its own build's too: that
+  build takes those dependencies for absent, beside the config's (see
+  [Excluded modules](file-formats.md#excluded-modules)).
 
 `stasis run` takes nothing from it. `stasis github-bundle` takes it too, but
 runs nothing: see its [Entries](github-bundle.md#entries).

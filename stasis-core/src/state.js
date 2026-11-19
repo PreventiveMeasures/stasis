@@ -13,7 +13,7 @@ import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
-import { linksOn } from './policy.js'
+import { linksOn, moduleExcluder } from './policy.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -661,6 +661,16 @@ export class State {
     return file !== undefined && splitNodeModulesPath(file) !== null
   }
 
+  // Cached: a require() asks up to three times.
+  excludedModule(url) {
+    if (!this.config.policy?.excludesModules || !url.startsWith('file:')) return undefined
+    this.#excluder ??= moduleExcluder([this.config.policy], this.root, this.#host)
+    return upsert(this.#excluded, url, () => this.#excluder(fileURLToPath(url)) ?? null) ?? undefined
+  }
+
+  #excluded = new Map()
+  #excluder
+
   // findPackageJSON is unreliable for a directory (EISDIR, or the parent's); an unreadable one is refused as it does.
   #nearestPackageJsonFor(dirAbsolute) {
     for (let dir = dirAbsolute; ; dir = dirname(dir)) {
@@ -928,7 +938,7 @@ export class State {
     if (this.config.extra.length === 0) return
     // Resolved as write() writes them: a relative one from the cwd.
     const written = new Set(outputs.map((file) => toPosix(relative(this.root, resolve(file)))))
-    const { files } = expandExtra(this.root, this.config.extra, written, this.#host)
+    const { files } = expandExtra(this.root, this.config.extra, written, this.#host, moduleExcluder([this.config.policy], this.root, this.#host))
     const realRoot = this.#host.realpath(this.root)
     const missing = []
     const undeclared = []

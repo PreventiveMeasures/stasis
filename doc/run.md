@@ -29,6 +29,13 @@ the program catches the error. A lockfile or bundle the run loads that records
 one is refused before the entry runs. See
 [Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules).
 
+Its `excludeModules` names dependencies the run takes for absent: a resolution into
+one fails as one of a missing package does (`MODULE_NOT_FOUND`, or
+`ERR_MODULE_NOT_FOUND` for an `import`), which the program may catch, and nothing
+of it is recorded. Under `--fs` its files read as missing. A lockfile or bundle the
+run loads that records one is refused before the entry runs. See
+[Excluded modules](file-formats.md#excluded-modules).
+
 Everything after the options goes to node as is: the entry and its arguments.
 The exit code is the entry's, or 128 plus the signal's number where a signal
 killed it. The effective configuration is printed to stderr first.

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 
 import { State } from './state.js'
+import { excludedText } from './policy.js'
 import { installFsHooks } from './fs.js'
 import { inScope } from './state-util.js'
 import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
@@ -363,6 +364,16 @@ function assertInfraMatchesBundle(url) {
   }
 }
 
+const EXCLUDED = Symbol('excludeModules')
+
+// Not `recording`: the program may catch the miss.
+function missIfExcluded(specifier, parentURL, url, conditions) {
+  const hit = state.excludedModule(url)
+  if (hit === undefined) return
+  const parent = parentURL.startsWith('file:') ? fileURLToPath(parentURL) : parentURL
+  throw Object.assign(new Error(`Cannot find module '${specifier}' imported from ${parent} (${excludedText(hit)})`), { code: conditions.includes('require') ? 'MODULE_NOT_FOUND' : 'ERR_MODULE_NOT_FOUND', [EXCLUDED]: true })
+}
+
 function resolve(specifier, context, nextResolve) {
   const { parentURL, conditions, importAttributes } = context
   // A DIRECTORY parent can't shadow an app parent; any other pre-entry parent ([eval]'s import) fails closed below.
@@ -397,7 +408,11 @@ function resolve(specifier, context, nextResolve) {
 
   if (state?.config.loadBundle) {
     // inNodeModules(), not a raw substring: a symlinked workspace source is read from disk.
-    if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) return nextResolve(specifier)
+    if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) {
+      const res = nextResolve(specifier)
+      if (parentURL) missIfExcluded(specifier, parentURL, res.url, conditions)
+      return res
+    }
     // The entry skips nextResolve, so it needn't be on disk.
     let url
     let format
@@ -422,6 +437,7 @@ function resolve(specifier, context, nextResolve) {
 
   assert.equal(res.importAttributes, undefined) // unsupported yet
   if (parentURL) assert.ok(state)
+  if (parentURL) missIfExcluded(specifier, parentURL, url, conditions)
   if (infraUrls.has(url)) {
     if (infraSources.has(url)) {
       // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
@@ -487,9 +503,13 @@ function patchCjsResolution() {
       }
     }
     const resolved = original.call(this, request, parent, ...rest)
-    // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
-    if (state && !loadMode && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
-      state.observeResolution(pathToFileURL(parent.filename).toString(), request, pathToFileURL(resolved).toString())
+    if (state && (!loadMode || state.config.policy?.excludesModules) && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
+      const parentURL = pathToFileURL(parent.filename).toString()
+      const url = pathToFileURL(resolved).toString()
+      // Not a preload's own require()s.
+      if (isAbsolute(resolved) && !entryUnresolved && !infraUrls.has(parentURL)) missIfExcluded(request, parentURL, url, ['require'])
+      // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
+      if (!loadMode) state.observeResolution(parentURL, request, url)
     }
     return resolved
   }
@@ -501,7 +521,12 @@ function patchCjsResolution() {
     let resolvedUrl
     if (state && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
       let resolved
-      try { resolved = Module._resolveFilename(request, parent, ...rest) } catch { /* original _load raises the real error */ }
+      try {
+        resolved = Module._resolveFilename(request, parent, ...rest)
+      } catch (error) {
+        // Else the cache fast path below can serve what a preload loaded. Any other: original _load raises it.
+        if (error?.[EXCLUDED]) throw error
+      }
       if (typeof resolved === 'string' && isAbsolute(resolved)) resolvedUrl = pathToFileURL(resolved).toString()
     }
     if (resolvedUrl !== undefined && !state.config.loadBundle) {

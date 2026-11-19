@@ -1,4 +1,4 @@
-import { posix, relative, resolve } from 'node:path'
+import { join, posix, relative, resolve } from 'node:path'
 
 import { dependencyEcosystem, hasNodeModulesSegment, moduleFileKeys, posixPathEscapes, sortedByPath, splitNodeModulesPath } from './artifact-util.js'
 import { readPackageJson } from './bundle-util.js'
@@ -6,9 +6,10 @@ import { diskHost } from './host.js'
 import { memoized, relativeEscapes, toPosix } from './util.js'
 
 // Each rule is checked on its own, and an artifact meets every Policy that applies: none overrides another.
-export const POLICY_KEYS = ['allowedPaths', 'disallowedPaths', 'allowedModules', 'disallowedModules']
+export const POLICY_KEYS = ['allowedPaths', 'disallowedPaths', 'allowedModules', 'disallowedModules', 'excludeModules']
 const PATH_KEYS = new Set(['allowedPaths', 'disallowedPaths'])
 const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
+const EXCLUDE = 'excludeModules'
 
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
@@ -89,6 +90,13 @@ const listed = (items) => {
 }
 
 const installedName = (dir) => splitNodeModulesPath(`${dir}/package.json`)?.name
+
+// The dependencies paths are in that no record names (a --fs stat's), by their directory alone: a link's real one.
+function unrecorded(paths, packages, links) {
+  const dirs = new Set(packages.map(({ dir }) => dir))
+  return [...paths].map((path) => splitNodeModulesPath(links.get(path) ?? path)?.dir).filter((dir) => dir !== undefined && !dirs.has(dir) && dirs.add(dir))
+    .map((dir) => ({ dir, name: installedName(dir) }))
+}
 
 const packageText = ({ dir, name, version, via }) => {
   const installed = installedName(dir)
@@ -185,7 +193,7 @@ class Policy {
       const allowing = ALLOWING.has(key)
       const isPath = PATH_KEYS.has(key)
       const offenders = []
-      for (const item of isPath ? paths : packages) {
+      for (const item of isPath ? paths : key === EXCLUDE ? [...packages, ...unrecorded(paths, packages, links)] : packages) {
         const names = isPath ? [item, links.get(item)] : [item.name, installedName(item.dir)]
         const matches = names.filter((name) => name !== undefined).map((name) => patterns.find(({ test }) => test(name)))
         const match = matches.find((found) => found !== undefined)
@@ -197,9 +205,17 @@ class Policy {
         : offenders.map(({ item, by }) => `${packageText(item)}${by}`)
       const many = `${texts.length} ${isPath ? 'paths' : 'packages'}: ${listed(texts)}`
       if (allowing) problems.push(texts.length === 1 ? `${key} does not allow ${texts[0]}` : `${key} allows none of ${many}`)
-      else problems.push(`${key} refuses ${texts.length === 1 ? texts[0] : many}`)
+      else problems.push(`${key} ${key === EXCLUDE ? 'excludes' : 'refuses'} ${texts.length === 1 ? texts[0] : many}`)
     }
     return problems
+  }
+
+  get excludesModules() {
+    return this.#rules.has(EXCLUDE)
+  }
+
+  excludedBy(name) {
+    return name === undefined ? undefined : this.#rules.get(EXCLUDE)?.find(({ test }) => test(name))?.pattern
   }
 
   assert(contents, hint = '') {
@@ -215,6 +231,56 @@ class Policy {
     const packages = pkg === undefined ? [] : [pkg]
     if (link?.pkg !== undefined && link.pkg.dir !== pkg?.dir) packages.push(link.pkg)
     this.assert({ paths: [path], packages, links: link === undefined ? new Map() : new Map([[path, link.real]]) })
+  }
+}
+
+// A package's own directory, as splitNodeModulesPath splits a path in it.
+function packageDirOf(rel) {
+  const split = splitNodeModulesPath(`${rel}/_`)
+  return split?.dir === rel ? split : null
+}
+
+export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModules excludes ${dir} (${JSON.stringify(pattern)})`
+
+// The excluded dependency an absolute path is in, else undefined; null where no policy excludes one. A dependency goes
+// by its package.json name and the directory it is really installed in, as disallowedModules matches: a path by its
+// real one (a link's, a pnpm alias's), else (missing, or `installed`, reading nothing a lazy tree would fetch) by its
+// package's. A workspace package linked into node_modules is never one.
+export function moduleExcluder(policies, root, host = diskHost) {
+  const excluding = policies.filter((policy) => policy?.excludesModules)
+  if (excluding.length === 0) return null
+  const bases = [root]
+  try {
+    bases.push(host.realpath(root))
+  } catch { /* a missing root reaches nothing */ }
+  const fromRoot = (absolute) => bases.map((base) => toPosix(relative(base, absolute))).find((rel) => !relativeEscapes(rel))
+  const realpath = (path) => {
+    try {
+      return host.realpath(path)
+    } catch {
+      return undefined
+    }
+  }
+  const dirOf = (rel) => (rel === undefined ? undefined : (splitNodeModulesPath(rel) ?? packageDirOf(rel))?.dir)
+  // A package's own directory, which a lazy tree reads without fetching it.
+  const realDir = memoized((dir) => {
+    const real = dir && realpath(join(root, dir))
+    const rel = real && fromRoot(real)
+    return rel && dirOf(`${rel}/package.json`)
+  })
+  const nameOf = memoized((dir) => {
+    const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
+    return typeof name === 'string' && name !== '' ? name : undefined
+  })
+  return (absolute, { installed = false } = {}) => {
+    const real = installed ? undefined : realpath(absolute)
+    const dir = real === undefined ? realDir(dirOf(fromRoot(absolute))) : dirOf(fromRoot(real))
+    if (dir === undefined) return undefined
+    for (const policy of excluding) {
+      const pattern = policy.excludedBy(installedName(dir)) ?? (installed ? undefined : policy.excludedBy(nameOf(dir)))
+      if (pattern !== undefined) return { dir, pattern, label: policy.label }
+    }
+    return undefined
   }
 }
 

@@ -3,9 +3,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
-import { packageType } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
-import { inNodeModules, isSourceFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
+import { excludedText } from '@exodus/stasis-core/policy'
+import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
+import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -21,6 +22,8 @@ export const isResolvableExt = (ext) => RESOLVABLE_EXTS.has(ext)
 const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 
 const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
+
+const EXCLUDED_REASON = 'excluded by excludeModules'
 
 // Raw transfer reserves 6 GiB for the parser's buffer, of which a parse writes only what it takes. Linux refuses one
 // mapping past its RAM and swap, so on a smaller machine (a 4 GiB function) that buffer can't be had: a RangeError on
@@ -167,11 +170,12 @@ export class Scan {
   // `resolve`: a replacement for Node's resolver (resolve-fields.js), owning builtins. Without `typescript`, tsc's
   // mapping only hints where a miss would land (#typescriptCandidate). `babel`: built by Babel (Metro), whose transforms
   // erase an import listing types alone, but in a TypeScript file `keepsTypeImports(file)` holds.
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false } = {}) {
+  // `excludes`: policy.js's moduleExcluder.
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false, excludes = null } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.defines = parseDefine('scan', define)
-    Object.assign(this, { typescriptResolve, jsx, flow, typescript, typescriptPaths, missTargets, resources, babel, keepsTypeImports, host, memo })
+    Object.assign(this, { typescriptResolve, jsx, flow, typescript, typescriptPaths, missTargets, resources, babel, keepsTypeImports, host, memo, excludes })
     this.#types = hostMemo(host)
   }
 
@@ -187,7 +191,8 @@ export class Scan {
     const queue = []
     for (const entry of entries) {
       const abs = resolvePath(entry)
-      assert.ok(this.host.stat(abs) !== null, `entry not found: ${abs}`)
+      const excluded = this.excludes?.(abs)
+      assert.ok(this.host.stat(abs) !== null && excluded === undefined, `entry not found: ${abs}${excluded ? ` (${excludedText(excluded)})` : ''}`)
       const url = pathToFileURL(abs).toString()
       this.entries.add(url)
       queue.push(url)
@@ -314,6 +319,25 @@ export class Scan {
     }
   }
 
+  // `${dir}\0${name}` -> whether excludeModules excludes the package Node finds the name in.
+  #excludedPackages = new Map()
+
+  // Before Node's resolution reads the package (a lazy tree fetches it), by the directory it is installed in; but for
+  // a package's reference to itself, which resolves through its own exports first.
+  #excludedPackage(parentFile, spec) {
+    if (this.excludes === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
+    const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
+    const dir = dirname(parentFile)
+    const excluded = upsert(this.#excludedPackages, `${dir}\0${name}`, () => {
+      const found = locatePackage(dir, name, this.host)
+      return found !== null && this.excludes(join(found.pkgDir, 'package.json'), { installed: true }) !== undefined
+    })
+    if (!excluded) return undefined
+    const own = this.host.findPackageJSON(parentFile)
+    const pkg = own && readJson(own, this.host)
+    return pkg?.name === name && pkg.exports !== undefined ? undefined : EXCLUDED_REASON
+  }
+
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
   parseFile(file) {
     const ext = extname(file)
@@ -422,7 +446,16 @@ export class Scan {
     const formatContext = ['module', 'module-typescript'].includes(format) ? 'import' : 'require'
     const edges = []
     const specMaps = new Map() // condition key -> specifier -> child URL
+    // A miss, never read.
+    const addExcluded = (s, reason) => {
+      edges.push({ ...s, error: reason })
+      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
+    }
     const addChild = (s, key, childURL, childPath) => {
+      if (this.excludes?.(childPath) !== undefined) {
+        addExcluded(s, EXCLUDED_REASON)
+        return
+      }
       edges.push({ ...s, child: childURL })
       nestedMap(specMaps, key).set(s.spec, childURL)
       if (RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
@@ -454,6 +487,11 @@ export class Scan {
       }
       if (isBuiltin(s.spec)) {
         edges.push({ ...s, builtin: true })
+        continue
+      }
+      const excluded = this.#excludedPackage(file, s.spec)
+      if (excluded !== undefined) {
+        addExcluded(s, excluded)
         continue
       }
       let childPath
