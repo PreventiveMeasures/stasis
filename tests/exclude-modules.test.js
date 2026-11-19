@@ -193,20 +193,22 @@ test('CLI: stasis run --bundle=load misses an excluded dependency, in either sco
   await loads('node_modules')
 }))
 
-test('a pnpm alias is excluded by the name it is installed under, a linked workspace package never', withTmp(async (t, tmp) => {
+test('a pnpm alias is excluded by the name it is installed under; a linked workspace package, or the project itself, never', withTmp(async (t, tmp) => {
   writeTree(tmp, {
-    'package.json': { name: 'app', version: '1.0.0' },
-    'a.js': "let nice; try { nice = require('nice') } catch (e) { nice = e.code }\nconsole.log(nice, require('foo'))\n",
+    'package.json': { name: 'app', version: '1.0.0', exports: './self.js' },
+    'a.js': "let nice; try { nice = require('nice') } catch (e) { nice = e.code }\nconsole.log(nice, require('foo'), require('app'))\n",
+    'self.js': "module.exports = 'self'\n",
+    'node_modules/app/package.json': { name: 'app', version: '2.0.0' },
     'node_modules/.pnpm/opt@1.0.0/node_modules/opt/package.json': { name: 'opt', version: '1.0.0' },
     'node_modules/.pnpm/opt@1.0.0/node_modules/opt/index.js': "module.exports = 'opt'\n",
     'packages/foo/package.json': { name: 'foo', version: '1.0.0' },
     'packages/foo/index.js': "module.exports = 'foo'\n",
-    'stasis.config.json': { excludeModules: ['nice', 'foo'] },
+    'stasis.config.json': { excludeModules: ['nice', 'foo', 'app'] },
   })
   symlinkSync('.pnpm/opt@1.0.0/node_modules/opt', join(tmp, 'node_modules/nice'))
   symlinkSync('../packages/foo', join(tmp, 'node_modules/foo'))
   await bundleCommand({ cwd: tmp, entries: ['a.js'], output: join(tmp, 'a.br') })
-  t.assert.deepStrictEqual(sourcesOf(join(tmp, 'a.br')), ['a.js', 'packages/foo/index.js'])
+  t.assert.deepStrictEqual(sourcesOf(join(tmp, 'a.br')), ['a.js', 'packages/foo/index.js', 'self.js'])
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
-  t.assert.equal(runCli(['run', '--lock=add', 'a.js'], tmp).stdout, 'MODULE_NOT_FOUND foo\n')
+  t.assert.equal(runCli(['run', '--lock=add', 'a.js'], tmp).stdout, 'MODULE_NOT_FOUND foo self\n')
 }))

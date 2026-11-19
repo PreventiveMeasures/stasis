@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
-import { packageType } from '@exodus/stasis-core/bundle-util'
+import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
 import { excludedText } from '@exodus/stasis-core/policy'
 import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
 import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
@@ -331,7 +331,11 @@ export class Scan {
       const found = locatePackage(dir, name, this.host)
       return (found && this.excludes(join(found.pkgDir, 'package.json'), { installed: true })) ?? null
     })
-    return excluded === null ? undefined : EXCLUDED_REASON
+    if (excluded === null) return undefined
+    // A package's reference to itself, which Node resolves through its own exports first.
+    const own = this.host.findPackageJSON(parentFile)
+    const pkg = own && readJson(own, this.host)
+    return pkg?.name === name && pkg.exports !== undefined ? undefined : EXCLUDED_REASON
   }
 
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
