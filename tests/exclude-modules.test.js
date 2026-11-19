@@ -90,6 +90,9 @@ test('excludeModules takes a dependency by its package.json name or the director
   t.assert.equal(moduleExcluder([parsePolicy('cfg', { excludeModules: ['nice'] })], tmp)(join(tmp, 'node_modules/nice/index.js')), undefined)
   t.assert.equal(at('packages/opt/index.js'), undefined)
   t.assert.equal(at('node_modules/linked/index.js'), undefined)
+  // An artifact's path of a dependency it has no record of (a --fs stat), by its directory.
+  t.assert.throws(() => parsePolicy('cfg', { excludeModules: ['opt'] }).assert({ paths: ['node_modules/opt/index.js'], packages: [] }),
+    { message: 'cfg: excludeModules excludes opt at node_modules/opt ("opt")' })
 }))
 
 test('bundleCommand misses an excluded dependency: a require() or import() of it falls through, a static import fails', withTmp(async (t, tmp) => {

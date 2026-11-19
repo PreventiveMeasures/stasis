@@ -91,6 +91,13 @@ const listed = (items) => {
 
 const installedName = (dir) => splitNodeModulesPath(`${dir}/package.json`)?.name
 
+// The dependencies paths are in that no record names (a --fs stat's), by their directory alone.
+function unrecorded(paths, packages) {
+  const dirs = new Set(packages.map(({ dir }) => dir))
+  return [...paths].map((path) => splitNodeModulesPath(path)?.dir).filter((dir) => dir !== undefined && !dirs.has(dir) && dirs.add(dir))
+    .map((dir) => ({ dir, name: installedName(dir) }))
+}
+
 const packageText = ({ dir, name, version, via }) => {
   const installed = installedName(dir)
   return `${name}${version === undefined ? '' : `@${version}`} at ${dir}` +
@@ -186,7 +193,7 @@ class Policy {
       const allowing = ALLOWING.has(key)
       const isPath = PATH_KEYS.has(key)
       const offenders = []
-      for (const item of isPath ? paths : packages) {
+      for (const item of isPath ? paths : key === EXCLUDE ? [...packages, ...unrecorded(paths, packages)] : packages) {
         const names = isPath ? [item, links.get(item)] : [item.name, installedName(item.dir)]
         const matches = names.filter((name) => name !== undefined).map((name) => patterns.find(({ test }) => test(name)))
         const match = matches.find((found) => found !== undefined)
