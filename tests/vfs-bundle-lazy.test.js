@@ -150,10 +150,10 @@ for (const packageManager of ['pnpm', 'npm']) {
     const { result, warnings } = await captureWarningsAsync(() => build(packageManager, { cache, lazy: true }, { entry: "try { require('broken') } catch {}\nrequire('used')\n", files: ignoring }))
     t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'], 'broken, whose tarball is not the lockfile\'s, is never fetched')
     t.assert.ok(![...result.bundle.sources.keys()].some((path) => path.includes('broken')))
-    t.assert.ok(warnings.some((line) => line.includes('require broken from src/a.js (ignored by ignoreModules "broken")')), warnings.join('\n'))
+    t.assert.ok(warnings.some((line) => line.includes('require broken from src/a.js (ignored by ignoreModules)')), warnings.join('\n'))
     const statically = store()
     await t.assert.rejects(build(packageManager, { cache: statically, lazy: true }, { entry: "import 'broken'\n", files: ignoring }), {
-      message: /JS bundle would be broken at load time:\n {2}unresolved import broken from src\/a\.js \(ignored by ignoreModules "broken"\)/u,
+      message: /JS bundle would be broken at load time:\n {2}unresolved import broken from src\/a\.js \(ignored by ignoreModules\)/u,
     })
     t.assert.deepStrictEqual(tarballs(statically), [])
   })

@@ -116,7 +116,7 @@ test('bundleCommand takes an ignored dependency for absent: a require() or impor
   // Built through a State, and with --mainFields' resolver, without one.
   const builds = async (options) => {
     const said = await warned(t, () => bundleCommand({ cwd: tmp, entries: ['a.js'], ...options }))
-    t.assert.match(said, /unresolved import\(s\)(?: \(mainFields\))?; they will fall through at load time:\n {2}require opt from a\.js \(ignored by ignoreModules "opt"\)/u, JSON.stringify(options))
+    t.assert.match(said, /unresolved import\(s\)(?: \(mainFields\))?; they will fall through at load time:\n {2}require opt from a\.js \(ignored by ignoreModules\)/u, JSON.stringify(options))
     const bundle = readBundle(out)
     t.assert.deepStrictEqual(sorted(bundle.sources.keys()), ['a.js', 'node_modules/left/index.js'], 'neither opt nor what only it reaches')
     t.assert.deepStrictEqual(sorted(bundle.modules.keys()), ['.', 'node_modules/left'])
@@ -128,7 +128,7 @@ test('bundleCommand takes an ignored dependency for absent: a require() or impor
     t.assert.deepStrictEqual(sorted(readBundle(out).sources.keys()), ['d.mjs', 'lazy.mjs'])
 
     await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['b.mjs'], output: join(tmp, 'b.br'), ...options }), {
-      message: /^JS bundle would be broken at load time(?: \(mainFields\))?:\n {2}unresolved import opt from b\.mjs \(ignored by ignoreModules "opt"\)$/u,
+      message: /^JS bundle would be broken at load time(?: \(mainFields\))?:\n {2}unresolved import opt from b\.mjs \(ignored by ignoreModules\)$/u,
     })
     t.assert.ok(!existsSync(join(tmp, 'b.br')))
   }
@@ -150,7 +150,7 @@ test('bundleCommand takes for absent what an entry\'s own ignoreModules ignores,
   project(tmp, { ignoreModules: ['opt'], entries: { 'a.js': {}, 'b.mjs': { jsx: true } } })
   const { builds } = bundlePlan({ cwd: tmp, entries: ['a.js', 'b.mjs'], values: {}, config: readConfigEntries(tmp) })
   t.assert.equal(builds.length, 2)
-  await t.assert.rejects(bundleCommand({ cwd: tmp, builds }), /unresolved import opt from b\.mjs \(ignored by ignoreModules "opt"\)/u)
+  await t.assert.rejects(bundleCommand({ cwd: tmp, builds }), /unresolved import opt from b\.mjs \(ignored by ignoreModules\)/u)
 }))
 
 test('a lockfile or bundle that carries an ignored dependency is refused, as one carrying a disallowed one', withTmp(async (t, tmp) => {

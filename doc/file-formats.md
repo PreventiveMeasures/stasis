@@ -326,7 +326,7 @@ re-exports lazily that nothing of the program uses.
   installed does. Nothing of it is read, bundled or locked, nor anything only it
   reaches.
 - `stasis bundle` takes such a miss as it takes any other (`ignored by
-  ignoreModules "bufferutil"`, where it names it). A `require()` or `import()`
+  ignoreModules`, where it names it). A `require()` or `import()`
   of one falls through at load time, with a warning. A static `import` or
   `export … from` of one, in a file the entries load eagerly, fails the build:
   `JS bundle would be broken at load time`.

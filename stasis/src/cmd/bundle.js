@@ -516,11 +516,7 @@ function reportScanIssues({ fatal, tolerated, typescript, leftOut }, { label = '
 // The reason a scan takes the file at an absolute path for absent, by any of `policies`' ignoreModules; null for none.
 function ignoresOf(policies, root, host) {
   const ignorer = moduleIgnorer(policies, root, host)
-  if (ignorer === null) return null
-  return (absolute, options) => {
-    const hit = ignorer(absolute, options)
-    return hit === undefined ? undefined : `ignored by ignoreModules ${JSON.stringify(hit.pattern)}`
-  }
+  return ignorer && ((absolute, options) => (ignorer(absolute, options) === undefined ? undefined : 'ignored by ignoreModules'))
 }
 
 // Trimmed, empties dropped, so a sloppy programmatic caller can't push a bogus token into the resolver.
