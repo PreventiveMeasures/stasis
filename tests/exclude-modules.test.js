@@ -93,6 +93,10 @@ test('excludeModules takes a dependency by its package.json name or the director
   // An artifact's path of a dependency it has no record of (a --fs stat), by its directory.
   t.assert.throws(() => parsePolicy('cfg', { excludeModules: ['opt'] }).assert({ paths: ['node_modules/opt/index.js'], packages: [] }),
     { message: 'cfg: excludeModules excludes opt at node_modules/opt ("opt")' })
+  // A link's by its real one, as at run time.
+  const viaAlias = { paths: ['node_modules/nice/index.js'], packages: [], links: new Map([['node_modules/nice/index.js', 'node_modules/.pnpm/real@1.0.0/node_modules/real/index.js']]) }
+  parsePolicy('cfg', { excludeModules: ['nice'] }).assert(viaAlias)
+  t.assert.throws(() => parsePolicy('cfg', { excludeModules: ['real'] }).assert(viaAlias), /excludeModules excludes real at node_modules\/\.pnpm\/real@1\.0\.0\/node_modules\/real/u)
 }))
 
 test('bundleCommand misses an excluded dependency: a require() or import() of it falls through, a static import fails', withTmp(async (t, tmp) => {
