@@ -4,6 +4,7 @@ import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
 import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
+import { excludedText } from '@exodus/stasis-core/policy'
 import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
 import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
@@ -21,6 +22,8 @@ export const isResolvableExt = (ext) => RESOLVABLE_EXTS.has(ext)
 const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 
 const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
+
+const EXCLUDED_REASON = 'excluded by excludeModules'
 
 // Raw transfer reserves 6 GiB for the parser's buffer, of which a parse writes only what it takes. Linux refuses one
 // mapping past its RAM and swap, so on a smaller machine (a 4 GiB function) that buffer can't be had: a RangeError on
@@ -167,7 +170,7 @@ export class Scan {
   // `resolve`: a replacement for Node's resolver (resolve-fields.js), owning builtins. Without `typescript`, tsc's
   // mapping only hints where a miss would land (#typescriptCandidate). `babel`: built by Babel (Metro), whose transforms
   // erase an import listing types alone, but in a TypeScript file `keepsTypeImports(file)` holds.
-  // `excludes(path)`: why a file is taken as absent, or undefined.
+  // `excludes`: policy.js's moduleExcluder.
   constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false, excludes = null } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
@@ -188,7 +191,8 @@ export class Scan {
     const queue = []
     for (const entry of entries) {
       const abs = resolvePath(entry)
-      assert.ok(this.host.stat(abs) !== null, `entry not found: ${abs}`)
+      const excluded = this.excludes?.(abs)
+      assert.ok(this.host.stat(abs) !== null && excluded === undefined, `entry not found: ${abs}${excluded ? ` (${excludedText(excluded)})` : ''}`)
       const url = pathToFileURL(abs).toString()
       this.entries.add(url)
       queue.push(url)
@@ -315,7 +319,7 @@ export class Scan {
     }
   }
 
-  // `${dir}\0${name}` -> reason, or null.
+  // `${dir}\0${name}` -> moduleExcluder's match, or null.
   #excludedPackages = new Map()
 
   // Before resolving, which reads the package (a lazy tree fetches it); addChild catches an alias.
@@ -323,19 +327,14 @@ export class Scan {
     if (this.excludes === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
     const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
     const dir = dirname(parentFile)
-    const reason = upsert(this.#excludedPackages, `${dir}\0${name}`, () => {
+    const excluded = upsert(this.#excludedPackages, `${dir}\0${name}`, () => {
       const found = locatePackage(dir, name, this.host)
-      let real
-      try {
-        real = found && this.host.realpath(found.pkgDir)
-      } catch { /* a dangling link resolves nothing */ }
-      // A workspace package linked into node_modules is the project's own.
-      return (real && this.excludes(join(real, 'package.json'), { installed: true })) ?? null
+      return (found && this.excludes(join(found.pkgDir, 'package.json'), { installed: true })) ?? null
     })
-    if (reason === null) return undefined
+    if (excluded === null) return undefined
     // A self-reference resolves to the package itself.
     const own = this.host.findPackageJSON(parentFile)
-    return own && readJson(own, this.host)?.name === name ? undefined : reason
+    return own && readJson(own, this.host)?.name === name ? undefined : EXCLUDED_REASON
   }
 
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
@@ -452,9 +451,8 @@ export class Scan {
       this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
     }
     const addChild = (s, key, childURL, childPath) => {
-      const excluded = this.excludes?.(childPath)
-      if (excluded !== undefined) {
-        addExcluded(s, excluded)
+      if (this.excludes?.(childPath) !== undefined) {
+        addExcluded(s, EXCLUDED_REASON)
         return
       }
       edges.push({ ...s, child: childURL })

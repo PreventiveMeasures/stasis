@@ -1098,7 +1098,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const reached = new Set()
   let usesEmpty = false
   // A disabled import resolves to Metro's own empty module where the project has it, else the reserved one.
-  const metroEmpty = metro ? metroEmptyModule(baseDir, host) : null
+  // What an excluded dependency holds is missing here too, as where it isn't installed.
+  const present = (file) => excludes?.(file) === undefined
+  const metroEmpty = metro && present(join(baseDir, METRO_EMPTY_MODULE)) ? metroEmptyModule(baseDir, host) : null
   const emptyTarget = metroEmpty === null ? EMPTY_MODULE_PATH : toRel(metroEmpty)
 
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
@@ -1182,7 +1184,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const dynamicImports = [...scanner.files.values()].some((info) => !info.resource && info.edges.some((e) => e.kind === 'dynamic-import'))
       const kept = keptAcross(`Metro's additions ${platformKey}`, host, memo)
       const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, dynamicImports, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host, kept }), ...scales])]
-        .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
+        .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null && present(file))
       stageTimes.metro += performance.now() - metroAt
       if (added.length > 0) staged('scan', () => absorb(added))
     }
@@ -1256,7 +1258,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
       return scanner
     }
-    const traced = configs.length > 0 ? traceNode(configs) : null
+    const roots = configs.filter(present)
+    const traced = roots.length > 0 ? traceNode(roots) : null
     // And the transformers beside stasis's Metro plugin, where a config requires it.
     const transformers = [...(traced?.files.keys() ?? [])].map((url) => pathOf(url))
       .filter((file) => basename(file) === 'metro.js' && basename(dirname(file)) === 'src' &&
@@ -1292,7 +1295,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           const rel = toRel(file)
           if (info.resource || !JS_EXTENSIONS.has(extname(file))) continue
           for (const [spec, target] of resolutionsOf(file, () => requireResolutions(file, host))) {
-            if (!JS_EXTENSIONS.has(extname(target)) || relWithin(target) === null) continue
+            if (!JS_EXTENSIONS.has(extname(target)) || relWithin(target) === null || !present(target)) continue
             named.add(target)
             // A specifier keeps the first edge recorded, as a run records a resolution only where no edge is.
             const keyed = keyedFrom(REQUIRE_KEY, rel)
@@ -1302,7 +1305,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (!configModule && splitNodeModulesPath(rel)) continue
           for (const name of namedOf(`${configModule}\0${file}`, () => babelNamedModules(file, host, { anyString: configModule }))) {
             const found = resolveNamed(name, file)
-            if (found !== undefined && JS_EXTENSIONS.has(extname(found)) && relWithin(found) !== null) named.add(found)
+            if (found !== undefined && JS_EXTENSIONS.has(extname(found)) && relWithin(found) !== null && present(found)) named.add(found)
           }
         }
         const fresh = [...named].filter((file) => !files.has(pathToFileURL(file).toString()))
@@ -1313,7 +1316,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // And the toolchain files the Metro plugin carries for every build, tagged as it does them.
     for (const specifier of AUTO_INCLUDES) {
       const file = requireFrom(baseDir, specifier, host)
-      if (file === undefined || reached.has(file) || relWithin(file) === null) continue
+      if (file === undefined || reached.has(file) || relWithin(file) === null || !present(file)) continue
       const rel = toRel(file)
       const format = classifyFormat(file, { content: host.readFile(file) })
       reached.add(file)
@@ -1589,7 +1592,7 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   const baseDir = resolve(cwd)
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
-  const named = expandExtra(baseDir, patterns, written, host).files
+  const { files: named, absent } = expandExtra(baseDir, patterns, written, host, moduleExcluder([parsePolicy(CONFIG_FILE, config)], baseDir, host))
   // Bundle#sources builds its Map afresh on each read.
   const bundled = built.bundle.sources
   // A file `extra` names that the build carries itself is attributed to both.
@@ -1599,7 +1602,7 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   let { bundle } = built
   let extraLock
   if (files.size > 0) {
-    const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources: allowlist, label: 'extra', host })
+    const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, absent, resources: allowlist, label: 'extra', host })
     const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
     const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules, host })
     extraLock = deferredLockfile(extra)

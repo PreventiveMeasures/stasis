@@ -32,8 +32,8 @@ one is refused before the entry runs. See
 Its `excludeModules` names dependencies the run takes for absent: a resolution into
 one fails as one of a missing package does (`MODULE_NOT_FOUND`, or
 `ERR_MODULE_NOT_FOUND` for an `import`), which the program may catch, and nothing
-of it is recorded. A lockfile or bundle the run loads is read as though nothing of
-one was recorded in it, so `add` writes it again without. See
+of it is recorded. Under `--fs` its files read as missing. A lockfile or bundle the
+run loads that records one is refused before the entry runs. See
 [Excluded modules](file-formats.md#excluded-modules).
 
 Everything after the options goes to node as is: the entry and its arguments.

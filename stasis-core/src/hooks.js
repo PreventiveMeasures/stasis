@@ -366,9 +366,13 @@ function assertInfraMatchesBundle(url) {
 
 const EXCLUDED = Symbol('excludeModules')
 
+// The package a bare specifier names, as Node finds it in node_modules: the name a pnpm alias is installed under.
+const bareName = (specifier) => (/^(?:[./#\\]|[a-z][a-z\d+.-]*:)/iu.test(specifier) || isAbsolute(specifier)
+  ? undefined : specifier.split('/', specifier.startsWith('@') ? 2 : 1).join('/'))
+
 // Not `recording`: the program may catch the miss.
 function missIfExcluded(specifier, parentURL, url, conditions) {
-  const hit = state.excludedModule(url)
+  const hit = state.excludedModule(url, bareName(specifier))
   if (hit === undefined) return
   const parent = parentURL.startsWith('file:') ? fileURLToPath(parentURL) : parentURL
   throw Object.assign(new Error(`Cannot find module '${specifier}' imported from ${parent} (${excludedText(hit)})`), { code: conditions.includes('require') ? 'MODULE_NOT_FOUND' : 'ERR_MODULE_NOT_FOUND', [EXCLUDED]: true })

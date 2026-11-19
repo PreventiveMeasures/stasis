@@ -1,4 +1,4 @@
-import { posix, relative, resolve } from 'node:path'
+import { join, posix, relative, resolve } from 'node:path'
 
 import { dependencyEcosystem, hasNodeModulesSegment, moduleFileKeys, posixPathEscapes, sortedByPath, splitNodeModulesPath } from './artifact-util.js'
 import { readPackageJson } from './bundle-util.js'
@@ -207,20 +207,15 @@ class Policy {
     return this.#rules.has(EXCLUDE)
   }
 
-  // A dependency's record, by its name or the one it is installed under.
-  excludesPackage({ dir, name }) {
+  // The first of `names` (a thunk: read only where those before don't match) excludeModules matches.
+  excludedBy(names) {
     const patterns = this.#rules.get(EXCLUDE)
-    return patterns !== undefined && [name, installedName(dir)].some((each) => each !== undefined && patterns.some(({ test }) => test(each)))
-  }
-
-  // By installed name, else the package.json's, as disallowedModules matches.
-  excludedAt(path, nameOf) {
-    const patterns = this.#rules.get(EXCLUDE)
-    const split = patterns === undefined ? null : splitNodeModulesPath(path)
-    if (split === null) return undefined
-    const matching = (name) => (name === undefined ? undefined : patterns.find(({ test }) => test(name)))
-    const match = matching(split.name) ?? matching(nameOf(split.dir))
-    return match && { dir: split.dir, pattern: match.pattern, label: this.label }
+    for (const name of patterns === undefined ? [] : names) {
+      const value = typeof name === 'function' ? name() : name
+      const match = value === undefined ? undefined : patterns.find(({ test }) => test(value))
+      if (match !== undefined) return match.pattern
+    }
+    return undefined
   }
 
   assert(contents, hint = '') {
@@ -239,16 +234,19 @@ class Policy {
   }
 }
 
+// A package's own directory, as splitNodeModulesPath splits a path in it.
+function packageDirOf(rel) {
+  const split = splitNodeModulesPath(`${rel}/_`)
+  return split?.dir === rel ? split : null
+}
+
 export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModules excludes ${dir} (${JSON.stringify(pattern)})`
 
-export const packageNamesOf = (root, host = diskHost) => memoized((dir) => {
-  const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
-  return typeof name === 'string' && name !== '' ? name : undefined
-})
-
-const NO_NAME = () => undefined
-
-// For a scan: null where no policy excludes modules. A path may be under the root or its real path.
+// The dependency a path (absolute, under the root or its real path) is in where any of `policies` excludes it:
+// { dir, pattern, label }, else undefined; null where none excludes modules. A dependency goes by the name it is
+// installed under there and at its real path (a pnpm alias), and its package.json's; a workspace package linked into
+// node_modules is the project's own. `installed`: reads no package.json (a lazy tree would fetch it). `alias`: the
+// name a bare specifier found it by.
 export function moduleExcluder(policies, root, host = diskHost) {
   const excluding = policies.filter((policy) => policy?.excludesModules)
   if (excluding.length === 0) return null
@@ -256,13 +254,32 @@ export function moduleExcluder(policies, root, host = diskHost) {
   try {
     bases.push(host.realpath(root))
   } catch { /* a missing root reaches nothing */ }
-  const nameOf = packageNamesOf(root, host)
-  // `installed`: reads no package.json, which a lazy tree would fetch.
-  return (absolute, { installed = false } = {}) => {
+  const fromRoot = (absolute) => bases.map((base) => toPosix(relative(base, absolute))).find((rel) => !relativeEscapes(rel))
+  // A package's own directory, which a lazy tree reads without fetching it.
+  const realDir = memoized((dir) => {
+    try {
+      return fromRoot(host.realpath(join(root, dir)))
+    } catch {
+      return undefined
+    }
+  })
+  const nameOf = memoized((dir) => {
+    const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
+    return typeof name === 'string' && name !== '' ? name : undefined
+  })
+  return (absolute, { installed = false, alias } = {}) => {
     if (!hasNodeModulesSegment(absolute)) return undefined
-    const rel = bases.map((base) => toPosix(relative(base, absolute))).find((at) => !relativeEscapes(at))
-    if (rel === undefined || !excluding.some((policy) => policy.excludedAt(rel, installed ? NO_NAME : nameOf) !== undefined)) return undefined
-    return 'excluded by excludeModules'
+    const rel = fromRoot(absolute)
+    const split = rel === undefined ? null : splitNodeModulesPath(rel) ?? packageDirOf(rel)
+    const real = split === null ? undefined : realDir(split.dir)
+    const dir = real === undefined ? undefined : splitNodeModulesPath(`${real}/package.json`)?.dir
+    if (dir === undefined) return undefined
+    const names = [split.name, installedName(dir), alias, ...(installed ? [] : [() => nameOf(dir)])]
+    for (const policy of excluding) {
+      const pattern = policy.excludedBy(names)
+      if (pattern !== undefined) return { dir: split.dir, pattern, label: policy.label }
+    }
+    return undefined
   }
 }
 

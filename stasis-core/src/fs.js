@@ -45,7 +45,8 @@ function decode(buf, options) {
 const encodeRealpath = (abs, options) => (encodingOf(options) === 'buffer' ? Buffer.from(abs) : abs)
 
 // Absent under --fs: `*.map` (a captured build replays byte-identically; `map` in resources opts out) and
-// `.env*` (a capture never bakes in a secret). Either serves at load only as an explicit bundle member.
+// `.env*` (a capture never bakes in a secret). Either serves at load only as an explicit bundle member. And what
+// excludeModules excludes (classify), as though not installed.
 function isSkippedFsPath(state, abs) {
   const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
   return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)
@@ -107,8 +108,8 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     if (!state) return null
     const abs = toAbsPath(path)
     if (abs === null || !isPathWithin(state.root, abs)) return null
-    if (isSkippedFsPath(state, abs)) return { mode: 'absent' }
     const url = pathToFileURL(abs).toString()
+    if (isSkippedFsPath(state, abs) || state.excludedModule(url) !== undefined) return { mode: 'absent' }
     if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
     if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
     return null
