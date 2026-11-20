@@ -495,8 +495,9 @@ in part names that file too.
 
 `stasis run --bundle=load` resolves the addon by the bundle's edge, and Node
 then loads it from disk, as a process can't load one from memory: it has to be
-there, and a run doesn't hold its bytes there to the ones the bundle or the
-lockfile attests. [`stasis extract`](extract.md) writes them out with the rest.
+there, and a run holds it to the bytes the bundle carries, or the hash the
+lockfile records, before it runs (see [run](run.md#native-addons)).
+[`stasis extract`](extract.md) writes them out with the rest.
 
 ### Metro (`--metro`)
 

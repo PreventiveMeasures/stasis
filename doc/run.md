@@ -83,6 +83,44 @@ bundle alone with no `--lock`, or verified against the lockfile with
 its own attestation, so a frozen bundle needs no sibling lockfile. Both files
 are looked up in the project root, see [discovery](file-formats.md#discovery).
 
+## Native addons
+
+Node loads a native addon (a `.node` file) from disk by its path, as a process
+can't load one from memory, past the loader that sees every other module. So a
+run records the edge to an addon it loads and none of its bytes, as one an
+install builds differs from install to install; and `--bundle=load` resolves an
+addon by the bundle's edge, but it has to be on disk still.
+
+A lockfile or bundle may attest one all the same: [`stasis bundle`](bundle.md#native-addons)
+carries the addons it follows, as resources. A run holds such an addon to it as
+it loads, in every mode that reads the artifact (`add`, `frozen` and `load`):
+before the addon runs, its bytes on disk are compared to the ones the bundle
+carries, else to the hash the lockfile records, and another in its place is
+refused.
+
+```
+stasis: refusing to load the native addon native/lib_linux-x64_nodejs.node: it is not the one the lockfile records
+```
+
+- It is held however it is loaded: by `require()`, by a call of
+  `process.dlopen()`, in a forked child process or in a worker.
+- The refusal is the load's own error, which the program may catch, as a
+  package that falls back from its addon to JavaScript does. The addon doesn't
+  run either way, and the run then writes nothing.
+- An addon neither artifact attests is loaded as it is, and none is recorded:
+  one built on install, or another platform's, breaks no run. `replace` reads
+  no artifact, so it holds no addon to one, and what it writes records none:
+  `stasis bundle` is what attests one.
+- In `node_modules` scope (`--dependencies`) the project's own addons are none
+  of the run's, as its other files aren't.
+- One loaded before the run has read its artifacts, as a
+  [preload](#preloads---import) loads its own, is held as soon as it has,
+  before the entry runs: the process keeps the one the preload loaded,
+  whatever requires it next. So a preload's addon is held wherever an artifact
+  attests it, though its modules are held only where the app reaches them.
+- The addon is read, and then Node opens it by its path: one put in its place
+  between the two is loaded unseen.
+
 ## Preloads (`--import`)
 
 `--import=./instrument.mjs` forwards a preload module to the node process
