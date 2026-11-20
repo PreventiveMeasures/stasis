@@ -195,6 +195,8 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
       'wrapper.js': `module.exports = ${REQUIRE}\n`,
       'wrapped.js': "console.log('wrapped', typeof require('./wrapper.js'))\n",
       'preload-wrapper.cjs': "require('./wrapper.js')\nconsole.log('preloaded')\n",
+      // As a preload that wraps the app requires its entry, which is then run from the cache.
+      'preload-entry.cjs': "require('./index.js')\n",
     })
     await attest(t, tmp, ['--lock=frozen'], ['index.js', 'plain.js', 'wrapped.js'])
     const preloaded = (entry, preload = 'preload.cjs') => ['--lock=frozen', `--import=./${preload}`, entry]
@@ -202,6 +204,7 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
     await Promise.all([
       loads(t, tmp, preloaded('index.js'), 'preloaded object\nloaded object\n'),
       loads(t, tmp, preloaded('wrapped.js', 'preload-wrapper.cjs'), 'preloaded\nwrapped object\n'),
+      loads(t, tmp, preloaded('index.js', 'preload-entry.cjs')),
     ])
     swap(tmp)
     await Promise.all([
@@ -211,6 +214,8 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
       refuses(t, tmp, preloaded('index.js'), 'lockfile records', 'preloaded object\n'),
       // As is its require() of the preload's module that loaded it, cached with it.
       refuses(t, tmp, preloaded('wrapped.js', 'preload-wrapper.cjs'), 'lockfile records', 'preloaded\n'),
+      // And the entry itself, where the preload ran it: the run has no State until it resolves.
+      refuses(t, tmp, preloaded('index.js', 'preload-entry.cjs'), 'lockfile records', 'loaded object\n'),
     ])
   }))
 

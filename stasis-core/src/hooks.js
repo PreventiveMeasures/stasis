@@ -440,11 +440,12 @@ function resolve(specifier, context, nextResolve) {
   assert.equal(res.importAttributes, undefined) // unsupported yet
   if (parentURL) assert.ok(state)
   if (parentURL) missIfExcluded(specifier, parentURL, url, conditions)
-  holdInfraAddons(url)
   if (infraUrls.has(url)) {
+    // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root. Before the addons
+    // loaded for it are held, which takes a State.
+    if (infraSources.has(url) && !state) initStateFromPackage(url)
+    holdInfraAddons(url)
     if (infraSources.has(url)) {
-      // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
-      if (!state) initStateFromPackage(url)
       const isEntry = !parentURL && entryUnseen
       if (isEntry) entryUnseen = false
       promoteInfraUrl(url, { isEntry })
@@ -493,7 +494,8 @@ function holdNativeAddon(url, loaded) {
 // what it loaded took. None is loaded anew, so each is held as the preload loaded it, as its module the app
 // reaches is (assertInfraMatchesBundle). Before a promotion, which drops the edges followed here.
 function holdInfraAddons(url) {
-  if (infraAddons.size === 0 || entryUnresolved) return
+  // With no State yet none is held, and none is dropped as though it were.
+  if (infraAddons.size === 0 || entryUnresolved || !state) return
   const reached = new Set([url])
   // A Set visits what is added to it.
   for (const at of reached) {
