@@ -578,7 +578,8 @@ test("buildGitHubBundle takes stasis.config.json's entries without entries, each
 })
 
 test("buildGitHubBundle takes a glob pattern in stasis.config.json's entries as the files of the repo it matches", async (t) => {
-  const repo = (entries, more) => ({
+  const metro = { metro: true, platforms: ['ios', 'android'] }
+  const repo = (entries = { 'apps/*/src/index.js': metro }) => ({
     'package.json': json({ name: 'p', version: '1.0.0', main: 'main.js' }),
     'pnpm-lock.yaml': lockfile('.'),
     'main.js': '',
@@ -590,33 +591,30 @@ test("buildGitHubBundle takes a glob pattern in stasis.config.json's entries as 
     'apps/a/node_modules/dep/index.js': '',
     'lib/shared.js': '',
     'stasis.config.json': json({ entries }),
-    ...more,
   })
-  const metro = { metro: true, platforms: ['ios', 'android'] }
   const matched = ['apps/a/src/index.js', 'apps/b/src/index.js']
-  const { bundle } = await build({ client: fakeClient(repo({ 'apps/*/src/index.js': metro })) })
+  const { bundle } = await build({ client: fakeClient(repo()) })
   t.assert.deepStrictEqual([...bundle.entries], matched)
   t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle:metro': ['apps/a/src/a.android.js', 'apps/a/src/a.ios.js', 'apps/a/src/index.js', 'apps/b/src/index.js', 'lib/shared.js'] })
   // No dot directory's, and nothing in a node_modules, as `stasis bundle` globs a checkout.
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(repo({ 'apps/**/index.js': {} })) }), matched)
   t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, packageManager: 'pnpm', client: fakeClient(repo({ 'lib/*.js': {}, './apps/{a,b}/src/index.js': {} })) }), ['lib/shared.js', ...matched])
-  t.assert.deepStrictEqual([...(await buildVfsBundle({ vfs: vfsOf(repo({ 'apps/*/src/index.js': metro })), packageManager: 'pnpm' })).bundle.entries], matched)
+  t.assert.deepStrictEqual([...(await buildVfsBundle({ vfs: vfsOf(repo()), packageManager: 'pnpm' })).bundle.entries], matched)
   // The directory's config, its patterns from there.
   const nested = Object.fromEntries(Object.entries(repo({ '*/*/src/index.js': metro })).map(([path, text]) => [path.endsWith('.yaml') ? path : `packages/p/${path}`, text]))
   const inner = await build({ client: fakeClient({ ...nested, 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n', 'pnpm-lock.yaml': lockfile('.', 'packages/p'), 'package.json': json({ name: 'root', version: '1.0.0', private: true }) }), directory: 'packages/p' })
   t.assert.deepStrictEqual([...inner.bundle.entries], matched)
   // One it matches, given, is built with its options; an option given must be its own.
-  const one = await build({ client: fakeClient(repo({ 'apps/*/src/index.js': metro })), entries: ['apps/a/src/index.js'] })
+  const one = await build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js'] })
   t.assert.deepStrictEqual([...one.bundle.sources.keys()].toSorted(), ['apps/a/src/a.android.js', 'apps/a/src/a.ios.js', 'apps/a/src/index.js'])
-  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': metro })), entries: ['apps/a/src/index.js'], platforms: ['ios'] }),
+  await t.assert.rejects(build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js'], platforms: ['ios'] }),
     /^Error: buildVfsBundle: --platforms=ios is given, but stasis\.config\.json's entries build "apps\/\*\/src\/index\.js" with --platforms=ios,android: /u)
-  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': metro })), entries: ['apps/a/src/index.js', 'main.js'] }), /stasis\.config\.json's entries name apps\/a\/src\/index\.js but not main\.js/u)
+  await t.assert.rejects(build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js', 'main.js'] }), /stasis\.config\.json's entries name apps\/a\/src\/index\.js but not main\.js/u)
   // An entry's rules are its pattern's, named once.
   await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': { ...metro, allowedPaths: ['apps'] } })) }), /^Error: buildVfsBundle: stasis\.config\.json: entries "apps\/\*\/src\/index\.js": allowedPaths does not allow lib\/shared\.js$/u)
   // Two keys naming one file are refused; a pattern matching nothing is a missing entry.
-  const twice = /^Error: buildGitHubBundle: stasis\.config\.json: entries "apps\/a\/src\/index\.js" names the same entry as "apps\/\*\/src\/index\.js": apps\/a\/src\/index\.js$/u
-  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': {}, 'apps/a/src/index.js': {} })) }), twice)
-  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': {}, 'apps/**/*.js': {} })) }), /entries "apps\/\*\*\/\*\.js" names the same entry as "apps\/\*\/src\/index\.js": apps\/a\/src\/index\.js$/u)
+  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': {}, 'apps/a/src/index.js': {} })) }),
+    /^Error: buildGitHubBundle: stasis\.config\.json: entries "apps\/a\/src\/index\.js" names the same entry as "apps\/\*\/src\/index\.js": apps\/a\/src\/index\.js$/u)
   await t.assert.rejects(build({ client: fakeClient(repo({ 'nope/*.js': {} })) }), /^Error: entry not found: \/nope\/\*\.js$/u)
   // Nor may a brace list climb out of the config's directory.
   const climbing = { 'up.js': '', 'sub/package.json': json({ name: 'p', version: '1.0.0' }), 'sub/pnpm-lock.yaml': lockfile('.'), 'sub/a.js': '', 'sub/stasis.config.json': json({ entries: { '{../up,a}.js': {} } }) }

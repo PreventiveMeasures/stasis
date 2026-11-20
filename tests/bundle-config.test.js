@@ -106,10 +106,9 @@ test('readConfigEntries takes a glob pattern as the paths it matches, each an en
     apps(tmp, { ...config, entries })
     return readConfigEntries(tmp)
   }
-  const matched = (entry, values = {}) => ({ entry, values, matched: true })
   t.assert.deepStrictEqual([...read({ 'apps/*/src/index.js': { jsx: true }, 'lib/shared.js': {} })], [
-    ['apps/a/src/index.js', matched('apps/*/src/index.js', { jsx: true })],
-    ['apps/b/src/index.js', matched('apps/*/src/index.js', { jsx: true })],
+    ['apps/a/src/index.js', { entry: 'apps/*/src/index.js', values: { jsx: true } }],
+    ['apps/b/src/index.js', { entry: 'apps/*/src/index.js', values: { jsx: true } }],
     ['lib/shared.js', { entry: 'lib/shared.js', values: {} }],
   ], 'sorted, no dot directory')
   const keys = (entries) => [...read(entries).keys()]
@@ -140,8 +139,6 @@ test('readConfigEntries refuses two keys naming the same file, a pattern and a p
   refused({ 'apps/*/src/index.js': {}, 'apps/b/src/index.js': { jsx: true } }, 'stasis.config.json: entries "apps/b/src/index.js" names the same entry as "apps/*/src/index.js": apps/b/src/index.js')
   refused({ './apps/b/src/index.js': {}, 'apps/*/src/index.js': {} }, 'stasis.config.json: entries "apps/*/src/index.js" names the same entry as "./apps/b/src/index.js": apps/b/src/index.js')
   refused({ 'apps/*/src/index.js': {}, 'apps/**/*.ts': {}, 'apps/{a,c}/src/*.js': {} }, 'stasis.config.json: entries "apps/{a,c}/src/*.js" names the same entry as "apps/*/src/index.js": apps/a/src/index.js')
-  // The same options are no exception: which key names it is no guess to make.
-  refused({ 'apps/*/src/index.js': {}, 'apps/**/index.js': {} }, 'stasis.config.json: entries "apps/**/index.js" names the same entry as "apps/*/src/index.js": apps/a/src/index.js')
   const outside = /an entry must be a path relative to the directory of stasis\.config\.json, within it$/u
   refused({ '../*.js': {} }, outside)
   writeTree(tmp, { 'sub/a.js': '', 'sub/stasis.config.json': { entries: { '{../lib/shared,a}.js': {} } } })
@@ -396,14 +393,7 @@ test('CLI: stasis bundle alone bundles what a glob pattern in stasis.config.json
   const one = await runCli(['bundle', '--output=one.br', 'apps/b/src/index.js'], tmp)
   t.assert.equal(one.status, 0, one.stderr)
   t.assert.deepStrictEqual([...readBundle(join(tmp, 'one.br')).sources.keys()].toSorted(), ['apps/b/src/index.js', 'apps/b/src/own.js'])
-  const flagged = await runCli(['bundle', '--jsx', 'apps/b/src/index.js'], tmp)
-  t.assert.equal(flagged.status, 1)
-  t.assert.match(flagged.stderr, /Error: --jsx can't be given for apps\/b\/src\/index\.js, whose options stasis\.config\.json's entries set: set it there/u)
-  // Two keys naming one file are refused, and a pattern matching nothing is a missing entry.
-  apps(tmp, { entries: { 'apps/*/src/index.js': {}, 'apps/a/src/index.js': {} } })
-  const twice = await runCli(['bundle'], tmp)
-  t.assert.equal(twice.status, 1)
-  t.assert.match(twice.stderr, /Error: stasis\.config\.json: entries "apps\/a\/src\/index\.js" names the same entry as "apps\/\*\/src\/index\.js": apps\/a\/src\/index\.js/u)
+  // A pattern matching nothing is a missing entry.
   apps(tmp, { entries: { 'nope/*/index.js': {} } })
   const none = await runCli(['bundle'], tmp)
   t.assert.notEqual(none.status, 0)

@@ -165,10 +165,9 @@ itself as well as its own consumer's (`run`, `bundle`). They are never entries.
 `entries` names `stasis bundle`'s entries, each with the flags it is built with,
 as [Entry options](bundle.md#entry-options-stasisconfigjson) describes, and
 `stasis github-bundle`'s, but none that runs a program (see its
-[Entries](github-bundle.md#entries)). A key is an entry's path, or a glob
-pattern standing for the paths it matches, globbed as `extra`'s are, but for
-`node_modules` (see [Entry patterns](bundle.md#entry-patterns)); two keys
-naming the same file are refused. `stasis audit` with no file audits the
+[Entries](github-bundle.md#entries)). A key is an entry's path, or a
+[glob pattern](bundle.md#entry-patterns) standing for the paths it matches.
+`stasis audit` with no file audits the
 bundle a bare `stasis bundle` builds of them, unwritten (see
 [audit](audit.md)). `stasis run` takes nothing from it.
 
