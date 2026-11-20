@@ -65,8 +65,10 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis bundle --mainFields=react-native,browser,main app.js` | statically bundle honoring legacy package `mainFields` |
 | `stasis bundle --metro --platforms=ios,android app.js` | statically bundle the way Metro resolves, all platforms at once |
 | `stasis bundle --typescript src/index.ts` | statically bundle TS sources, resolving `./x.js` imports to `./x.ts` as tsc does |
+| `stasis bundle --typescript --resources=css apps/web/next.config.ts` | statically bundle a Next.js app, its `next.config.*` standing for the files `next build` takes |
 | `stasis add src assets` | add files to the project's bundles as-is, with no dependency resolution |
 | `stasis github-bundle --github=owner/name --sha=<commit> src/index.js` | statically bundle a GitHub repo at a commit, with nothing installed |
+| `stasis github-bundle owner/name/apps/web --sha=<commit> --resources=css` | statically bundle the Next.js app in a repo's `apps/web`, by its `next.config.*`, with nothing installed |
 | `stasis build --output=out.js app.stasis.code.br [entry]` | rebuild a runnable JS bundle with esbuild, following the bundle's recorded import graph exactly |
 | `stasis build --output=out.js stasis.lock.json [entry]` | same, reading + verifying sources from disk against the lockfile |
 | `stasis build --platform=hermes --metro=ios --assets-dest=dist --output=main.js app.stasis.code.br` | build a `--metro` bundle for one platform as Metro does: its `.ios` files, assets as Metro's asset modules, their files copied out |

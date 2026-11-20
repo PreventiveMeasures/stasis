@@ -13,6 +13,7 @@ import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, isFile, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
+import { withNextEntries } from '../next-entries.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
@@ -1616,7 +1617,7 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
 }
 
 // From disk, with stasis.config.json's `extra` unless `extra` is false (one of several builds), not yet pinned.
-async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, policy, outputsAt = () => [], extra = true }) {
+async function buildOfKind(kind, { name, cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, policy, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
   if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
@@ -1624,7 +1625,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
   if (kind === 'teal') return withExtraOf({ bundle: await buildTealBundle({ cwd, entries }) })
   if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
-  const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, policy, extra, outputsAt })
+  const built = await buildJs({ cwd, env, entries: withNextEntries(name, entries, resolve(cwd)), scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, policy, extra, outputsAt })
   return built.stateBuilt ? built : withExtraOf(built, resources)
 }
 
@@ -1763,8 +1764,10 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // The builds stasis.config.json's `entries` makes, whose union takes `extra` once; else the options given, with
   // its `define` all the same.
   const configured = plan === undefined ? configuredBuilds(name, { cwd, host: project, entries: options.entries, options }) : null
-  const { builds, bundleExtra } = plan ?? { builds: configured?.builds ?? [withConfigDefine(name, options, { cwd, host: project })], bundleExtra: configured !== null }
-  if (builds.length === 0) throw new Error(`${name}: no entries given, and ${CONFIG_FILE}'s entries name none`)
+  const { builds: planned, bundleExtra } = plan ?? { builds: configured?.builds ?? [withConfigDefine(name, options, { cwd, host: project })], bundleExtra: configured !== null }
+  if (planned.length === 0) throw new Error(`${name}: no entries given, and ${CONFIG_FILE}'s entries name none`)
+  // A next.config.* entry with the files of its app, as each is read below: checked, and reached for Prisma.
+  const builds = planned.map((build) => ({ ...build, entries: withNextEntries(name, build.entries, cwd, project) }))
   // That the Vfs can be globbed for `extra` is checked before anything is fetched.
   if (parseExtraOption(CONFIG_FILE, readConfigFile(name, cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()
   const installDevDependencies = installsDevDependencies(name, cwd, project)
@@ -1955,7 +1958,7 @@ function reportedRounds(attempt, unpack) {
 // `stasis bundle`'s Bundle, not written, a JS one held to the project's stasis.lock.json as `stasis bundle` holds it.
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
-  const built = await buildOfKind(classifyEntries('buildBundle', options), options)
+  const built = await buildOfKind(classifyEntries('buildBundle', options), { ...options, name: 'buildBundle' })
   const root = built.root ?? resolve(cwd)
   assertPolicies('buildBundle', { bundle: built.bundle, root })
   heldOf(pinnedOf(built, root), root, { cwd, env })?.loads(built.bundle)
@@ -2200,7 +2203,7 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     const builts = []
     for (const [i, plan] of plans.entries()) {
       // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-      builts.push(await buildOfKind(kinds[i], { ...plan, outputsAt, extra: !bundleExtra }))
+      builts.push(await buildOfKind(kinds[i], { ...plan, name: 'bundleCommand', outputsAt, extra: !bundleExtra }))
     }
     // A State-built JS bundle's paths are relative to the project's root at or above cwd.
     const roots = builts.map((built) => built.root ?? resolve(cwd))
