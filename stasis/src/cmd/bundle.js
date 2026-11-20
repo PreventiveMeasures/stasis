@@ -8,7 +8,7 @@ import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Config, assertOption } from '@exodus/stasis-core/config'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { assembleBundle, expandExtra, validateFiles } from '@exodus/stasis-core/add'
-import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec, scan, scanCounts } from '../scan.js'
+import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec, scan, scanCounts, walkAst } from '../scan.js'
 import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, isFile, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
@@ -746,16 +746,6 @@ function requireFrom(dir, spec, host) {
 }
 
 const parseModule = (file, host, source = host.readFile(file).toString('utf8')) => getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program
-
-function walkAst(node, fn) {
-  if (Array.isArray(node)) {
-    for (const child of node) walkAst(child, fn)
-    return
-  }
-  if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
-  fn(node)
-  for (const key of Object.keys(node)) if (key !== 'type') walkAst(node[key], fn)
-}
 
 // The method `node` calls (`x.concat(...)` -> 'concat'), on the object named `object` where given.
 function memberCall(node, object) {
@@ -1625,7 +1615,7 @@ async function buildOfKind(kind, { name, cwd, env, entries, mappingFile, manifes
   if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
   if (kind === 'teal') return withExtraOf({ bundle: await buildTealBundle({ cwd, entries }) })
   if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
-  const built = await buildJs({ cwd, env, entries: withNextEntries(name, entries, resolve(cwd)), scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, policy, extra, outputsAt })
+  const built = await buildJs({ cwd, env, entries: withNextEntries(name, entries, cwd), scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, policy, extra, outputsAt })
   return built.stateBuilt ? built : withExtraOf(built, resources)
 }
 

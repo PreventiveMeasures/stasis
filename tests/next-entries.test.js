@@ -20,12 +20,12 @@ const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin',
 const writeTree = (dir, files) => {
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true })
-    writeFileSync(join(dir, rel), typeof content === 'string' ? content : JSON.stringify(content))
+    writeFileSync(join(dir, rel), content)
   }
 }
 
 const filesOf = (dir, files, config = 'next.config.mjs') => {
-  writeTree(dir, { 'package.json': { name: 'web', version: '1.0.0', private: true }, [config]: 'export default {}\n', ...files })
+  writeTree(dir, { [config]: 'export default {}\n', ...files })
   return nextAppFiles('t', join(dir, config))
 }
 
@@ -112,7 +112,7 @@ test('nextAppFiles takes every page of the Pages Router, beside the app director
   t.assert.deepStrictEqual(files, ['app/page.tsx', 'middleware.js', 'pages/404.js', 'pages/_app.tsx', 'pages/_document.tsx', 'pages/api/hello.ts', 'pages/blog/[slug].jsx', 'pages/blog/_helper.ts', 'pages/index.tsx'])
 }))
 
-test('nextAppFiles takes src/app and src/pages where the app has none of its own', withTmp(async (t, tmp) => {
+test('nextAppFiles takes src/app and src/pages where the app has none of its own', withTmp((t, tmp) => {
   // Its proxy and instrumentation beside them, in src/; the client's instrumentation in src/ before the root.
   t.assert.deepStrictEqual(filesOf(join(tmp, 'a'), {
     'src/app/page.tsx': '',
@@ -127,19 +127,19 @@ test('nextAppFiles takes src/app and src/pages where the app has none of its own
   t.assert.deepStrictEqual(filesOf(join(tmp, 'b'), { 'app/page.tsx': '', 'src/app/page.tsx': '', 'instrumentation-client.js': '' }), ['app/page.tsx', 'instrumentation-client.js'])
   t.assert.throws(() => filesOf(join(tmp, 'c'), { 'app/page.tsx': '', 'src/pages/index.tsx': '' }), /^Error: t: .*next\.config\.mjs: its app's pages and app directories are not in the same directory \(.*src\/pages, .*app\), which Next refuses$/u)
   // None at all: no app, the config alone.
-  t.assert.equal(filesOf(join(tmp, 'd'), { 'src/index.ts': '', 'pages.ts': '' }), null)
+  t.assert.deepStrictEqual(filesOf(join(tmp, 'd'), { 'src/index.ts': '', 'pages.ts': '' }), [])
 }))
 
 test('nextAppFiles takes the pageExtensions the config lists, and refuses those it can\'t read', withTmp((t, tmp) => {
   const tree = { 'app/page.tsx': '', 'app/page.page.tsx': '', 'app/x/route.page.ts': '', 'pages/index.page.tsx': '', 'pages/util.tsx': '', 'pages/a.page.test.tsx': '' }
   // As a property, quoted or not, or assigned, in a config of any of Next's names.
   const configs = {
-    'next.config.mjs': "export default { pageExtensions: ['page.tsx', 'page.ts'] }\n",
+    'next.config.mjs': "export default { pageExtensions: ['page.tsx', `page.ts`] }\n",
     'next.config.js': "module.exports = { 'pageExtensions': [\"page.tsx\", 'page.ts'] }\n",
     'next.config.ts': "import type { NextConfig } from 'next'\nconst config: NextConfig = {}\nconfig.pageExtensions = ['page.tsx', 'page.ts']\nexport default config satisfies NextConfig\n",
   }
   for (const [config, source] of Object.entries(configs)) {
-    t.assert.deepStrictEqual(filesOf(join(tmp, config.split('.').at(-1)), { ...tree, [config]: source }, config), ['app/page.page.tsx', 'app/x/route.page.ts', 'pages/index.page.tsx'], config)
+    t.assert.deepStrictEqual(filesOf(join(tmp, config), { ...tree, [config]: source }, config), ['app/page.page.tsx', 'app/x/route.page.ts', 'pages/index.page.tsx'], config)
   }
   const refused = {
     variable: "const pageExtensions = ['tsx']\nexport default { pageExtensions }\n",
@@ -164,7 +164,7 @@ test('nextAppFiles takes the pageExtensions the config lists, and refuses those 
 test('nextAppFiles follows links as Next lists the app directory', withTmp((t, tmp) => {
   writeTree(tmp, { 'shared/routes/page.tsx': '', 'shared/layout.tsx': '' })
   const app = join(tmp, 'web')
-  writeTree(app, { 'package.json': { name: 'web', version: '1.0.0' }, 'next.config.mjs': 'export default {}\n', 'app/page.tsx': '' })
+  writeTree(app, { 'next.config.mjs': 'export default {}\n', 'app/page.tsx': '' })
   symlinkSync(join(tmp, 'shared', 'routes'), join(app, 'app', 'linked'))
   symlinkSync(join(tmp, 'shared', 'layout.tsx'), join(app, 'app', 'layout.tsx'))
   symlinkSync(join(tmp, 'nowhere'), join(app, 'app', 'broken'))
@@ -174,7 +174,7 @@ test('nextAppFiles follows links as Next lists the app directory', withTmp((t, t
 }))
 
 test('withNextEntries spells an app\'s files from its next.config.* entry, each once', withTmp((t, tmp) => {
-  writeTree(join(tmp, 'apps/web'), { 'package.json': { name: 'web', version: '1.0.0' }, 'next.config.ts': 'export default {}\n', 'app/page.tsx': '', 'app/layout.tsx': '' })
+  writeTree(join(tmp, 'apps/web'), { 'next.config.ts': 'export default {}\n', 'app/page.tsx': '', 'app/layout.tsx': '' })
   writeTree(tmp, { 'apps/cli.ts': '', 'apps/none/next.config.js': 'module.exports = {}\n' })
   t.assert.deepStrictEqual(withNextEntries('t', ['apps/cli.ts', './apps/web/app/page.tsx', 'apps/web/next.config.ts', 'apps/web/app/layout.tsx'], tmp), ['apps/cli.ts', './apps/web/app/page.tsx', 'apps/web/next.config.ts', 'apps/web/app/layout.tsx'])
   t.assert.deepStrictEqual(withNextEntries('t', ['apps/web/next.config.ts'], tmp), ['apps/web/next.config.ts', 'apps/web/app/layout.tsx', 'apps/web/app/page.tsx'])
@@ -200,20 +200,20 @@ const nextApp = {
   'app/api/hello/route.ts': "export const GET = () => Response.json({ hello: 'world' })\n",
   'proxy.ts': 'export function proxy() {}\n',
 }
-const NEXT_ENTRIES = ['next.config.mjs', 'app/api/hello/route.ts', 'app/layout.tsx', 'app/page.tsx', 'proxy.ts']
+const NEXT_ENTRIES = ['app/api/hello/route.ts', 'app/layout.tsx', 'app/page.tsx', 'next.config.mjs', 'proxy.ts']
 const NEXT_SOURCES = [...NEXT_ENTRIES, 'components/nav.tsx', 'lib/headers.mjs', 'lib/title.ts'].toSorted()
 
 test('stasis bundle builds a next.config.* entry as the app\'s entries, with the entry\'s options', withTmp(async (t, tmp) => {
   writeTree(tmp, nextApp)
   const bundle = await buildBundle({ cwd: tmp, entries: ['next.config.mjs'], typescript: true })
-  t.assert.deepStrictEqual([...bundle.entries].toSorted(), NEXT_ENTRIES.toSorted())
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), NEXT_ENTRIES)
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), NEXT_SOURCES)
   // Named in stasis.config.json's entries, its options are those of every file of the app.
-  writeTree(tmp, { 'stasis.config.json': { entries: { 'next.config.mjs': { typescript: true } } } })
+  writeTree(tmp, { 'stasis.config.json': json({ entries: { 'next.config.mjs': { typescript: true } } }) })
   const r = await runCli(['bundle', '--output=web.br'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
   const configured = readBundle(join(tmp, 'web.br'))
-  t.assert.deepStrictEqual([...configured.entries].toSorted(), NEXT_ENTRIES.toSorted())
+  t.assert.deepStrictEqual([...configured.entries].toSorted(), NEXT_ENTRIES)
   t.assert.deepStrictEqual([...configured.sources.keys()].toSorted(), NEXT_SOURCES)
 }))
 
@@ -225,16 +225,18 @@ const workspace = {
   ...Object.fromEntries(Object.entries(nextApp).map(([file, content]) => [`apps/web/${file}`, content])),
 }
 
+const buildWorkspace = (options) => buildGitHubBundle({ github: 'ExodusOSS/example', sha: 'a'.repeat(40), packageManager: 'pnpm', client: fakeClient(workspace), ...options })
+
 test('buildGitHubBundle takes a Next app\'s next.config.* for its entries, and stands it for its files', async (t) => {
   // From the app's directory, its paths are the app's; from the root, the workspace's.
   const cases = { directory: [{ directory: 'apps/web' }, ''], path: [{ path: 'apps/web/next.config.mjs' }, ''], entry: [{ entries: ['apps/web/next.config.mjs'] }, 'apps/web/'] }
   await Promise.all(Object.entries(cases).map(async ([what, [options, at]]) => {
-    const { bundle } = await buildGitHubBundle({ github: 'ExodusOSS/example', sha: 'a'.repeat(40), packageManager: 'pnpm', client: fakeClient(workspace), typescript: true, ...options })
-    t.assert.deepStrictEqual([...bundle.entries].toSorted(), NEXT_ENTRIES.map((file) => `${at}${file}`).toSorted(), what)
+    const { bundle } = await buildWorkspace({ typescript: true, ...options })
+    t.assert.deepStrictEqual([...bundle.entries].toSorted(), NEXT_ENTRIES.map((file) => `${at}${file}`), what)
     t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), NEXT_SOURCES.map((file) => `${at}${file}`), what)
   }))
   // Without --typescript, which the `@/` alias takes, built with it all the same.
-  const { bundle } = await buildGitHubBundle({ github: 'ExodusOSS/example', sha: 'a'.repeat(40), packageManager: 'pnpm', client: fakeClient(workspace), directory: 'apps/web' })
+  const { bundle } = await buildWorkspace({ directory: 'apps/web' })
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), NEXT_SOURCES)
   // A package.json naming an entry keeps it, its next.config.* left out.
   const named = { ...workspace, 'apps/web/package.json': json({ name: 'web', version: '1.0.0', main: 'lib/headers.mjs' }) }
