@@ -1,8 +1,8 @@
-import { isAbsolute, relative, resolve } from 'node:path'
+import { basename, isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
-import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, toPosix, upsert } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, sortedByPath, toPosix, upsert } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
@@ -244,8 +244,23 @@ function configDefine(config) {
 // The `define` of the stasis.config.json in `cwd`, as the --define flags it gives every JS entry, or undefined.
 export const readConfigDefine = (cwd = process.cwd(), host = diskHost) => configDefine(readConfigFile(undefined, cwd, host))
 
+// The entryKeys a key of `entries` names: its own, or those it matches as a glob pattern, as `extra`'s glob (Node's,
+// whose `*` skips dotfiles) finds them, none in a node_modules: a build laying its tree out from the lockfile globs
+// before any is there. Matching nothing, it stands for itself, as a shell's. Null where it, or a match, is out of
+// `cwd`, which a brace list may yet build a `..` to climb out of (`..{,a}/b.js`).
+function keysNamed(what, cwd, entry, host) {
+  const key = isAbsolute(entry) ? null : entryKey(cwd, entry)
+  if (key === null) return null
+  if (!isGlobPattern(entry)) return [key]
+  const found = host.glob(entryGlob(what, entry), { cwd, exclude: (path) => basename(path) === 'node_modules' }).map((path) => entryKey(cwd, path))
+  if (found.includes(null)) return null
+  // Node holds `exclude` to its `**` alone.
+  const matches = sortedByPath(new Set(found.filter((path) => !hasNodeModulesSegment(path))))
+  return matches.length > 0 ? matches : [key]
+}
+
 // The `entries` of the stasis.config.json in `cwd`, by entryKey; an entry's own Policy is held beside the config's.
-// A JS entry takes the config's own `define` as its own.
+// A glob pattern's matches are each an entry of its options. A JS entry takes the config's own `define` as its own.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const config = readConfigFile(undefined, cwd, host)
   const define = configDefine(config)
@@ -255,16 +270,21 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const named = new Map()
   for (const [entry, options] of Object.entries(entries)) {
     const what = `${CONFIG_FILE}: entries ${JSON.stringify(entry)}`
-    const key = isAbsolute(entry) ? null : entryKey(cwd, entry)
-    if (key === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
-    if (named.has(key)) throw new Error(`${what} names the same entry as ${JSON.stringify(named.get(key).entry)}`)
+    const keys = keysNamed(what, cwd, entry, host)
+    if (keys === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
     const values = entryFlags(what, options)
-    if (define !== undefined && isJsEntry(key)) values.define = define
     const policy = parsePolicy(what, options)
-    named.set(key, { entry, values, ...(policy !== null && { policy }) })
+    for (const key of keys) {
+      const same = named.get(key)
+      if (same !== undefined) throw new Error(`${what} names the same entry as ${JSON.stringify(same.entry)}: ${key}`)
+      named.set(key, { entry, values: define !== undefined && isJsEntry(key) ? { ...values, define } : values, ...(policy !== null && { policy }) })
+    }
   }
   return named
 }
+
+// The entries `config` names, to bundle with none given: each as written, a pattern's as the paths it stands for.
+export const configEntries = (config) => [...(config ?? [])].map(([key, { entry }]) => (isGlobPattern(entry) ? key : entry))
 
 // Where `config` names every entry, each is built with its options there, the flags given only the bundle's own
 // and the consent its CONSENT_FLAGS need; where it names none, all are built with the flags. Either way, JS entries
@@ -319,9 +339,10 @@ function addToBuild(builds, entry, named, options, language) {
   build.written.push(named.entry)
 }
 
+// A pattern's entries are written once.
 function withPolicies(builds, prefix = '') {
   return [...builds.values()].map(({ written, policy, ...build }) => (policy === undefined ? build
-    : { ...build, policy: policy.withLabel(`${prefix}${CONFIG_FILE}: entries ${written.map((entry) => JSON.stringify(entry)).join(', ')}`) }))
+    : { ...build, policy: policy.withLabel(`${prefix}${CONFIG_FILE}: entries ${[...new Set(written)].map((entry) => JSON.stringify(entry)).join(', ')}`) }))
 }
 
 const OPTION_FLAGS = {

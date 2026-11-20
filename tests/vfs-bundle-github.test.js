@@ -577,6 +577,50 @@ test("buildGitHubBundle takes stasis.config.json's entries without entries, each
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient({ ...foundry, 'stasis.config.json': json({ entries: {} }) }) }), /: no entries given, and the repo root has a stasis\.config\.json whose entries name none$/u)
 })
 
+test("buildGitHubBundle takes a glob pattern in stasis.config.json's entries as the files of the repo it matches", async (t) => {
+  const metro = { metro: true, platforms: ['ios', 'android'] }
+  const repo = (entries = { 'apps/*/src/index.js': metro }) => ({
+    'package.json': json({ name: 'p', version: '1.0.0', main: 'main.js' }),
+    'pnpm-lock.yaml': lockfile('.'),
+    'main.js': '',
+    'apps/b/src/index.js': "require('../../../lib/shared')\n",
+    'apps/a/src/index.js': "require('./a')\n",
+    'apps/a/src/a.ios.js': '',
+    'apps/a/src/a.android.js': '',
+    'apps/.cache/src/index.js': '',
+    'apps/a/node_modules/dep/index.js': '',
+    'lib/shared.js': '',
+    'stasis.config.json': json({ entries }),
+  })
+  const matched = ['apps/a/src/index.js', 'apps/b/src/index.js']
+  const { bundle } = await build({ client: fakeClient(repo()) })
+  t.assert.deepStrictEqual([...bundle.entries], matched)
+  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle:metro': ['apps/a/src/a.android.js', 'apps/a/src/a.ios.js', 'apps/a/src/index.js', 'apps/b/src/index.js', 'lib/shared.js'] })
+  // No dot directory's, and nothing in a node_modules, as `stasis bundle` globs a checkout.
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(repo({ 'apps/**/index.js': {} })) }), matched)
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, packageManager: 'pnpm', client: fakeClient(repo({ 'lib/*.js': {}, './apps/{a,b}/src/index.js': {} })) }), ['lib/shared.js', ...matched])
+  t.assert.deepStrictEqual([...(await buildVfsBundle({ vfs: vfsOf(repo()), packageManager: 'pnpm' })).bundle.entries], matched)
+  // The directory's config, its patterns from there.
+  const nested = Object.fromEntries(Object.entries(repo({ '*/*/src/index.js': metro })).map(([path, text]) => [path.endsWith('.yaml') ? path : `packages/p/${path}`, text]))
+  const inner = await build({ client: fakeClient({ ...nested, 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n', 'pnpm-lock.yaml': lockfile('.', 'packages/p'), 'package.json': json({ name: 'root', version: '1.0.0', private: true }) }), directory: 'packages/p' })
+  t.assert.deepStrictEqual([...inner.bundle.entries], matched)
+  // One it matches, given, is built with its options; an option given must be its own.
+  const one = await build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js'] })
+  t.assert.deepStrictEqual([...one.bundle.sources.keys()].toSorted(), ['apps/a/src/a.android.js', 'apps/a/src/a.ios.js', 'apps/a/src/index.js'])
+  await t.assert.rejects(build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js'], platforms: ['ios'] }),
+    /^Error: buildVfsBundle: --platforms=ios is given, but stasis\.config\.json's entries build "apps\/\*\/src\/index\.js" with --platforms=ios,android: /u)
+  await t.assert.rejects(build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js', 'main.js'] }), /stasis\.config\.json's entries name apps\/a\/src\/index\.js but not main\.js/u)
+  // An entry's rules are its pattern's, named once.
+  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': { ...metro, allowedPaths: ['apps'] } })) }), /^Error: buildVfsBundle: stasis\.config\.json: entries "apps\/\*\/src\/index\.js": allowedPaths does not allow lib\/shared\.js$/u)
+  // Two keys naming one file are refused; a pattern matching nothing is a missing entry.
+  await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': {}, 'apps/a/src/index.js': {} })) }),
+    /^Error: buildGitHubBundle: stasis\.config\.json: entries "apps\/a\/src\/index\.js" names the same entry as "apps\/\*\/src\/index\.js": apps\/a\/src\/index\.js$/u)
+  await t.assert.rejects(build({ client: fakeClient(repo({ 'nope/*.js': {} })) }), /^Error: entry not found: \/nope\/\*\.js$/u)
+  // Nor may a brace list climb out of the config's directory.
+  const climbing = { 'up.js': '', 'sub/package.json': json({ name: 'p', version: '1.0.0' }), 'sub/pnpm-lock.yaml': lockfile('.'), 'sub/a.js': '', 'sub/stasis.config.json': json({ entries: { '..{,x}/up.js': {} } }) }
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(climbing), cwd: 'sub', packageManager: 'pnpm' }), /^Error: buildVfsBundle: stasis\.config\.json: entries "\.\.\{,x\}\/up\.js": an entry must be a path relative to the directory of stasis\.config\.json, within it$/u)
+})
+
 test("buildGitHubBundle builds stasis.config.json's entries with the options it sets that are left out", async (t) => {
   const app = ['a.android.js', 'a.ios.js', 'index.js']
   const sources = async (options) => [...(await build({ client: fakeClient(configuredRepo()), entries: ['index.js'], ...options })).bundle.sources.keys()].toSorted()
@@ -1186,7 +1230,7 @@ test('buildGitHubBundle refuses the extra files stasis bundle refuses', async (t
   await Promise.all(Object.entries(refused).map(([message, extra]) => t.assert.rejects(build({ client: fakeClient(repo(extra)), entries: ['src/a.js'] }), new RegExp(`^(Type)?Error: ${RegExp.escape(message)}$`, 'u'), message)))
 })
 
-test('buildGitHubBundle needs the optional minimatch for extra, and only for it: stasis bundle globs the disk without it', async (t) => {
+test('buildGitHubBundle needs the optional minimatch for extra and a pattern in entries, and only for them: stasis bundle globs the disk without it', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-minimatch-'))
   t.after(() => rm(tmp, { recursive: true, force: true }))
   const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '', 'tool.js': '', 'stasis.config.json': json({ extra: ['*.js'] }) }
@@ -1203,7 +1247,14 @@ test('buildGitHubBundle needs the optional minimatch for extra, and only for it:
       return [...bundle.sources.keys()]
     }
     const refusal = (extra) => sources(extra).then(() => null, (error) => error.message)
+    const configured = async (entries) => {
+      const client = fakeClient({ ...files, 'stasis.config.json': json({ entries }) })
+      const { bundle } = await buildGitHubBundle({ github: ${JSON.stringify(GITHUB)}, sha: ${JSON.stringify(SHA)}, packageManager: 'pnpm', client })
+      return [...bundle.sources.keys()]
+    }
     const out = {
+      pattern: await configured({ 'src/*.js': {} }).then(() => null, (error) => error.message),
+      named: await configured({ 'src/a.js': {}, './tool.js': {} }),
       refused: await refusal(['*.js']),
       // A config that sets \`extra\` at all names itself, which is globbed too.
       config: await refusal(['!tool.js']),
@@ -1220,10 +1271,12 @@ test('buildGitHubBundle needs the optional minimatch for extra, and only for it:
   const [status] = await once(child, 'close')
   t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderr).toString('utf8')}`)
   const out = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
-  const refusal = "A glob over a Vfs (stasis.config.json's extra) needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)"
+  const refusal = "A glob over a Vfs (stasis.config.json's extra, or a pattern in its entries) needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)"
   t.assert.equal(out.refused, refusal)
   t.assert.equal(out.config, refusal, '`!` entries alone, without `!stasis.config.json`, still name the config')
   t.assert.equal(out.empty, refusal, 'no entries still name the config')
+  t.assert.equal(out.pattern, `buildGitHubBundle: ${refusal}`, "a pattern in the config's entries")
+  t.assert.deepStrictEqual(out.named.toSorted(), ['src/a.js', 'tool.js'], 'entries named by their paths are globbed for nothing')
   t.assert.deepStrictEqual(out.exclusions, ['src/a.js'], 'nothing to glob')
   t.assert.deepStrictEqual(out.none, ['src/a.js'], 'no extra, no config named')
   t.assert.deepStrictEqual(out.disk, ['src/a.js', 'stasis.config.json', 'tool.js'], "the disk's globbed by Node's own")

@@ -278,7 +278,9 @@ The entries are paths in `--directory`, or in the repo. Without any (and no
 file given as `owner/name/path`), they are
 those the directory's `stasis.config.json` names in its
 [`entries`](bundle.md#entry-options-stasisconfigjson), where it has `entries`:
-nothing else stands in for them, so an empty one is refused. Else:
+nothing else stands in for them, so an empty one is refused. A
+[glob pattern](bundle.md#entry-patterns) among them names the files of the
+commit's tree it matches, as `stasis bundle` matches a checkout's. Else:
 
 - a JS bundle takes the JS files the directory's `package.json` names (`main`,
   each subpath of `exports`, each `bin`), resolved as the build resolves them
@@ -358,6 +360,10 @@ installed, a `stasis.config.json` whose `extra` names anything is refused, and
 one that sets it names itself (see [`extra`](file-formats.md#stasisconfigjson));
 one of `!` entries alone, `!stasis.config.json` among them, globs nothing. `stasis bundle` and `stasis run` glob the
 disk with Node's own, without it.
+
+A [glob pattern](bundle.md#entry-patterns) in the config's `entries` is
+globbed the same way, so it needs `minimatch` too, and never folds case; one
+whose `entries` are all paths globs nothing.
 
 ## Roots and paths
 

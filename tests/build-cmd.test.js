@@ -455,6 +455,39 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.match(bad.stderr, /stasis build: the artifact's stasis\.config\.json: define must be a string or an array of strings/u)
   }))
 
+  test("build takes the options of a glob pattern in the artifact's stasis.config.json's entries that matches the entry", withTmp(async (t, tmp) => {
+    const write = (entries, entry = 'apps/a/src/index.js') => writeFileSync(join(tmp, 'app.code.br'), brotliCompressSync(JSON.stringify({
+      version: 1,
+      config: { scope: 'full' },
+      entries: [entry],
+      sources: { '.': { name: 'x', version: '0.0.0', files: { [entry]: "console.log(__DEV__ ? 'DEV' : 'PROD')\n", 'stasis.config.json': JSON.stringify({ extra: [], entries }) } } },
+      modules: {},
+      formats: { [entry]: 'module', 'stasis.config.json': 'json' },
+      imports: { '*': {} },
+    })))
+    const built = async (entries, entry) => {
+      write(entries, entry)
+      const r = await runCli(['build', '--define=__DEV__=true', '--define=A=0', '--output=out.js', 'app.code.br'], { cwd: tmp })
+      t.assert.equal(r.status, 0, r.stderr)
+      return /: (.+), as stasis\.config\.json's entries (.+) sets/u.exec(r.stderr)?.slice(1) ?? null
+    }
+    t.assert.deepStrictEqual(await built({ './apps/*/src/index.js': { define: 'B=1' } }), ['--define=B=1', '"./apps/*/src/index.js"'])
+    t.assert.deepStrictEqual(await built({ 'lib/*.js': { define: 'B=1' }, 'apps/{a,b}/**/*.js': { define: 'B=2' } }), ['--define=B=2', '"apps/{a,b}/**/*.js"'])
+    // Its own path first, were a pattern to match it too.
+    t.assert.deepStrictEqual(await built({ 'apps/**': { define: 'B=1' }, 'apps/a/src/index.js': { define: 'B=2' } }), ['--define=B=2', '"apps/a/src/index.js"'])
+    // As `stasis bundle` matches it: no dotfile by a `*`, nothing in a node_modules.
+    t.assert.equal(await built({ 'apps/*/lib/*.js': { define: 'B=1' } }), null)
+    t.assert.equal(await built({ 'apps/*/src/index.js': { define: 'B=1' } }, 'apps/.a/src/index.js'), null)
+    t.assert.equal(await built({ '**/index.js': { define: 'B=1' } }, 'node_modules/dep/index.js'), null)
+    t.assert.deepStrictEqual(await built({ 'node_modules/dep/index.js': { define: 'B=1' } }, 'node_modules/dep/index.js'), ['--define=B=1', '"node_modules/dep/index.js"'])
+    // A pattern is matched as `stasis bundle` globs it, its braces whole: one walking through a `..` is refused, as there.
+    t.assert.deepStrictEqual(await built({ '{apps/a,lib}/src/*.js': { define: 'B=1' } }), ['--define=B=1', '"{apps/a,lib}/src/*.js"'])
+    write({ '{apps/a/src,lib}/../src/index.js': { define: 'B=1' } })
+    const walking = await runCli(['build', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(walking.status, 0)
+    t.assert.match(walking.stderr, /stasis build: the artifact's stasis\.config\.json: entries "\{apps\/a\/src,lib\}\/\.\.\/src\/index\.js": a glob pattern may hold no \. or \.\. segment but a leading \.\//u)
+  }))
+
   test('build externalizes a non-recorded specifier only when --external names it', withTmp(async (t, tmp) => {
     // The entry imports `ext-pkg`, which the artifact does NOT record (a capture-time
     // external). esbuild can't resolve it on disk (bare build dir), so the build fails --

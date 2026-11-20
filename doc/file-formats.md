@@ -34,7 +34,7 @@ it, or take it for another path.
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
 | `brotliQuality` | integer `0`–`11` | `6` | `EXODUS_STASIS_BROTLI_QUALITY` |
 | `extra` | array of paths and glob patterns | unset | none |
-| `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
+| `entries` | object of each entry's `stasis bundle` options, by its path or a glob pattern (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 | `define` | `"K=V"` or an array of them: every JS entry's `--define`s, which no entry's own `define` may be beside (see [Defines](bundle.md#defines---define)) | unset | none |
 | `installDevDependencies` | boolean | `true` | none |
 | `lazyDependencies` | boolean | `true` | none |
@@ -165,7 +165,9 @@ itself as well as its own consumer's (`run`, `bundle`). They are never entries.
 `entries` names `stasis bundle`'s entries, each with the flags it is built with,
 as [Entry options](bundle.md#entry-options-stasisconfigjson) describes, and
 `stasis github-bundle`'s, but none that runs a program (see its
-[Entries](github-bundle.md#entries)). `stasis audit` with no file audits the
+[Entries](github-bundle.md#entries)). A key is an entry's path, or a
+[glob pattern](bundle.md#entry-patterns) standing for the paths it matches.
+`stasis audit` with no file audits the
 bundle a bare `stasis bundle` builds of them, unwritten (see
 [audit](audit.md)). `stasis run` takes nothing from it.
 

@@ -106,6 +106,18 @@ export function parseExtraOption(label, extra) {
 
 export const extraPattern = (entry) => posix.normalize(unnegated(entry)).replace(/\/+$/u, '')
 
+// Whether Node's glob reads `path` as other than itself: a `*`, `?`, class, brace list or extglob. A name holding
+// none (`@scope/name`, `(group)`) is a path, globbed for nothing.
+export const isGlobPattern = (path) => /[*?[{]|[!+@]\(/u.test(path)
+
+// A glob pattern of `entries` as a tree is globbed for it and a path matched against it alike: as written, but for a
+// leading `./`. A `.` or `..` in it is refused: a glob over a tree walks through one, a match of a path can't.
+export function entryGlob(label, key) {
+  const pattern = toPosix(key).replace(/^(?:\.\/)+/u, '')
+  if (/(?:^|[/{,])\.\.?(?=[/},]|$)/u.test(pattern)) throw new Error(`${label}: a glob pattern may hold no . or .. segment but a leading ./`)
+  return pattern
+}
+
 // Paths from the config's dir, which `../` may climb out of to a workspace root's.
 export function parseLockfilesOption(label, lockfiles) {
   if (lockfiles === undefined) return undefined

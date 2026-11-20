@@ -27,7 +27,7 @@ export function loadMinimatch(what) {
   return minimatch
 }
 
-const lazyMinimatch = () => loadMinimatch("A glob over a Vfs (stasis.config.json's extra)")
+const lazyMinimatch = () => loadMinimatch("A glob over a Vfs (stasis.config.json's extra, or a pattern in its entries)")
 
 export const checkGlob = () => void lazyMinimatch()
 
