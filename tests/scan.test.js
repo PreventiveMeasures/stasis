@@ -379,7 +379,6 @@ const nativesOf = (t, result, dir, entry) => {
 }
 
 test('scan follows a require() of a native addon whose path is spelled in part to each file it can name', withTmp((t, tmp) => {
-  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'natives', version: '0.0.0' }))
   writeNatives(tmp, [
     'native/lib_linux-x64_nodejs.node', 'native/lib_darwin-arm64_nodejs.node', 'native/lib__nodejs.node',
     // Not spelled by it: another name, more after the extension, a directory deeper.
@@ -402,7 +401,6 @@ test('scan follows a require() of a native addon whose path is spelled in part t
 }))
 
 test('scan follows a native addon spelled by a `+` of strings, above the file and through the directories it spells', withTmp((t, tmp) => {
-  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'natives', version: '0.0.0' }))
   writeNatives(tmp, [
     'prebuilds/linux-x64/addon.node', 'prebuilds/darwin-arm64/addon.node', 'prebuilds/linux-x64/other.node', 'prebuilds/addon.node',
     'build/Release/a.node', 'build/Debug/a.node', 'build/a.node', 'bin/ab.node',
@@ -423,7 +421,6 @@ test('scan follows a native addon spelled by a `+` of strings, above the file an
 }))
 
 test('scan leaves a require() dynamic where its path spells no native addon there', withTmp((t, tmp) => {
-  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'natives', version: '0.0.0' }))
   writeNatives(tmp, ['native/a.node', 'node_modules/natives-linux/a.node'])
   writeFileSync(join(tmp, 'native', 'a.js'), 'module.exports = 1\n')
   const entry = join(tmp, 'index.cjs')
@@ -447,15 +444,15 @@ test('scan leaves a require() dynamic where its path spells no native addon ther
 }))
 
 test('scan follows a native addon spelled in part only as Node resolves, in the branches that run, and but for an excluded one', withTmp((t, tmp) => {
-  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'natives', version: '0.0.0' }))
   writeNatives(tmp, ['native/lib_linux.node', 'native/lib_darwin.node'])
   const entry = join(tmp, 'index.cjs')
   writeFileSync(entry, 'if (__DEV__) module.exports = require(`./native/lib_${process.platform}.node`)\n')
 
-  // A bundler's build follows no such require() to an addon.
+  // A browser or React Native target loads no native addon.
   const bundled = scan([entry], { resolve: () => null })
   t.assert.deepStrictEqual(bundled.unresolved.map(({ reason }) => reason), ['dynamic'])
-  t.assert.deepStrictEqual([...bundled.toRelative(tmp).files.keys()], ['index.cjs'])
+  // The edge of any dynamic require(), whatever its argument spells.
+  t.assert.deepStrictEqual([...bundled.toRelative(tmp).files], [['index.cjs', { format: 'commonjs', edges: [{ kind: 'require', dynamic: true }] }]])
 
   const folded = scan([entry], { define: { __DEV__: false } })
   t.assert.deepStrictEqual(folded.unresolved, [])
@@ -486,7 +483,6 @@ test('scan follows a native addon spelled in part through a tree laid out in mem
 })
 
 test('scan carries a native addon as a resource where a round replays the file naming it but not the addon', withTmp((t, tmp) => {
-  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'natives', version: '0.0.0' }))
   writeNatives(tmp, ['native/lib_linux.node'])
   const entry = join(tmp, 'index.cjs')
   writeFileSync(entry, 'module.exports = require(`./native/lib_${process.platform}.node`)\n')

@@ -74,7 +74,7 @@ function spelledParts(node, parts = []) {
     parts.push(node.value)
   } else if (node.type === 'TemplateLiteral') {
     for (const [i, quasi] of node.quasis.entries()) {
-      parts.push(quasi.value.cooked ?? null)
+      parts.push(quasi.value.cooked)
       if (i < node.expressions.length) spelledParts(node.expressions[i], parts)
     }
   } else if (node.type === 'BinaryExpression' && node.operator === '+') {
@@ -87,17 +87,13 @@ function spelledParts(node, parts = []) {
 }
 
 // A relative path to a native addon spelled only in part, by a template literal or a `+` of strings
-// (`./native/lib_${target}_nodejs.node`): what it spells around each expression. Else null.
+// (`./native/lib_${target}_nodejs.node`): the path, a HOLE for each expression. Else null.
 function nativePattern(node) {
   const parts = spelledParts(node)
   if (!parts.includes(null) || parts.some((part) => part?.includes(HOLE))) return null
-  let path = ''
-  // Expressions with nothing spelled between them are one.
-  for (const part of parts) if (part !== null || !path.endsWith(HOLE)) path += part ?? HOLE
-  return RELATIVE_REQUEST.test(path) && path.endsWith(NATIVE_EXT) ? path.split(HOLE) : null
+  const path = parts.map((part) => part ?? HOLE).join('')
+  return RELATIVE_REQUEST.test(path) && path.endsWith(NATIVE_EXT) ? path : null
 }
-
-const escapeRegExp = (text) => text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, '\\$&')
 
 const NO_CHILD_KEYS = new Set(['type', 'loc', 'range', 'start', 'end'])
 
@@ -105,9 +101,10 @@ const NO_CHILD_KEYS = new Set(['type', 'loc', 'range', 'start', 'end'])
 function findCallSpecifiers(ast, push, fold = null) {
   const pushSpec = (kind, node) => {
     const spec = literalSpec(node)
+    if (spec != null) return push({ kind, spec })
     // Only require() loads a native addon.
-    const pattern = spec == null && kind === 'require' ? nativePattern(node) : null
-    push(spec != null ? { kind, spec } : pattern === null ? { kind, dynamic: true } : { kind, dynamic: true, pattern })
+    const pattern = kind === 'require' ? nativePattern(node) : null
+    push({ kind, dynamic: true, ...(pattern === null ? {} : { pattern }) })
   }
   const visit = (node) => {
     if (!node || typeof node !== 'object') return
@@ -231,16 +228,17 @@ export class Scan {
   // The specifiers of the files there that `pattern` (nativePattern's) spells, each expression of it any run of
   // characters within one name: never a `/`, so the files are those of the directories it spells.
   #spelledBy(parentFile, pattern) {
-    let found = [{ dir: dirname(parentFile), names: [] }]
-    for (const segment of pattern.join(HOLE).split('/')) {
+    const from = dirname(parentFile)
+    let found = [[]]
+    for (const segment of pattern.split('/')) {
       if (!segment.includes(HOLE)) {
-        found = found.map(({ dir, names }) => ({ dir: join(dir, segment), names: [...names, segment] }))
+        found = found.map((names) => [...names, segment])
         continue
       }
-      const spelled = new RegExp(`^${segment.split(HOLE).map(escapeRegExp).join('.*')}$`, 'su')
-      found = found.flatMap(({ dir, names }) => this.#namesIn(dir).filter((name) => spelled.test(name)).map((name) => ({ dir: join(dir, name), names: [...names, name] })))
+      const spelled = new RegExp(`^${segment.split(HOLE).map(RegExp.escape).join('.*')}$`, 'su')
+      found = found.flatMap((names) => this.#namesIn(join(from, ...names)).filter((name) => spelled.test(name)).map((name) => [...names, name]))
     }
-    return found.map(({ names }) => names.join('/'))
+    return found.map((names) => names.join('/'))
   }
 
   // Sorted, as the host lists them. None of what is no directory, or isn't there.
@@ -528,7 +526,7 @@ export class Scan {
       if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
     }
     // Each native addon there that a path spelled in part names is an edge of the specifier spelling it, as a run
-    // records the one it loads. Only as Node resolves: a bundler's build follows no such require() to an addon.
+    // records the one it loads. Only as Node resolves: a browser or React Native target loads no native addon.
     const addNatives = (s) => {
       if (s.pattern === undefined || this.customResolve) return false
       const conditions = this.#conditionSet('require')
@@ -557,7 +555,7 @@ export class Scan {
     for (const s of specs) {
       if (s.dynamic) {
         if (addNatives(s)) continue
-        edges.push(s)
+        edges.push({ kind: s.kind, dynamic: true })
         this.unresolved.push({ parentURL: url, kind: s.kind, reason: 'dynamic' })
         continue
       }

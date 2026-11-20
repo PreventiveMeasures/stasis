@@ -380,13 +380,14 @@ entry, and attested by the `--lockfile` as any file is.
   (`` `${__dirname}/native/…` ``) or names a package
   (`` `@scope/lib-${target}` ``), one that doesn't end in `.node`, and an
   `import()`, which loads no addon.
-- Under `--mainFields` and `--metro` none is followed: a bundler's build
-  follows no such `require()` to an addon. The configs and toolchain a
-  `--metro` bundle traces as Node's are followed as Node's.
+- Under `--mainFields` and `--metro` none is followed: a browser or React
+  Native target loads no native addon. The configs and toolchain a `--metro`
+  bundle traces as Node's are followed as Node's.
 
 A `.node` file named by a string literal (`require('./addon.node')`) is a
-reached file that is not code, carried only with `node` in `--resources`: see
-[Resources and manifests](#resources-and-manifests).
+reached file that is not code, carried with `node` in `--resources` (see
+[Resources and manifests](#resources-and-manifests)), or where a path spelled
+in part names that file too.
 
 `stasis run --bundle=load` resolves the addon by the bundle's edge, and Node
 then loads it from disk, as a process can't load one from memory: it has to be

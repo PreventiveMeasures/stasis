@@ -5554,11 +5554,8 @@ cliTest('CLI: bundle carries the native addons a require() names by a path spell
     'index.js': 'const target = `${process.platform}-${process.arch}`\nmodule.exports = require(`./native/lib_${target}_nodejs.node`)\n',
     'literal.js': "module.exports = require('./native/lib_linux-x64_nodejs.node')\n",
   }, { name: 'natives', version: '0.0.0' })
-  mkdirSync(join(tmp, 'native'))
   const addon = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0xff, 0xfe])
-  writeFileSync(join(tmp, 'native', 'lib_linux-x64_nodejs.node'), addon)
-  writeFileSync(join(tmp, 'native', 'lib_darwin-arm64_nodejs.node'), 'not an addon, but named as one\n')
-  writeFileSync(join(tmp, 'native', 'other.node'), addon)
+  writeTree(tmp, { 'native/lib_linux-x64_nodejs.node': addon, 'native/lib_darwin-arm64_nodejs.node': 'not an addon, but named as one\n', 'native/other.node': addon })
   const outPath = join(tmp, 'out.br')
   const lockPath = join(tmp, 'out.lock.json')
 
@@ -5577,7 +5574,7 @@ cliTest('CLI: bundle carries the native addons a require() names by a path spell
   const lockfile = Lockfile.parse(readFileSync(lockPath, 'utf8'))
   t.assert.deepStrictEqual(Object.keys(lockfile.modules.get('.').files).toSorted(), ['index.js', ...natives])
 
-  // A bundler's build follows no such require() to an addon.
+  // A browser or React Native target loads no native addon.
   const fields = await runCli(['bundle', '--mainFields=main', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(fields.status, 0, `stderr: ${fields.stderr}`)
   t.assert.match(fields.stderr, /require <dynamic> from index\.js \(dynamic\)/)
