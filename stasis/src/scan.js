@@ -63,13 +63,48 @@ export function literalSpec(node) {
   return null
 }
 
+// Stands in a path for an expression, which no path spells.
+const HOLE = '\0'
+const NATIVE_EXT = '.node'
+
+// What `node` spells of a string: each literal, and null for an expression among them.
+function spelledParts(node, parts = []) {
+  if (node.type === 'ParenthesizedExpression') return spelledParts(node.expression, parts)
+  if (node.type === 'Literal' && typeof node.value === 'string') {
+    parts.push(node.value)
+  } else if (node.type === 'TemplateLiteral') {
+    for (const [i, quasi] of node.quasis.entries()) {
+      parts.push(quasi.value.cooked)
+      if (i < node.expressions.length) spelledParts(node.expressions[i], parts)
+    }
+  } else if (node.type === 'BinaryExpression' && node.operator === '+') {
+    spelledParts(node.left, parts)
+    spelledParts(node.right, parts)
+  } else {
+    parts.push(null)
+  }
+  return parts
+}
+
+// A relative path to a native addon spelled only in part, by a template literal or a `+` of strings
+// (`./native/lib_${target}_nodejs.node`): the path, a HOLE for each expression. Else null.
+function nativePattern(node) {
+  const parts = spelledParts(node)
+  if (!parts.includes(null) || parts.some((part) => part?.includes(HOLE))) return null
+  const path = parts.map((part) => part ?? HOLE).join('')
+  return RELATIVE_REQUEST.test(path) && path.endsWith(NATIVE_EXT) ? path : null
+}
+
 const NO_CHILD_KEYS = new Set(['type', 'loc', 'range', 'start', 'end'])
 
 // `fold`: define.js's branchFolder, or null. The side of a branch that can't run is never walked.
 function findCallSpecifiers(ast, push, fold = null) {
   const pushSpec = (kind, node) => {
     const spec = literalSpec(node)
-    push(spec == null ? { kind, dynamic: true } : { kind, spec })
+    if (spec != null) return push({ kind, spec })
+    // A require() alone is followed to a native addon.
+    const pattern = kind === 'require' ? nativePattern(node) : null
+    push({ kind, dynamic: true, ...(pattern === null ? {} : { pattern }) })
   }
   const visit = (node) => {
     if (!node || typeof node !== 'object') return
@@ -187,6 +222,34 @@ export class Scan {
     return classifyExtension(file, this.resources) === 'resource'
   }
 
+  // The native addons a require() names by a path spelled in part, resources with no `resources` entry.
+  #natives = new Set()
+
+  // The specifiers of the files there that `pattern` (nativePattern's) spells, each expression of it any run of
+  // characters within one name: never a `/`, so the files are those of the directories it spells.
+  #spelledBy(parentFile, pattern) {
+    const from = dirname(parentFile)
+    let found = [[]]
+    for (const segment of pattern.split('/')) {
+      if (!segment.includes(HOLE)) {
+        found = found.map((names) => [...names, segment])
+        continue
+      }
+      const spelled = new RegExp(`^${segment.split(HOLE).map(RegExp.escape).join('.*')}$`, 'su')
+      found = found.flatMap((names) => this.#namesIn(join(from, ...names)).filter((name) => spelled.test(name)).map((name) => [...names, name]))
+    }
+    return found.map((names) => names.join('/'))
+  }
+
+  // Sorted, as the host lists them. None of what is no directory, or isn't there.
+  #namesIn(dir) {
+    try {
+      return this.host.readdir(dir).map((entry) => entry.name)
+    } catch {
+      return []
+    }
+  }
+
   walk(entries) {
     const queue = []
     for (const entry of entries) {
@@ -222,6 +285,7 @@ export class Scan {
     scanCounts[kept?.queued !== undefined ? 'replayed' : kept?.parse === undefined ? 'parsed' : 'resolved'] += 1
     if (kept?.queued !== undefined) {
       this.files.set(url, kept.file)
+      for (const e of kept.file.edges) if (e.native && e.child) this.#natives.add(e.child)
       for (const [key, specMap] of kept.imports) nestedMap(this.imports, key).set(url, specMap)
       this.unresolved.push(...kept.unresolved)
       this.parseErrors.push(...kept.parseErrors)
@@ -404,7 +468,7 @@ export class Scan {
     const ext = extname(file)
     // `resource: true` is what both bundle builders key off; they derive its format from its bytes.
     const leaf = ext === '.json' ? { format: 'json', edges: [] }
-      : this.#isResource(file) ? { format: null, edges: [], resource: true }
+      : this.#isResource(file) || this.#natives.has(url) ? { format: null, edges: [], resource: true }
       : JS_EXTENSIONS.has(ext) ? null
       : { format: null, edges: [] }
     if (leaf !== null) {
@@ -458,7 +522,28 @@ export class Scan {
       }
       edges.push({ ...s, child: childURL })
       nestedMap(specMaps, key).set(s.spec, childURL)
-      if (RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
+      if (s.native) this.#natives.add(childURL)
+      if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
+    }
+    // Each native addon there that a path spelled in part names is an edge of the specifier spelling it, as a run
+    // records the one it loads. Only as Node resolves: a browser or React Native target loads no native addon.
+    const addNatives = (s) => {
+      if (s.pattern === undefined || this.customResolve) return false
+      const conditions = this.#conditionSet('require')
+      const key = [...conditions].join(', ')
+      let named = false
+      for (const spec of this.#spelledBy(file, s.pattern)) {
+        let childPath
+        try {
+          childPath = this.host.resolve(file, spec, conditions)
+        } catch {
+          continue // a directory, which names no file
+        }
+        if (extname(childPath) !== NATIVE_EXT) continue
+        addChild({ kind: s.kind, spec, native: true }, key, pathToFileURL(childPath).toString(), childPath)
+        named = true
+      }
+      return named
     }
     const addUnresolved = (s, reason, conditions, target) => {
       edges.push({ ...s, error: reason })
@@ -469,7 +554,8 @@ export class Scan {
 
     for (const s of specs) {
       if (s.dynamic) {
-        edges.push(s)
+        if (addNatives(s)) continue
+        edges.push({ kind: s.kind, dynamic: true })
         this.unresolved.push({ parentURL: url, kind: s.kind, reason: 'dynamic' })
         continue
       }

@@ -388,6 +388,49 @@ esbuild (platform `browser`), webpack 5 (target `web`) and Metro bundle it. A
 no installed package resolves (`fs` with nothing installed), stays a builtin:
 it is recorded but not bundled, where Metro and webpack would fail the build.
 
+### Native addons
+
+A `require()` whose argument is no string literal names nothing a scan can
+follow: it is a warning, and falls through at load. But where it names a native
+addon by a path spelled in part, the files it can name are followed, as a
+package loads the one built for the platform it runs on:
+
+```js
+const target = `${process.platform}-${process.arch}`
+module.exports = require(`./native/lib_${target}_nodejs.node`)
+```
+
+Resolving as Node, every file there that the path can spell is bundled
+(`native/lib_linux-x64_nodejs.node`, `native/lib_darwin-arm64_nodejs.node`, …),
+for every platform at once, each with an edge of the specifier that spells it
+(`./native/lib_linux-x64_nodejs.node`), which is the one a run asks for. They
+are carried as [resources](#resources-and-manifests), with no `--resources`
+entry, and attested by the `--lockfile` as any file is.
+
+- The path is a template literal, or strings joined by `+`, that starts with
+  `./` or `../` and ends in `.node`, with one expression or more in it.
+- An expression stands for any run of characters within one file or directory
+  name, never a `/`: `` `./prebuilds/${platform}-${arch}/addon.node` `` names
+  the `addon.node` of each directory of `prebuilds` so named, and none deeper.
+- Where no file there is spelled by it, it stays the warning it was.
+- Any other path stays one too: a path that starts with an expression
+  (`` `${__dirname}/native/…` ``) or names a package
+  (`` `@scope/lib-${target}` ``), one that doesn't end in `.node`, and an
+  `import()`: a `require()` alone is followed.
+- Under `--mainFields` and `--metro` none is followed: a browser or React
+  Native target loads no native addon. The configs and toolchain a `--metro`
+  bundle traces as Node's are followed as Node's.
+
+A `.node` file named by a string literal (`require('./addon.node')`) is a
+reached file that is not code, carried with `node` in `--resources` (see
+[Resources and manifests](#resources-and-manifests)), or where a path spelled
+in part names that file too.
+
+`stasis run --bundle=load` resolves the addon by the bundle's edge, and Node
+then loads it from disk, as a process can't load one from memory: it has to be
+there, and a run doesn't hold its bytes there to the ones the bundle or the
+lockfile attests. [`stasis extract`](extract.md) writes them out with the rest.
+
 ### Metro (`--metro`)
 
 `--metro --platforms=ios,android` resolves the way Metro does: React Native's
@@ -956,7 +999,8 @@ and [file formats](file-formats.md#resources-in-the-bundle). With `--mainFields`
 or `--metro`, the allowlist is the `resources` of the `stasis.config.json` in
 the cwd, the directory these bundles' paths are relative to, where
 `--resources` isn't given; given, it replaces the config's rather than adding
-to it.
+to it. The native addons a `require()` names by a path spelled in part are
+resources with no entry there: see [Native addons](#native-addons).
 
 `--package-json` bundles each bundled module's `package.json`, even one the
 scan never reached, so `stasis run --bundle=load` and `stasis prune` can read

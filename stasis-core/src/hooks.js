@@ -425,11 +425,12 @@ function resolve(specifier, context, nextResolve) {
       format = state.getFormat(url)
     }
     // Friendlier error at resolve time; the load gate is the load-bearing one. Metro's code resolves as a file of
-    // no format did, its load refused.
-    const generic = GENERIC_FORMATS.has(format)
-    if (format != null && !generic && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
+    // no format did, its load refused. As does a native addon the bundle carries, which Node loads from disk by
+    // its path, past the load hook: none is served.
+    const unserved = GENERIC_FORMATS.has(format) || (RESOURCE_FORMATS.has(format) && extname(url) === '.node')
+    if (format != null && !unserved && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
     assertInfraMatchesBundle(url)
-    return { url, format: generic ? undefined : format, importAttributes: undefined, shortCircuit: true }
+    return { url, format: unserved ? undefined : format, importAttributes: undefined, shortCircuit: true }
   }
 
   const res = nextResolve(specifier)

@@ -8,6 +8,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Scan, getParser, importsTypescriptByOutputName, rawTransferFits, scan } from '../stasis/src/scan.js'
 import { inReactNative } from '../stasis/src/flow.js'
 import { loadTsconfigCompilerOptions, loadTsconfigPaths, packageTsconfigPaths } from '../stasis/src/resolve-typescript.js'
+import { Vfs, createVfsHost } from '../stasis/src/vfs-bundle.js'
 import { withTmp } from './tmp.helper.js'
 import { diskHost } from '@exodus/stasis-core/host'
 
@@ -359,6 +360,143 @@ test('scan reports dynamic require() as unresolved', withTmp((t, tmp) => {
   t.assert.equal(result.unresolved[0].kind, 'require')
   t.assert.equal(result.unresolved[0].reason, 'dynamic')
   t.assert.ok(result.unresolved[0].parentURL.endsWith('/dyn.cjs'))
+}))
+
+// A native addon at each of `names` under `dir`: bytes that are no UTF-8, as one's are.
+const writeNatives = (dir, names) => {
+  for (const name of names) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true })
+    writeFileSync(join(dir, name), Buffer.from([0x7F, 0x45, 0x4C, 0x46, 0xFF, 0xFE]))
+  }
+}
+
+// What a scan of `entry` carries beside it, each a resource, and its edges to them by specifier.
+const nativesOf = (t, result, dir, entry) => {
+  const { files, imports } = result.toRelative(dir)
+  const natives = [...files].filter(([file]) => file !== entry)
+  for (const [file, info] of natives) t.assert.deepStrictEqual(info, { format: null, edges: [], resource: true }, file)
+  return { files: natives.map(([file]) => file).toSorted(), edges: Object.fromEntries(flattenImports(imports).get(entry) ?? []) }
+}
+
+test('scan follows a require() of a native addon whose path is spelled in part to each file it can name', withTmp((t, tmp) => {
+  writeNatives(tmp, [
+    'native/lib_linux-x64_nodejs.node', 'native/lib_darwin-arm64_nodejs.node', 'native/lib__nodejs.node',
+    // Not spelled by it: another name, more after the extension, a directory deeper.
+    'native/other.node', 'native/lib_win32_nodejs.node.bak', 'native/sub/lib_deep_nodejs.node',
+  ])
+  // A directory it spells names no addon, whatever Node resolves it to.
+  mkdirSync(join(tmp, 'native', 'lib_dir_nodejs.node'))
+  writeFileSync(join(tmp, 'native', 'lib_dir_nodejs.node', 'index.js'), 'module.exports = 1\n')
+  const entry = join(tmp, 'index.cjs')
+  writeFileSync(entry, 'const target = `${process.platform}-${process.arch}`\nmodule.exports = require(`./native/lib_${target}_nodejs.node`)\n')
+
+  const result = scan([entry])
+  t.assert.deepStrictEqual(result.unresolved, [], 'a require() followed to its addons is no dynamic one')
+  const names = ['native/lib__nodejs.node', 'native/lib_darwin-arm64_nodejs.node', 'native/lib_linux-x64_nodejs.node']
+  // Each an edge of the specifier that spells it, as a run records the one it loads; with no `resources` entry.
+  t.assert.deepStrictEqual(nativesOf(t, result, tmp, 'index.cjs'), { files: names, edges: Object.fromEntries(names.map((name) => [`./${name}`, name])) })
+  t.assert.deepStrictEqual(result.toRelative(tmp).files.get('index.cjs').edges.map(({ kind, spec, native }) => ({ kind, spec, native })),
+    names.map((name) => ({ kind: 'require', spec: `./${name}`, native: true })))
+  t.assert.deepStrictEqual([...result.imports.keys()], ['require, node, node-addons, module-sync'])
+}))
+
+test('scan follows a native addon spelled by a `+` of strings, above the file and through the directories it spells', withTmp((t, tmp) => {
+  writeNatives(tmp, [
+    'prebuilds/linux-x64/addon.node', 'prebuilds/darwin-arm64/addon.node', 'prebuilds/linux-x64/other.node', 'prebuilds/addon.node',
+    'build/Release/a.node', 'build/Debug/a.node', 'build/a.node', 'bin/ab.node',
+  ])
+  mkdirSync(join(tmp, 'lib'))
+  const entry = join(tmp, 'lib', 'load.cjs')
+  writeFileSync(entry, [
+    "exports.prebuilt = require('../prebuilds/' + process.platform + '-' + process.arch + '/addon.node')",
+    "exports.built = require(('../build/' + (process.env.TYPE)) + `/${process.env.NAME}` + '.node')",
+    // Expressions with nothing spelled between them are one.
+    'exports.bin = require(`../bin/${process.env.A}${process.env.B}.node`)',
+  ].join('\n'))
+
+  const result = scan([entry])
+  t.assert.deepStrictEqual(result.unresolved, [])
+  const names = ['bin/ab.node', 'build/Debug/a.node', 'build/Release/a.node', 'prebuilds/darwin-arm64/addon.node', 'prebuilds/linux-x64/addon.node']
+  t.assert.deepStrictEqual(nativesOf(t, result, tmp, 'lib/load.cjs'), { files: names, edges: Object.fromEntries(names.map((name) => [`../${name}`, name])) })
+}))
+
+test('scan leaves a require() dynamic where its path spells no native addon there', withTmp((t, tmp) => {
+  writeNatives(tmp, ['native/a.node', 'node_modules/natives-linux/a.node'])
+  writeFileSync(join(tmp, 'native', 'a.js'), 'module.exports = 1\n')
+  const entry = join(tmp, 'index.cjs')
+  const sources = [
+    'require(`${__dirname}/native/a.node`)', // no relative path
+    'require(`natives-${process.platform}/a.node`)', // a package's
+    'require(`./native/${process.env.NAME}`)', // not spelled as an addon
+    'require(`./native/${process.env.NAME}.js`)',
+    'import(`./native/${process.env.NAME}.node`)', // a require() alone is followed
+    'require(`./missing/${process.env.NAME}.node`)', // names none there
+    "require('./native/' + 'a.node')", // spelled whole: no literal, as before
+    'require(`./${process.env.DIR}.node`)', // an expression spells no `/`
+  ]
+  for (const source of sources) {
+    writeFileSync(entry, `${source}\n`)
+    const result = scan([entry])
+    t.assert.deepStrictEqual(result.unresolved.map(({ reason }) => reason), ['dynamic'], source)
+    t.assert.deepStrictEqual([...result.toRelative(tmp).files.keys()], ['index.cjs'], source)
+    t.assert.equal(result.imports.size, 0, source)
+  }
+}))
+
+test('scan follows a native addon spelled in part only as Node resolves, in the branches that run, and but for an excluded one', withTmp((t, tmp) => {
+  writeNatives(tmp, ['native/lib_linux.node', 'native/lib_darwin.node'])
+  const entry = join(tmp, 'index.cjs')
+  writeFileSync(entry, 'if (__DEV__) module.exports = require(`./native/lib_${process.platform}.node`)\n')
+
+  // A browser or React Native target loads no native addon.
+  const bundled = scan([entry], { resolve: () => null })
+  t.assert.deepStrictEqual(bundled.unresolved.map(({ reason }) => reason), ['dynamic'])
+  // The edge of any dynamic require(), whatever its argument spells.
+  t.assert.deepStrictEqual([...bundled.toRelative(tmp).files], [['index.cjs', { format: 'commonjs', edges: [{ kind: 'require', dynamic: true }] }]])
+
+  const folded = scan([entry], { define: { __DEV__: false } })
+  t.assert.deepStrictEqual(folded.unresolved, [])
+  t.assert.deepStrictEqual([...folded.toRelative(tmp).files.keys()], ['index.cjs'])
+
+  const excluded = scan([entry], { excludes: (path) => (path.endsWith('lib_darwin.node') ? {} : undefined) })
+  t.assert.deepStrictEqual(nativesOf(t, excluded, tmp, 'index.cjs'), { files: ['native/lib_linux.node'], edges: { './native/lib_linux.node': 'native/lib_linux.node' } })
+  t.assert.deepStrictEqual(excluded.toRelative(tmp).unresolved, [{ parent: 'index.cjs', kind: 'require', spec: './native/lib_darwin.node', reason: 'excluded by excludeModules' }])
+}))
+
+test('scan follows a native addon spelled in part through a tree laid out in memory, as on disk', (t) => {
+  const vfs = new Vfs()
+  vfs.mkdir('/node_modules/dep/native', { recursive: true })
+  vfs.writeFile('/package.json', JSON.stringify({ name: 'proj', version: '0.0.0' }))
+  vfs.writeFile('/index.cjs', "module.exports = require('dep')\n")
+  vfs.writeFile('/node_modules/dep/package.json', JSON.stringify({ name: 'dep', version: '1.0.0' }))
+  vfs.writeFile('/node_modules/dep/index.js', 'module.exports = require(`./native/lib_${process.platform}_nodejs.node`)\n')
+  for (const name of ['lib_linux_nodejs.node', 'lib_darwin_nodejs.node', 'other.node']) vfs.writeFile(`/node_modules/dep/native/${name}`, new Uint8Array([0x7F, 0x45, 0xFF]))
+
+  const result = scan(['/index.cjs'], { host: createVfsHost(vfs) })
+  t.assert.deepStrictEqual(result.unresolved, [])
+  const { files, imports } = result.toRelative('/')
+  const natives = ['node_modules/dep/native/lib_darwin_nodejs.node', 'node_modules/dep/native/lib_linux_nodejs.node']
+  t.assert.deepStrictEqual([...files.keys()].toSorted(), ['index.cjs', 'node_modules/dep/index.js', ...natives])
+  for (const name of natives) t.assert.deepStrictEqual(files.get(name), { format: null, edges: [], resource: true })
+  t.assert.deepStrictEqual(Object.fromEntries(flattenImports(imports).get('node_modules/dep/index.js')),
+    { './native/lib_darwin_nodejs.node': natives[0], './native/lib_linux_nodejs.node': natives[1] })
+})
+
+test('scan carries a native addon as a resource where a round replays the file naming it but not the addon', withTmp((t, tmp) => {
+  writeNatives(tmp, ['native/lib_linux.node'])
+  const entry = join(tmp, 'index.cjs')
+  writeFileSync(entry, 'module.exports = require(`./native/lib_${process.platform}.node`)\n')
+  // A tree all unpacked: every file's scan is kept whole.
+  const host = { ...diskHost, touches: () => 0 }
+  const memo = new Map()
+  const first = scan([entry], { host, memo })
+  const addon = [...first.files.keys()].find((url) => url.endsWith('.node'))
+  // As where a round ends between the two.
+  t.assert.ok(memo.delete(addon))
+  for (const again of [scan([entry], { host, memo }), scan([entry], { host, memo })]) {
+    t.assert.deepStrictEqual(again.toRelative(tmp).files, first.toRelative(tmp).files)
+    t.assert.deepStrictEqual(nativesOf(t, again, tmp, 'index.cjs'), { files: ['native/lib_linux.node'], edges: { './native/lib_linux.node': 'native/lib_linux.node' } })
+  }
 }))
 
 // The files a scan of `entry` under `define` reaches, by name.
