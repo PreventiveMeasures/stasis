@@ -16,7 +16,7 @@ would leave [broken at load](bundle.md#resolution) (`./b` from `a/c.ts`, for
 `a/b.ts`) is built with it. One that builds without it is unchanged.
 
 ```sh
-stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit [--branch=name]|--tag=name|--branch=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
@@ -24,6 +24,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | `owner/name[/path]` | The repository, and where `/path` is given, a directory or a file in it, as one argument, the first that is no option. A directory is `--directory=path`; a file is an entry of the nearest project above it, see [A file's project](#a-files-project). Not with `--github` or `--directory`. |
 | `--github=owner/name` | The repository, where `owner/name[/path]` does not give it. Fetched with `GITHUB_TOKEN` where it is set. |
 | `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. A `--sha` commit must be in the repo's own history, as [`stasis validate`](validate.md#the-commit) holds it: GitHub serves a commit pushed to any fork through the repo's name too, so one in the history of none of its branches or tags is refused, before anything is fetched. |
+| `--branch=name` | The branch whose head to bundle, in place of the default branch's. With `--sha`, the branch that commit is of, see [A commit's branch](#a-commits-branch---branch). Not with `--tag`. |
 | `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
 | `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does; or, where its `stasis.config.json` names them, one tree of each of its [`lockfiles`](#several-lockfiles-lockfiles), with which it is refused. |
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
@@ -41,7 +42,24 @@ stasis github-bundle owner/name/packages/api --tag=v1.2.0 --typescript src/index
 stasis github-bundle owner/name/packages/api/src/index.ts --tag=v1.2.0 --typescript
 stasis github-bundle 'owner/name/packages/api/src/*.entry.ts' --tag=v1.2.0 --typescript
 stasis github-bundle --github=owner/name --package-manager=soldeer src/Token.sol
+stasis github-bundle --github=owner/name --sha=0123abc --branch=release/1.2 src/index.js
 ```
+
+### A commit's branch (`--branch`)
+
+A `--sha` commit in the default branch's history is held to the repo's history
+by two requests. Any other is looked for: the repo's tags are listed, then its
+branches, every page of them, for one at the commit, and its other branches
+are then compared with it one by one, 100 at most, so a commit of a repo with
+more branches than that may not be found at all (see
+[The commit](validate.md#the-commit)).
+
+`--branch=name` beside it names the branch it is of, which is asked first: the
+commit at its head is held in one request, and one in its history in two, with
+nothing listed. It is no claim taken on trust: the branch is the repo's own,
+and GitHub's compare tells whether it has the commit. Where it hasn't, or the
+repo has no such branch (one deleted since, or pushed over), the commit is
+looked for as without it, so a fork's is refused all the same.
 
 ## Dependencies
 
@@ -552,9 +570,11 @@ To generate none for a repo, whoever bundles it:
 ## Programmatic API (`@exodus/stasis/vfs-bundle`)
 
 - `buildGitHubBundle(options)` builds the same bundle from a GitHub repo, at a
-  commit or the one a tag names, a `sha` held to the repo's history as `--sha`
-  is (with the `client`'s `getRepoHead`, `compareCommits`, `listRepoTags` and
-  `listRepoBranches`); `buildVfsBundle(options)` from a project held
+  commit, the one a tag names or a `branch`'s head, a `sha` held to the repo's
+  history as `--sha` is (with the `client`'s `getRepoHead`, `compareCommits`,
+  `listRepoTags` and `listRepoBranches`), that of the `branch` given with it
+  first, as [`--branch`](#a-commits-branch---branch) is;
+  `buildVfsBundle(options)` from a project held
   in a `Vfs` (exported too), which is only read. `loadNodeModules(options)` lays
   out a project's `node_modules` alone, with deptree's `installed`, each package
   by its `path` with the `commit` its version document names. All three clean

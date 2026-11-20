@@ -1089,17 +1089,22 @@ export function followingMoves(client, github) {
 const BRANCHES_AT_ONCE = 6
 const MAX_COMPARED = 100
 
-// Null for none, as of a fork's, which GitHub serves through its name too.
-export async function historyOf(repository, commit, { maxCompared = MAX_COMPARED, deadline = Number.POSITIVE_INFINITY, now = Date.now } = {}) {
-  const holds = async (ref) => {
+// Null for none, as of a fork's, which GitHub serves through its name too. `branch`: one of the repository's the
+// commit is said to be of, asked before any other: at its head, or in its history, it is found in two requests at
+// most, with no tag or branch listed. One it isn't of, or that isn't there, tells nothing: it is looked for as without it.
+export async function historyOf(repository, commit, { branch: said, maxCompared = MAX_COMPARED, deadline = Number.POSITIVE_INFINITY, now = Date.now } = {}) {
+  // False for a 404: a commit GitHub has none of, or none in common with the ref; or a branch it has none of.
+  const unless404 = async (ask) => {
     try {
-      return ['ahead', 'identical'].includes((await repository.compareCommits({ base: commit, head: ref })).status)
+      return await ask()
     } catch (error) {
-      // A commit GitHub has none of, or none in common with the ref.
       if (error instanceof HttpError && error.status === 404) return false
       throw error
     }
   }
+  const holds = (ref) => unless404(async () => ['ahead', 'identical'].includes((await repository.compareCommits({ base: commit, head: ref })).status))
+  const named = said !== undefined && (await unless404(() => repository.getRepoHead({ branch: said })))
+  if (named && (named.oid === commit || (await holds(named.branch)))) return { branch: named.branch }
   const head = await repository.getRepoHead({})
   if (head.oid === commit || (await holds(head.branch))) return { branch: head.branch }
   const tag = (await repository.listRepoTags({})).find((entry) => entry.oid === commit)

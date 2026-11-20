@@ -657,7 +657,10 @@ const repoClient = (files, { history = { main: [commit] }, tags = {} } = {}) => 
   const list = client.listRepoDir.bind(client)
   const headOf = (branch) => sha256(branch).slice(0, 40)
   return Object.assign(client, {
-    getRepoHead: async () => ({ branch: 'main', oid: headOf('main') }),
+    async getRepoHead({ branch = 'main' }) {
+      if (!Object.hasOwn(history, branch)) throw new HttpError(404, `GET git/ref/heads/${branch} 404: {"message":"Not Found"}`)
+      return { branch, oid: headOf(branch) }
+    },
     listRepoTags: async () => Object.entries(tags).map(([tag, oid]) => ({ tag, oid })),
     listRepoBranches: async () => Object.keys(history).map((branch) => ({ branch, oid: headOf(branch) })),
     async compareCommits({ base, head }) {
@@ -1075,6 +1078,39 @@ test('historyOf: the ref of the repository holding a commit in its history, its 
     throw new HttpError(403, 'GET compare 403: {"message":"API rate limit exceeded"}')
   }
   await t.assert.rejects(historyOf(followingMoves(limited, 'org/repo'), commit), { name: 'HttpError', status: 403 }, 'GitHub refusing, as it refuses')
+})
+
+test('historyOf: a commit said to be of a `branch` is found there first, at its head or in its history, with no tag or branch listed; one that isn\'t of it is looked for as without it', async (t) => {
+  const release = 'e'.repeat(40)
+  const asked = []
+  const repository = (options) => {
+    const client = repoClient({}, options)
+    for (const method of ['getRepoHead', 'compareCommits', 'listRepoTags', 'listRepoBranches']) {
+      const ask = client[method].bind(client)
+      client[method] = (given) => (asked.push(`${method} ${given.branch ?? given.head ?? ''}`.trim()), ask(given))
+    }
+    return followingMoves(client, 'org/repo')
+  }
+  const found = async (branches, sha, branch) => {
+    asked.length = 0
+    return [await historyOf(repository({ history: branches }), sha, { branch }), [...asked]]
+  }
+  const history = { main: [], a: [], release: [release], z: [] }
+  t.assert.deepStrictEqual(await found(history, release, 'release'), [{ branch: 'release' }, ['getRepoHead release', 'compareCommits release']], 'in its history: two requests')
+  t.assert.deepStrictEqual(await found(history, sha256('release').slice(0, 40), 'release'), [{ branch: 'release' }, ['getRepoHead release']], 'at its head: one')
+  t.assert.deepStrictEqual((await found(history, release))[1], ['getRepoHead', 'compareCommits main', 'listRepoTags', 'listRepoBranches', 'compareCommits a', 'compareCommits release', 'compareCommits z'],
+    'unnamed, found by listing its tags and branches, each compared')
+  // One it isn't of, or that isn't there, tells nothing: looked for as without it.
+  t.assert.deepStrictEqual(await found(history, release, 'a'), [{ branch: 'release' }, ['getRepoHead a', 'compareCommits a', 'getRepoHead', 'compareCommits main', 'listRepoTags', 'listRepoBranches',
+    'compareCommits a', 'compareCommits release', 'compareCommits z']])
+  t.assert.deepStrictEqual((await found({ main: [commit] }, commit, 'gone')), [{ branch: 'main' }, ['getRepoHead gone', 'getRepoHead', 'compareCommits main']])
+  t.assert.equal((await found(history, 'f'.repeat(40), 'release'))[0], null, 'a fork\'s commit, whatever branch it is said to be of')
+  // GitHub refusing the branch otherwise, as it refuses.
+  const limited = repoClient({})
+  limited.getRepoHead = async () => {
+    throw new HttpError(403, 'GET git/ref/heads/release 403: {"message":"API rate limit exceeded"}')
+  }
+  await t.assert.rejects(historyOf(followingMoves(limited, 'org/repo'), commit, { branch: 'release' }), { name: 'HttpError', status: 403 })
 })
 
 test('historyOf: other branches compared `maxCompared` at most, none past `deadline`; where those left uncompared might hold the commit, it can\'t tell', async (t) => {
