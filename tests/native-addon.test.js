@@ -187,21 +187,30 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
     await Promise.all(entries.map((entry) => refuses(t, tmp, ['--lock=frozen', entry], 'lockfile records')))
   }))
 
-  test('run holds the addon a preload loaded once the app requires it too, and not before', { skip }, withTmp(async (t, tmp) => {
+  test('run holds the addon a preload loaded once the app reaches it, and not before', { skip }, withTmp(async (t, tmp) => {
     project(tmp, {
       'plain.js': "console.log('ran')\n",
       'preload.cjs': `console.log('preloaded', typeof ${REQUIRE})\n`,
+      // As a preload loads a package whose module loads its addon, and the app requires that package too.
+      'wrapper.js': `module.exports = ${REQUIRE}\n`,
+      'wrapped.js': "console.log('wrapped', typeof require('./wrapper.js'))\n",
+      'preload-wrapper.cjs': "require('./wrapper.js')\nconsole.log('preloaded')\n",
     })
-    await attest(t, tmp, ['--lock=frozen'], ['index.js', 'plain.js'])
-    const preloaded = (entry) => ['--lock=frozen', '--import=./preload.cjs', entry]
+    await attest(t, tmp, ['--lock=frozen'], ['index.js', 'plain.js', 'wrapped.js'])
+    const preloaded = (entry, preload = 'preload.cjs') => ['--lock=frozen', `--import=./${preload}`, entry]
 
-    await loads(t, tmp, preloaded('index.js'), 'preloaded object\nloaded object\n')
+    await Promise.all([
+      loads(t, tmp, preloaded('index.js'), 'preloaded object\nloaded object\n'),
+      loads(t, tmp, preloaded('wrapped.js', 'preload-wrapper.cjs'), 'preloaded\nwrapped object\n'),
+    ])
     swap(tmp)
     await Promise.all([
       // A preload's own is runner infrastructure, as its modules are.
       loads(t, tmp, preloaded('plain.js'), 'preloaded object\nran\n'),
       // The app's require() of it is served the one the preload loaded, from the require cache.
       refuses(t, tmp, preloaded('index.js'), 'lockfile records', 'preloaded object\n'),
+      // As is its require() of the preload's module that loaded it, cached with it.
+      refuses(t, tmp, preloaded('wrapped.js', 'preload-wrapper.cjs'), 'lockfile records', 'preloaded\n'),
     ])
   }))
 

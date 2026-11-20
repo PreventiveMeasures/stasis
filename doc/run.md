@@ -115,8 +115,8 @@ stasis: refusing to load the native addon native/lib_linux-x64_nodejs.node: it i
   of the run's, as its other files aren't.
 - One a [preload](#preloads---import) loads before the entry is runner
   infrastructure, as its modules are, and is held to nothing. Where the app
-  then requires it too, the one the preload loaded is held, as it is the one
-  the app gets.
+  then reaches it, requiring it or a module of the preload's that loaded it,
+  the one the preload loaded is held, as it is the one the app gets.
 - The addon is read, and then Node opens it by its path: one put in its place
   between the two is loaded unseen.
 
