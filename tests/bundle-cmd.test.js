@@ -5549,6 +5549,49 @@ cliTest('CLI: bundle (plain, no --metro) --resources carries a reached asset', w
   t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
 }))
 
+cliTest('CLI: bundle carries the native addons a require() names by a path spelled in part, as resources', withTmp(async (t, tmp) => {
+  jsProject(tmp, {
+    'index.js': 'const target = `${process.platform}-${process.arch}`\nmodule.exports = require(`./native/lib_${target}_nodejs.node`)\n',
+    'literal.js': "module.exports = require('./native/lib_linux-x64_nodejs.node')\n",
+  }, { name: 'natives', version: '0.0.0' })
+  mkdirSync(join(tmp, 'native'))
+  const addon = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0xff, 0xfe])
+  writeFileSync(join(tmp, 'native', 'lib_linux-x64_nodejs.node'), addon)
+  writeFileSync(join(tmp, 'native', 'lib_darwin-arm64_nodejs.node'), 'not an addon, but named as one\n')
+  writeFileSync(join(tmp, 'native', 'other.node'), addon)
+  const outPath = join(tmp, 'out.br')
+  const lockPath = join(tmp, 'out.lock.json')
+
+  // With no --resources: every file the path can name, for every target at once.
+  const r = await runCli(['bundle', `--output=${outPath}`, `--lockfile=${lockPath}`, 'index.js'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.doesNotMatch(r.stderr, /unresolved/)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  const natives = ['native/lib_darwin-arm64_nodejs.node', 'native/lib_linux-x64_nodejs.node']
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', ...natives])
+  t.assert.equal(bundle.formats.get('native/lib_linux-x64_nodejs.node'), 'resource:base64')
+  t.assert.equal(bundle.sources.get('native/lib_linux-x64_nodejs.node'), addon.toString('base64'))
+  t.assert.equal(bundle.formats.get('native/lib_darwin-arm64_nodejs.node'), 'resource')
+  // Each an edge of the specifier that spells it, which a run asks for.
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), Object.fromEntries(natives.map((name) => [`./${name}`, name])))
+  const lockfile = Lockfile.parse(readFileSync(lockPath, 'utf8'))
+  t.assert.deepStrictEqual(Object.keys(lockfile.modules.get('.').files).toSorted(), ['index.js', ...natives])
+
+  // A bundler's build follows no such require() to an addon.
+  const fields = await runCli(['bundle', '--mainFields=main', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.equal(fields.status, 0, `stderr: ${fields.stderr}`)
+  t.assert.match(fields.stderr, /require <dynamic> from index\.js \(dynamic\)/)
+  t.assert.deepStrictEqual([...Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8')).sources.keys()], ['index.js'])
+
+  // One spelled whole is carried by --resources, as before.
+  const literal = await runCli(['bundle', `--output=${outPath}`, 'literal.js'], { cwd: tmp })
+  t.assert.notEqual(literal.status, 0)
+  t.assert.match(literal.stderr, /\.\/native\/lib_linux-x64_nodejs\.node from literal\.js resolves to native\/lib_linux-x64_nodejs\.node, which a source bundle can't carry/)
+  const allowed = await runCli(['bundle', '--resources=node', `--output=${outPath}`, 'literal.js', 'index.js'], { cwd: tmp })
+  t.assert.equal(allowed.status, 0, `stderr: ${allowed.stderr}`)
+  t.assert.deepStrictEqual([...Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8')).sources.keys()].toSorted(), ['index.js', 'literal.js', ...natives])
+}))
+
 cliTest('CLI: bundle --resources rejects a code extension and non-JS bundles', async (t) => {
   const code = await runCli(['bundle', '--resources=js', 'index.js'])
   t.assert.notEqual(code.status, 0)
