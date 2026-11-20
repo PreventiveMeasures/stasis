@@ -113,10 +113,11 @@ stasis: refusing to load the native addon native/lib_linux-x64_nodejs.node: it i
   `stasis bundle` is what attests one.
 - In `node_modules` scope (`--dependencies`) the project's own addons are none
   of the run's, as its other files aren't.
-- One a [preload](#preloads---import) loads before the entry is runner
-  infrastructure, as its modules are, and is held to nothing. Where the app
-  then reaches it, requiring it or a module of the preload's that loaded it,
-  the one the preload loaded is held, as it is the one the app gets.
+- One loaded before the run has read its artifacts, as a
+  [preload](#preloads---import) loads its own, is held as soon as it has,
+  before the entry runs: the process keeps the one the preload loaded,
+  whatever requires it next. So a preload's addon is held wherever an artifact
+  attests it, though its modules are held only where the app reaches them.
 - The addon is read, and then Node opens it by its path: one put in its place
   between the two is loaded unseen.
 

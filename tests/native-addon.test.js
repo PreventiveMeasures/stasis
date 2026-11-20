@@ -142,7 +142,7 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
   }
 
   test('run loads an addon no artifact attests as it is, and captures none', { skip }, withTmp(async (t, tmp) => {
-    project(tmp)
+    project(tmp, { 'preload.cjs': `console.log('preloaded', typeof ${REQUIRE})\n` })
     // A run records the edge to the addon it loads, and none of its bytes.
     await loads(t, tmp, ['--lock=add', '--bundle=add', 'index.js'])
     const lockfile = lockfileOf(tmp)
@@ -153,7 +153,11 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
     // So an addon an install builds anew, or another platform's, breaks no run.
     swap(tmp)
     // The two that write nothing at once, and then the one that writes.
-    await Promise.all([['--lock=frozen', '--bundle=load'], ['--lock=frozen', '--bundle=frozen']].map((flags) => loads(t, tmp, [...flags, 'index.js'])))
+    await Promise.all([
+      ...[['--lock=frozen', '--bundle=load'], ['--lock=frozen', '--bundle=frozen']].map((flags) => loads(t, tmp, [...flags, 'index.js'])),
+      // A preload's too.
+      loads(t, tmp, ['--lock=frozen', '--bundle=load', '--import=./preload.cjs', 'index.js'], 'preloaded object\nloaded object\n'),
+    ])
     await loads(t, tmp, ['--lock=add', '--bundle=add', 'index.js'])
   }))
 
@@ -187,7 +191,7 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
     await Promise.all(entries.map((entry) => refuses(t, tmp, ['--lock=frozen', entry], 'lockfile records')))
   }))
 
-  test('run holds the addon a preload loaded once the app reaches it, and not before', { skip }, withTmp(async (t, tmp) => {
+  test('run holds an addon a preload loaded as soon as it has the artifacts, whatever the app requires', { skip }, withTmp(async (t, tmp) => {
     project(tmp, {
       'plain.js': "console.log('ran')\n",
       'preload.cjs': `console.log('preloaded', typeof ${REQUIRE})\n`,
@@ -195,28 +199,29 @@ describe('stasis run over a native addon stasis bundle carries (spawned, concurr
       'wrapper.js': `module.exports = ${REQUIRE}\n`,
       'wrapped.js': "console.log('wrapped', typeof require('./wrapper.js'))\n",
       'preload-wrapper.cjs': "require('./wrapper.js')\nconsole.log('preloaded')\n",
+      // The same by a call of process.dlopen, which no module edge tells of.
+      'dlopen.js': `const m = { exports: {} }\nprocess.dlopen(m, require('node:path').join(__dirname, '${NATIVE}'))\nmodule.exports = m.exports\n`,
+      'dlopened.js': "console.log('dlopened', typeof require('./dlopen.js'))\n",
+      'preload-dlopen.cjs': "require('./dlopen.js')\nconsole.log('preloaded')\n",
       // As a preload that wraps the app requires its entry, which is then run from the cache.
       'preload-entry.cjs': "require('./index.js')\n",
     })
-    await attest(t, tmp, ['--lock=frozen'], ['index.js', 'plain.js', 'wrapped.js'])
-    const preloaded = (entry, preload = 'preload.cjs') => ['--lock=frozen', `--import=./${preload}`, entry]
-
-    await Promise.all([
-      loads(t, tmp, preloaded('index.js'), 'preloaded object\nloaded object\n'),
-      loads(t, tmp, preloaded('wrapped.js', 'preload-wrapper.cjs'), 'preloaded\nwrapped object\n'),
-      loads(t, tmp, preloaded('index.js', 'preload-entry.cjs')),
-    ])
+    await attest(t, tmp, ['--lock=frozen'], ['index.js', 'plain.js', 'wrapped.js', 'dlopened.js'])
+    // Each preload, the entry run after it, and what the preload prints before the run has its lockfile.
+    const runs = [
+      ['preload.cjs', 'index.js', 'preloaded object\n', 'loaded object\n'],
+      // Its addon is in the process whether the app requires it or not.
+      ['preload.cjs', 'plain.js', 'preloaded object\n', 'ran\n'],
+      ['preload-wrapper.cjs', 'wrapped.js', 'preloaded\n', 'wrapped object\n'],
+      ['preload-dlopen.cjs', 'dlopened.js', 'preloaded\n', 'dlopened object\n'],
+      // The preload ran the entry, which the run takes from the cache.
+      ['preload-entry.cjs', 'index.js', 'loaded object\n', ''],
+    ]
+    const args = (preload, entry) => ['--lock=frozen', `--import=./${preload}`, entry]
+    await Promise.all(runs.map(([preload, entry, before, after]) => loads(t, tmp, args(preload, entry), before + after)))
     swap(tmp)
-    await Promise.all([
-      // A preload's own is runner infrastructure, as its modules are.
-      loads(t, tmp, preloaded('plain.js'), 'preloaded object\nran\n'),
-      // The app's require() of it is served the one the preload loaded, from the require cache.
-      refuses(t, tmp, preloaded('index.js'), 'lockfile records', 'preloaded object\n'),
-      // As is its require() of the preload's module that loaded it, cached with it.
-      refuses(t, tmp, preloaded('wrapped.js', 'preload-wrapper.cjs'), 'lockfile records', 'preloaded\n'),
-      // And the entry itself, where the preload ran it: the run has no State until it resolves.
-      refuses(t, tmp, preloaded('index.js', 'preload-entry.cjs'), 'lockfile records', 'loaded object\n'),
-    ])
+    // Before the entry runs: the process keeps the one the preload loaded.
+    await Promise.all(runs.map(([preload, entry, before]) => refuses(t, tmp, args(preload, entry), 'lockfile records', before)))
   }))
 
   test('run writes nothing where the program catches the refusal and runs on', { skip }, withTmp(async (t, tmp) => {

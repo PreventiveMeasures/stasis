@@ -286,6 +286,11 @@ function initState(root) {
       }
     })
   }
+
+  // The addons a preload loaded before now are in the process whatever the app requires: each is held as the
+  // preload loaded it, though its modules, runner infrastructure, are held only where the app reaches them.
+  for (const [url, loaded] of unheldAddons) holdNativeAddon(url, loaded)
+  unheldAddons.clear()
 }
 
 function initStateFromPackage(url) {
@@ -429,7 +434,6 @@ function resolve(specifier, context, nextResolve) {
     // its path, past the load hook: none is served.
     const unserved = GENERIC_FORMATS.has(format) || (RESOURCE_FORMATS.has(format) && extname(url) === '.node')
     if (format != null && !unserved && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
-    holdInfraAddons(url)
     assertInfraMatchesBundle(url)
     return { url, format: unserved ? undefined : format, importAttributes: undefined, shortCircuit: true }
   }
@@ -441,11 +445,9 @@ function resolve(specifier, context, nextResolve) {
   if (parentURL) assert.ok(state)
   if (parentURL) missIfExcluded(specifier, parentURL, url, conditions)
   if (infraUrls.has(url)) {
-    // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root. Before the addons
-    // loaded for it are held, which takes a State.
-    if (infraSources.has(url) && !state) initStateFromPackage(url)
-    holdInfraAddons(url)
     if (infraSources.has(url)) {
+      // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
+      if (!state) initStateFromPackage(url)
       const isEntry = !parentURL && entryUnseen
       if (isEntry) entryUnseen = false
       promoteInfraUrl(url, { isEntry })
@@ -481,35 +483,18 @@ export function install() {
   // The --fs patches wait for initState: their mode may come from stasis.config.json.
 }
 
-// The native addons loaded before the entry resolved, a preload's: runner infrastructure, as its modules are. Each
-// by the hash of its bytes then, which the process keeps loaded, until the app reaches it.
-const infraAddons = new Map()
+// The native addons loaded before the run had a State to hold them to, a preload's: each by the hash of its bytes
+// then, which the process keeps loaded, whoever takes it next.
+const unheldAddons = new Map()
 
 // One the lockfile or the bundle attests is held to it (State's assertNativeAddon); `loaded` as it takes it.
 function holdNativeAddon(url, loaded) {
-  if (state && inScope(state, url)) recording(() => state.assertNativeAddon(url, loaded))
-}
-
-// The app reached `url`: an addon a preload loaded, or a module of the preload's, cached with the addons it and
-// what it loaded took. None is loaded anew, so each is held as the preload loaded it, as its module the app
-// reaches is (assertInfraMatchesBundle). Before a promotion, which drops the edges followed here.
-function holdInfraAddons(url) {
-  // With no State yet none is held, and none is dropped as though it were.
-  if (infraAddons.size === 0 || entryUnresolved || !state) return
-  const reached = new Set([url])
-  // A Set visits what is added to it.
-  for (const at of reached) {
-    const loaded = infraAddons.get(at)
-    if (loaded !== undefined) {
-      holdNativeAddon(at, loaded)
-      infraAddons.delete(at)
-    }
-    for (const edge of infraEdges.get(at)?.values() ?? []) reached.add(edge.url)
-  }
+  if (inScope(state, url)) recording(() => state.assertNativeAddon(url, loaded))
 }
 
 // Node loads a native addon from disk by its path, past both hooks: require()'s `.node` handler comes down to
-// process.dlopen, as a call of it does. One the lockfile or the bundle attests is held to it before it runs.
+// process.dlopen, as a call of it does. One the lockfile or the bundle attests is held to it before it runs, or
+// where the run has no State yet (initState), as soon as it has.
 function patchDlopen() {
   const original = process.dlopen
   process.dlopen = function dlopen(module, filename, ...rest) {
@@ -517,11 +502,11 @@ function patchDlopen() {
     if (typeof filename === 'string' && basename(filename) !== filename) {
       const path = resolvePath(filename)
       const url = pathToFileURL(path).toString()
-      if (!entryUnresolved) {
+      if (state) {
         holdNativeAddon(url)
-      } else if (!infraAddons.has(url)) {
+      } else if (!unheldAddons.has(url)) {
         try {
-          infraAddons.set(url, sha512integrity(readFileSync(path)))
+          unheldAddons.set(url, sha512integrity(readFileSync(path)))
         } catch { /* the load itself fails on it */ }
       }
     }
@@ -582,8 +567,6 @@ function patchCjsResolution() {
       }
       if (typeof resolved === 'string' && isAbsolute(resolved)) resolvedUrl = pathToFileURL(resolved).toString()
     }
-    // Not a preload's own require() of what it loaded.
-    if (resolvedUrl !== undefined && infraAddons.size > 0 && !infraUrls.has(pathToFileURL(parent.filename).toString())) holdInfraAddons(resolvedUrl)
     if (resolvedUrl !== undefined && !state.config.loadBundle) {
       state.observeExecution(resolvedUrl)
       promoteInfraUrl(resolvedUrl)
