@@ -75,7 +75,8 @@ stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # -
   directory, which is the artifact's root, or by a
   [glob pattern](bundle.md#entry-patterns) matching that path, as Node's
   `path.matchesGlob` matches it, none in a `node_modules`. A key that is its
-  path is taken before a pattern.
+  path is taken before a pattern, and a pattern `stasis bundle` refuses for a
+  `.` or `..` in it is refused here too.
 
 ## Externals
 

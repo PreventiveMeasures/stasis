@@ -617,8 +617,8 @@ test("buildGitHubBundle takes a glob pattern in stasis.config.json's entries as 
     /^Error: buildGitHubBundle: stasis\.config\.json: entries "apps\/a\/src\/index\.js" names the same entry as "apps\/\*\/src\/index\.js": apps\/a\/src\/index\.js$/u)
   await t.assert.rejects(build({ client: fakeClient(repo({ 'nope/*.js': {} })) }), /^Error: entry not found: \/nope\/\*\.js$/u)
   // Nor may a brace list climb out of the config's directory.
-  const climbing = { 'up.js': '', 'sub/package.json': json({ name: 'p', version: '1.0.0' }), 'sub/pnpm-lock.yaml': lockfile('.'), 'sub/a.js': '', 'sub/stasis.config.json': json({ entries: { '{../up,a}.js': {} } }) }
-  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(climbing), cwd: 'sub', packageManager: 'pnpm' }), /^Error: buildVfsBundle: stasis\.config\.json: entries "\{\.\.\/up,a\}\.js": an entry must be a path relative to the directory of stasis\.config\.json, within it$/u)
+  const climbing = { 'up.js': '', 'sub/package.json': json({ name: 'p', version: '1.0.0' }), 'sub/pnpm-lock.yaml': lockfile('.'), 'sub/a.js': '', 'sub/stasis.config.json': json({ entries: { '..{,x}/up.js': {} } }) }
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(climbing), cwd: 'sub', packageManager: 'pnpm' }), /^Error: buildVfsBundle: stasis\.config\.json: entries "\.\.\{,x\}\/up\.js": an entry must be a path relative to the directory of stasis\.config\.json, within it$/u)
 })
 
 test("buildGitHubBundle builds stasis.config.json's entries with the options it sets that are left out", async (t) => {

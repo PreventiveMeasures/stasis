@@ -2,7 +2,7 @@ import { basename, isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
-import { CONFIG_FILE, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, sortedByPath, toPosix, upsert } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, sortedByPath, toPosix, upsert } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
@@ -247,12 +247,12 @@ export const readConfigDefine = (cwd = process.cwd(), host = diskHost) => config
 // The entryKeys a key of `entries` names: its own, or those it matches as a glob pattern, as `extra`'s glob (Node's,
 // whose `*` skips dotfiles) finds them, none in a node_modules: a build laying its tree out from the lockfile globs
 // before any is there. Matching nothing, it stands for itself, as a shell's. Null where it, or a match, is out of
-// `cwd`, which a brace list may climb out of (`{../a,b}.js`).
-function keysNamed(cwd, entry, host) {
+// `cwd`, which a brace list may yet build a `..` to climb out of (`..{,a}/b.js`).
+function keysNamed(what, cwd, entry, host) {
   const key = isAbsolute(entry) ? null : entryKey(cwd, entry)
   if (key === null) return null
   if (!isGlobPattern(entry)) return [key]
-  const found = host.glob(entry, { cwd, exclude: (path) => basename(path) === 'node_modules' }).map((path) => entryKey(cwd, path))
+  const found = host.glob(entryGlob(what, entry), { cwd, exclude: (path) => basename(path) === 'node_modules' }).map((path) => entryKey(cwd, path))
   if (found.includes(null)) return null
   // Node holds `exclude` to its `**` alone.
   const matches = sortedByPath(new Set(found.filter((path) => !hasNodeModulesSegment(path))))
@@ -270,7 +270,7 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const named = new Map()
   for (const [entry, options] of Object.entries(entries)) {
     const what = `${CONFIG_FILE}: entries ${JSON.stringify(entry)}`
-    const keys = keysNamed(cwd, entry, host)
+    const keys = keysNamed(what, cwd, entry, host)
     if (keys === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
     const values = entryFlags(what, options)
     const policy = parsePolicy(what, options)

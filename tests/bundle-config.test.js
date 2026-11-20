@@ -112,10 +112,10 @@ test('readConfigEntries takes a glob pattern as the paths it matches, each an en
     ['lib/shared.js', { entry: 'lib/shared.js', values: {} }],
   ], 'sorted, no dot directory')
   const keys = (entries) => [...read(entries).keys()]
-  // As Node's glob reads it, a `./` or `..` in it too; `**` skips a node_modules, and no pattern reaches into one.
+  // As Node's glob reads it, past a leading `./`; `**` skips a node_modules, and no pattern reaches into one.
   t.assert.deepStrictEqual(keys({ 'apps/**/index.js': {} }), ['apps/a/src/index.js', 'apps/b/src/index.js'])
   t.assert.deepStrictEqual(keys({ 'apps/*/node_modules/*/index.js': {} }), ['apps/*/node_modules/*/index.js'])
-  t.assert.deepStrictEqual(keys({ './apps/*/src/../src/*.{js,ts}': {} }), ['apps/a/src/index.js', 'apps/a/src/worker.ts', 'apps/b/src/index.js', 'apps/b/src/own.js'])
+  t.assert.deepStrictEqual(keys({ './apps/*/src/*.{js,ts}': {} }), ['apps/a/src/index.js', 'apps/a/src/worker.ts', 'apps/b/src/index.js', 'apps/b/src/own.js'])
   t.assert.deepStrictEqual(keys({ 'apps/!(a)/src/[io]*.js': {} }), ['apps/b/src/index.js', 'apps/b/src/own.js'])
   t.assert.deepStrictEqual(keys({ 'apps/.*/src/index.js': {} }), ['apps/.cache/src/index.js'])
   // Matching nothing, it stands for itself, as a shell's: a missing entry, or a file of that very name.
@@ -131,7 +131,7 @@ test('readConfigEntries takes a glob pattern as the paths it matches, each an en
   t.assert.deepStrictEqual(configEntries(null), [])
 }))
 
-test('readConfigEntries refuses two keys naming the same file, a pattern and a path or two patterns, and a pattern matching out of the directory', withTmp((t, tmp) => {
+test('readConfigEntries refuses two keys naming the same file, a pattern and a path or two patterns, and a pattern walking through . or .. or matching out of the directory', withTmp((t, tmp) => {
   const refused = (entries, message) => {
     apps(tmp, { entries })
     t.assert.throws(() => readConfigEntries(tmp), { message })
@@ -139,10 +139,16 @@ test('readConfigEntries refuses two keys naming the same file, a pattern and a p
   refused({ 'apps/*/src/index.js': {}, 'apps/b/src/index.js': { jsx: true } }, 'stasis.config.json: entries "apps/b/src/index.js" names the same entry as "apps/*/src/index.js": apps/b/src/index.js')
   refused({ './apps/b/src/index.js': {}, 'apps/*/src/index.js': {} }, 'stasis.config.json: entries "apps/*/src/index.js" names the same entry as "./apps/b/src/index.js": apps/b/src/index.js')
   refused({ 'apps/*/src/index.js': {}, 'apps/**/*.ts': {}, 'apps/{a,c}/src/*.js': {} }, 'stasis.config.json: entries "apps/{a,c}/src/*.js" names the same entry as "apps/*/src/index.js": apps/a/src/index.js')
+  // A path's `..` is resolved; a pattern's would be walked by the glob alone, which `stasis build` has none of.
+  apps(tmp, { entries: { './apps/a/../b/src/index.js': {} } })
+  t.assert.deepStrictEqual([...readConfigEntries(tmp).keys()], ['apps/b/src/index.js'])
+  for (const pattern of ['apps/*/../a/src/index.js', '{apps/a,lib}/../lib/shared.js', '{./apps,lib}/*.js', './apps/./*/src/index.js', '{..,apps}/*.js']) {
+    refused({ [pattern]: {} }, `stasis.config.json: entries ${JSON.stringify(pattern)}: a glob pattern may hold no . or .. segment but a leading ./`)
+  }
   const outside = /an entry must be a path relative to the directory of stasis\.config\.json, within it$/u
   refused({ '../*.js': {} }, outside)
-  writeTree(tmp, { 'sub/a.js': '', 'sub/stasis.config.json': { entries: { '{../lib/shared,a}.js': {} } } })
-  t.assert.throws(() => readConfigEntries(join(tmp, 'sub')), { message: outside }, 'a brace list climbing out')
+  writeTree(tmp, { 'sub/a.js': '', 'sub/stasis.config.json': { entries: { '..{,x}/lib/*.js': {} } } })
+  t.assert.throws(() => readConfigEntries(join(tmp, 'sub')), { message: outside }, 'a brace list building a .. to climb out')
 }))
 
 test('bundlePlan builds what a pattern matches with its options, an entry given among them too', withTmp((t, tmp) => {

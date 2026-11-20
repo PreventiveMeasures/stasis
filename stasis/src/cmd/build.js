@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
-import { CONFIG_FILE, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
@@ -199,7 +199,8 @@ function configEntryOptions(state, entry) {
   if (entries !== undefined && !isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
   // As `stasis bundle` names it: by its path, else by a glob pattern matching it, none of them in a node_modules.
   const pathOf = (key) => toPosix(relative(state.root, resolve(state.root, key)))
-  const matches = (key) => isGlobPattern(key) && !hasNodeModulesSegment(entry) && posix.matchesGlob(entry, pathOf(key))
+  const label = (key) => `stasis build: the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(key)}`
+  const matches = (key) => isGlobPattern(key) && !hasNodeModulesSegment(entry) && posix.matchesGlob(entry, entryGlob(label(key), key))
   const keys = Object.keys(entries ?? {})
   const name = keys.find((key) => pathOf(key) === entry) ?? keys.find(matches)
   if (name === undefined && !shared) return null

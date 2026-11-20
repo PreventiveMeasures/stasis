@@ -480,6 +480,12 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.equal(await built({ 'apps/*/src/index.js': { define: 'B=1' } }, 'apps/.a/src/index.js'), null)
     t.assert.equal(await built({ '**/index.js': { define: 'B=1' } }, 'node_modules/dep/index.js'), null)
     t.assert.deepStrictEqual(await built({ 'node_modules/dep/index.js': { define: 'B=1' } }, 'node_modules/dep/index.js'), ['--define=B=1', '"node_modules/dep/index.js"'])
+    // A pattern is matched as `stasis bundle` globs it, its braces whole: one walking through a `..` is refused, as there.
+    t.assert.deepStrictEqual(await built({ '{apps/a,lib}/src/*.js': { define: 'B=1' } }), ['--define=B=1', '"{apps/a,lib}/src/*.js"'])
+    write({ '{apps/a/src,lib}/../src/index.js': { define: 'B=1' } })
+    const walking = await runCli(['build', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(walking.status, 0)
+    t.assert.match(walking.stderr, /stasis build: the artifact's stasis\.config\.json: entries "\{apps\/a\/src,lib\}\/\.\.\/src\/index\.js": a glob pattern may hold no \. or \.\. segment but a leading \.\//u)
   }))
 
   test('build externalizes a non-recorded specifier only when --external names it', withTmp(async (t, tmp) => {

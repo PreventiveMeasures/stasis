@@ -302,6 +302,11 @@ holding none of these is a path, as ever.
   patterns, whatever options they set: which of them builds it is no guess to
   make. Leave a file out of a pattern to give it options of its own
   (`apps/!(web)/src/index.js` beside `apps/web/src/index.js`).
+- A pattern holds no `.` or `..` segment but a leading `./`, in a brace list
+  either (`{apps/a,lib}/../index.js`), and one that does is refused: a glob
+  walks through one in a tree, where [`stasis build`](build.md#entry-options-stasisconfigjson),
+  matching an entry's path against the pattern, has none to walk. A path's
+  `..` is resolved as ever.
 - An entry given on the command line is one the config names where a pattern
   there matches it, as where a key is its path.
 
