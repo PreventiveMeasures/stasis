@@ -7,6 +7,7 @@ import { Vfs } from '@preventive/vfs'
 import { checkVfsOptions, fieldResolverFor } from '../cmd/bundle.js'
 import { configuredBuilds } from '../cmd/bundle-options.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
+import { nextConfigIn } from '../next-entries.js'
 import { resolveConditions } from '../resolve-fields.js'
 import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
 import { checkKind, checkLazy, checkVersion, packageManagerOf, vfsHost } from './tree.js'
@@ -108,8 +109,15 @@ export function expandEntries(name, host, cwd, entries) {
   })
 }
 
+// A Next.js app's package.json names none: its next.config.* stands for its files then.
+function jsEntries(host, dir, options) {
+  const named = packageEntries(host, dir, options)
+  const config = named.length === 0 ? nextConfigIn(dir, host) : undefined
+  return config === undefined ? named : [config]
+}
+
 const KINDS = {
-  js: { standIn: 'index.js', entries: packageEntries, none: 'has no package.json naming a JS entry point there' },
+  js: { standIn: 'index.js', entries: jsEntries, none: 'has no package.json naming a JS entry point there, nor a next.config.*' },
   sol: { standIn: 'index.sol', entries: solidityEntries, none: 'has no .sol entry point directly in it, under contracts/, or under its source directory' },
 }
 

@@ -519,10 +519,10 @@ test('buildGitHubBundle refuses to build without entries where no package.json n
   }
   await Promise.all(Object.entries(cases).map(async ([what, files]) => {
     const client = fakeClient({ 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '', ...files })
-    await t.assert.rejects(build({ client }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no entries given, and the repo root has no package\\.json naming a JS entry point there$`, 'u'), what)
+    await t.assert.rejects(build({ client }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no entries given, and the repo root has no package\\.json naming a JS entry point there, nor a next\\.config\\.\\*$`, 'u'), what)
   }))
   const client = fakeClient({ 'apps/p/pnpm-lock.yaml': lockfile('.'), 'apps/p/src/a.js': '' })
-  await t.assert.rejects(build({ client, directory: 'apps/p' }), /: no entries given, and apps\/p has no package\.json naming a JS entry point there$/u)
+  await t.assert.rejects(build({ client, directory: 'apps/p' }), /: no entries given, and apps\/p has no package\.json naming a JS entry point there, nor a next\.config\.\*$/u)
 })
 
 // A repo whose stasis.config.json's `entries` builds an app with --metro and a CLI without, beside a

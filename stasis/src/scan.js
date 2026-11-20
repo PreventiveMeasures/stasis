@@ -97,6 +97,17 @@ function nativePattern(node) {
 
 const NO_CHILD_KEYS = new Set(['type', 'loc', 'range', 'start', 'end'])
 
+// `fn` called on each node of an AST, parent before children.
+export function walkAst(node, fn) {
+  if (Array.isArray(node)) {
+    for (const child of node) walkAst(child, fn)
+    return
+  }
+  if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+  fn(node)
+  for (const key of Object.keys(node)) if (key !== 'type') walkAst(node[key], fn)
+}
+
 // `fold`: define.js's branchFolder, or null. The side of a branch that can't run is never walked.
 function findCallSpecifiers(ast, push, fold = null) {
   const pushSpec = (kind, node) => {

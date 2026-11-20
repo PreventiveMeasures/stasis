@@ -273,6 +273,9 @@ stasis bundle --metro-resolver   # bundles index.js with --metro and bin.js with
 stasis bundle --metro-resolver --output=app.br index.js
 ```
 
+An entry it names that is a `next.config.*` stands for its Next.js app's files,
+each built with the entry's options there: see [Next.js apps](#nextjs-apps-nextconfig).
+
 ### Entry patterns
 
 A key may be a glob pattern instead of a path, standing for every path it
@@ -309,6 +312,70 @@ holding none of these is a path, as ever.
   `..` is resolved as ever.
 - An entry given on the command line is one the config names where a pattern
   there matches it, as where a key is its path.
+
+## Next.js apps (`next.config.*`)
+
+A Next.js app has no entry of its own: `next build` takes its files by name,
+from its `app` and `pages` directories and beside them. An entry that is its
+`next.config.js`, `.mjs`, `.ts` or `.mts` stands for those files too, found
+as Next 16 finds them, and each is an entry of the bundle beside it, built
+with its options:
+
+```sh
+stasis bundle --typescript --resources=css,svg,woff2 apps/web/next.config.ts
+```
+
+- The app's `app` directory, and its `pages` directory, are each the one in
+  the config's directory, else the one in its `src/`. The two in different
+  directories are refused, as Next refuses them; with neither, the config is
+  an entry alone, as it was.
+- Of `app`, each `page`, `route`, `layout`, `template`, `default`, `loading`,
+  `error`, `not-found`, `forbidden` and `unauthorized` file, and the code of
+  each metadata route (`sitemap`, `icon`, `apple-icon`, `opengraph-image` and
+  `twitter-image`, and a numbered variant of those four: `icon1`), at any
+  depth, whether or not a page below takes it; and `robots`, `manifest`,
+  `global-error` and `global-not-found` directly in `app` alone. A private
+  folder (`_components`) is left out with what is under it. A static metadata
+  file (`favicon.ico`, `robots.txt`) is no code: name it in
+  [`extra`](file-formats.md#stasisconfigjson), as the `public` directory.
+- Of `pages`, every file, `_app`, `_document` and `api/` among them, but a
+  `.d.ts`.
+- Beside the directory holding them, `proxy` (`middleware` before Next 16) and
+  `instrumentation`; and `instrumentation-client` in `src/`, else in the
+  config's directory.
+- Each by an extension of the config's `pageExtensions`, `tsx`, `ts`, `jsx`
+  and `js` by default (`page.page.tsx` and `index.page.tsx` with
+  `pageExtensions: ['page.tsx']`). The config is read for them, not run: a list
+  of strings it gives `pageExtensions`, as a property or assigned, is taken,
+  and any other setting (a variable, a spread, a call) refused, as is a file it
+  makes an entry that is no JS/TS file (`page.mdx`). Name the app's entries
+  then.
+- A link is followed, as Next follows it, and one leading nowhere skipped.
+- A file also named, before or after it, is one entry. A pattern among
+  `entries` (`apps/*/next.config.ts`, see [Entry patterns](#entry-patterns))
+  stands for each config it matches, and so for each app's files.
+  `stasis build` reads an entry's options by the key that is its path or a
+  pattern matching it (see [build](build.md#entry-options-stasisconfigjson)):
+  an app's file, which the config's key doesn't name, is built with the flags
+  given.
+
+The import graph is resolved as the build's options resolve it, not as Next's
+compiler does: not through its aliases (an `app`'s React is Next's own copy)
+nor under the `react-server` condition its server components take. A Next app
+imports CSS, images and fonts, which [`--resources`](#resources-and-manifests)
+carries, and resolves `@/` by its `tsconfig.json` `paths`, which
+[`--typescript`](#typescript---typescript) honors. Next inlines
+`process.env.NODE_ENV` and `process.env.NEXT_RUNTIME` (`"nodejs"` on the
+server) as it builds, which [`--define`](#defines---define) gives.
+
+In a workspace (Turborepo's, say), the bundle's root is the workspace's (see
+[Output](#output)), and so is the `stasis.config.json` naming the entry: one in
+the app's directory roots the build there, below the `node_modules` its
+dependencies are installed in.
+
+```json
+{ "entries": { "apps/web/next.config.ts": { "typescript": true, "resources": ["css", "svg", "woff2"] } } }
+```
 
 ## Resolution
 

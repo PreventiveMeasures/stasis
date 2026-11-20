@@ -284,7 +284,11 @@ commit's tree it matches, as `stasis bundle` matches a checkout's. Else:
 
 - a JS bundle takes the JS files the directory's `package.json` names (`main`,
   each subpath of `exports`, each `bin`), resolved as the build resolves them
-  (`--conditions`, `--mainFields`, `--metro --platforms`, `--typescript`);
+  (`--conditions`, `--mainFields`, `--metro --platforms`, `--typescript`); or,
+  where it names none, the directory's `next.config.*` (the first of `.js`,
+  `.mjs`, `.ts` and `.mts`, as Next takes it), which stands for the files of
+  its Next.js app, as [`stasis bundle`](bundle.md#nextjs-apps-nextconfig) takes
+  it (`stasis github-bundle owner/name/apps/web`);
 - a Soldeer bundle takes its `.sol` files directly in it, under `contracts/`,
   and under its source directory (`foundry.toml`'s `src`, else `src/`), but not
   its tests, scripts, mocks, or dependency and build directories.
