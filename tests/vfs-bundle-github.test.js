@@ -95,6 +95,33 @@ test("buildGitHubBundle holds a commit given by its sha to the repo's history, r
   t.assert.ok(!methods(many).includes('getRepoTarball'), 'nothing downloaded')
 })
 
+test("buildGitHubBundle builds a branch's head, and holds a commit said to be of a branch to that branch's history first, listing nothing", async (t) => {
+  const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' }
+  const RELEASE = 'd'.repeat(40)
+  const history = { main: [], release: [RELEASE, SHA], other: ['e'.repeat(40)] }
+  // No commit given: the branch's head, the repo's own already.
+  const head = fakeClient(files, { history })
+  t.assert.equal((await build({ client: head, sha: undefined, branch: 'release', entries: ['src/a.js'] })).bundle.repo.commit, RELEASE)
+  t.assert.deepStrictEqual(head.calls, [['getRepoHead', GITHUB, 'release'], ['getRepoTarball', GITHUB, RELEASE]])
+  // A commit of it: in its history, or at its head, with neither tags nor branches listed.
+  const within = fakeClient(files, { history })
+  t.assert.equal((await build({ client: within, branch: 'release', entries: ['src/a.js'] })).bundle.repo.commit, SHA)
+  t.assert.deepStrictEqual(within.calls, [['getRepoHead', GITHUB, 'release'], ['compareCommits', GITHUB, SHA, 'release'], ['getRepoTarball', GITHUB, SHA]])
+  const at = fakeClient(files, { history })
+  await build({ client: at, sha: RELEASE, branch: 'release', entries: ['src/a.js'] })
+  t.assert.deepStrictEqual(at.calls, [['getRepoHead', GITHUB, 'release'], ['getRepoTarball', GITHUB, RELEASE]])
+  // A commit of another branch than the one said, or of a branch that isn't there: found as without it.
+  const elsewhere = fakeClient(files, { history })
+  t.assert.equal((await build({ client: elsewhere, branch: 'other', entries: ['src/a.js'] })).bundle.repo.commit, SHA)
+  t.assert.deepStrictEqual(methods(elsewhere), ['getRepoHead', 'compareCommits', 'getRepoHead', 'compareCommits', 'listRepoTags', 'listRepoBranches', 'compareCommits', 'compareCommits', 'getRepoTarball'])
+  t.assert.equal((await build({ client: fakeClient(files, { history }), branch: 'gone', entries: ['src/a.js'] })).bundle.repo.commit, SHA)
+  // A fork's is refused whatever branch it is said to be of; a branch to bundle the head of that isn't there, as GitHub refuses it.
+  const fork = fakeClient(files, { history: { main: [], release: [RELEASE] } })
+  await t.assert.rejects(build({ client: fork, branch: 'release', entries: ['src/a.js'] }), { message: `buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB} (a fork's, say, which GitHub serves through its name too): give a commit of its own` })
+  t.assert.ok(!methods(fork).includes('getRepoTarball'), 'nothing downloaded')
+  await t.assert.rejects(build({ client: fakeClient(files, { history }), sha: undefined, branch: 'gone', entries: ['src/a.js'] }), { name: 'HttpError', status: 404 })
+})
+
 // A package whose package.json names entry points in every way it can, and some it can't be built from.
 const namingEntries = {
   'package.json': json({
@@ -1059,6 +1086,8 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   await t.assert.rejects(build({ client, github: undefined, entries: ['a.js'] }), /github is required/u)
   await t.assert.rejects(build({ client, tag: 'v1.0.0', entries: ['a.js'] }), /^Error: buildGitHubBundle: sha and tag both name the commit: give one$/u)
   await t.assert.rejects(build({ client, sha: undefined, tag: '', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: tag must be a non-empty string$/u)
+  await t.assert.rejects(build({ client, sha: undefined, tag: 'v1.0.0', branch: 'main', entries: ['a.js'] }), /^Error: buildGitHubBundle: tag and branch both name the commit: give one$/u)
+  await t.assert.rejects(build({ client, branch: '', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: branch must be a non-empty string$/u)
   await t.assert.rejects(build({ client, packageManager: 'soldeer', conditions: ['x'] }), /^Error: buildGitHubBundle: --conditions is only valid for JS bundles$/u)
   await t.assert.rejects(build({ client, packageManager: 'bun', entries: ['a.js'] }), /packageManager must be one of/u)
   await t.assert.rejects(build({ client, libc: 'bionic', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: libc must be one of/u)
@@ -1675,7 +1704,7 @@ async function githubBundleCli(args, { nodeArgs = [], cwd, env } = {}) {
   return { status, stderr: Buffer.concat(stderr).toString('utf8') }
 }
 
-test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, --generate or --no-generate, and --lockfile-only with no --output, --brotli-quality or empty --lockfile', async (t) => {
+test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, --tag or --branch, --generate or --no-generate, and --lockfile-only with no --output, --brotli-quality or empty --lockfile', async (t) => {
   const usage = async (args) => {
     const { status, stderr } = await githubBundleCli(args)
     return { status, error: stderr.split('\n')[0] }
@@ -1692,6 +1721,7 @@ test('stasis github-bundle requires the repo, as owner/name[/path] or --github, 
     [['--directory=packages/api', GITHUB, 'a.js'], both],
     [[`--github=${GITHUB}`, `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
     [[GITHUB, `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
+    [[GITHUB, '--tag=v1.0.0', '--branch=release', 'a.js'], 'Error: github-bundle takes --tag or --branch, not both'],
     [[GITHUB, '--no-generate', '--generate=prisma', 'a.js'], 'Error: github-bundle takes --generate or --no-generate, not both'],
     // --no-generate taken alone, and refused for what follows it.
     [[GITHUB, '--no-generate', `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
@@ -1768,6 +1798,26 @@ test("stasis github-bundle --sha refuses a commit of no branch's or tag's histor
   t.assert.equal(status, 1, stderr)
   t.assert.ok(stderr.includes(`Error: buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB} (a fork's, say, which GitHub serves through its name too): give a commit of its own\n`), stderr)
   t.assert.deepStrictEqual(await readdir(out), [], 'no bundle or lockfile written')
+})
+
+test("stasis github-bundle --branch bundles a branch's head, and with --sha holds that commit to the branch's history", async (t) => {
+  const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' }
+  const RELEASE = 'd'.repeat(40)
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-cli-branch-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const run = (args, history) => githubBundleCli([GITHUB, '--branch=release', ...args, 'src/a.js'], { nodeArgs: [`--import=${FAKE_REPO}`], cwd: tmp,
+    env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), STASIS_TEST_CLIENT: JSON.stringify({ history }), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache') } })
+  const head = await run(['--output=head.br'], { main: [], release: [RELEASE] })
+  t.assert.equal(head.status, 0, head.stderr)
+  t.assert.ok(head.stderr.includes(`from ${GITHUB}@${RELEASE} to head.br`), head.stderr)
+  const within = await run([`--sha=${SHA}`, '--output=within.br'], { main: [], release: [RELEASE, SHA] })
+  t.assert.equal(within.status, 0, within.stderr)
+  t.assert.ok(within.stderr.includes(`from ${GITHUB}@${SHA} to within.br`), within.stderr)
+  // A fork's commit, said to be of it: refused all the same.
+  const fork = await run([`--sha=${SHA}`, '--output=fork.br'], { main: [], release: [RELEASE] })
+  t.assert.equal(fork.status, 1, fork.stderr)
+  t.assert.ok(fork.stderr.includes(`${SHA} is in the history of no branch or tag of ${GITHUB}`), fork.stderr)
+  t.assert.deepStrictEqual((await readdir(tmp)).filter((name) => name.endsWith('.br')).toSorted(), ['head.br', 'within.br'])
 })
 
 test('stasis github-bundle owner/name/path --lockfile-only writes the lockfile alone, named as the bundle would be', async (t) => {

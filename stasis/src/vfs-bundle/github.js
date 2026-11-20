@@ -69,10 +69,13 @@ async function repoFiles(client, { github, sha, where }) {
 }
 
 // Checked as the Bundle checks them, before anything is fetched; a `path` as a `directory`, but for a pattern's `*`.
-function checkRepo(name, { github, sha, tag, directory, path }) {
+function checkRepo(name, { github, sha, tag, branch, directory, path }) {
   if (github === undefined) throw new Error(`${name}: github is required`)
-  if (tag !== undefined && (typeof tag !== 'string' || tag === '')) throw new TypeError(`${name}: tag must be a non-empty string`)
+  for (const [key, value] of Object.entries({ tag, branch })) {
+    if (value !== undefined && (typeof value !== 'string' || value === '')) throw new TypeError(`${name}: ${key} must be a non-empty string`)
+  }
   if (sha !== undefined && tag !== undefined) throw new Error(`${name}: sha and tag both name the commit: give one`)
+  if (tag !== undefined && branch !== undefined) throw new Error(`${name}: tag and branch both name the commit: give one`)
   if (directory !== undefined && path !== undefined) throw new Error(`${name}: directory and path both name the directory: give one`)
   for (const [key, value] of Object.entries({ github, commit: sha, directory: directory || undefined })) {
     if (value !== undefined && !isValidRepoField(key, value)) throw new Error(`${name}: invalid ${key}: ${JSON.stringify(value)}`)
@@ -136,14 +139,14 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
 }
 
 // GitHub serves a commit pushed to any fork of a repo through the repo's name too, its tarball and trees alike: one
-// given by its sha is held to the repo's own history, as `stasis validate` holds it (historyOf). A tag's and the
-// default branch's head are the repo's own already.
-async function assertOwnCommit(name, client, github, sha) {
+// given by its sha is held to the repo's own history, as `stasis validate` holds it (historyOf), that of the
+// `branch` it is said to be of first. A tag's and a branch's head are the repo's own already.
+async function assertOwnCommit(name, client, github, sha, branch) {
   const { ValidateError, followingMoves, historyOf } = await import('../validate.js')
   const repository = followingMoves(client, github)
   let ref
   try {
-    ref = await historyOf(repository, sha)
+    ref = await historyOf(repository, sha, { branch })
   } catch (error) {
     if (error instanceof ValidateError) throw new Error(`${name}: ${error.message}`, { cause: error })
     throw error
@@ -151,13 +154,14 @@ async function assertOwnCommit(name, client, github, sha) {
   if (ref === null) throw new Error(`${name}: ${sha} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give a commit of its own`)
 }
 
-// `own`: a given sha is held to the repo's history (assertOwnCommit), before anything else is fetched.
-async function repoTree(name, { github, sha, tag, directory, path, client, packageManager, own = false }, options) {
+// `own`: a given sha is held to the repo's history (assertOwnCommit), before anything else is fetched. Without
+// one, the commit is the one `tag` names, else the head of `branch`, the default one where none is given.
+async function repoTree(name, { github, sha, tag, branch, directory, path, client, packageManager, own = false }, options) {
   checkAhead(name, packageManager, options)
-  checkRepo(name, { github, sha, tag, directory, path })
+  checkRepo(name, { github, sha, tag, branch, directory, path })
   client ??= createClient({ token: null })
-  if (own && sha !== undefined) await debugTimed('Held the commit to the repo\'s history', () => assertOwnCommit(name, client, github, sha))
-  sha ??= tag === undefined ? (await client.getRepoHead({ repo: github })).oid : (await client.getRepoTag({ repo: github, tag })).oid
+  if (own && sha !== undefined) await debugTimed('Held the commit to the repo\'s history', () => assertOwnCommit(name, client, github, sha, branch))
+  sha ??= tag === undefined ? (await client.getRepoHead({ repo: github, branch })).oid : (await client.getRepoTag({ repo: github, tag })).oid
   const where = `${name}: ${github}@${sha}`
   const list = memoized((dir) => client.listRepoDir({ repo: github, sha, directory: dir }))
   if (path) {
@@ -196,10 +200,10 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
 }
 
 // Nothing is read from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id.
-export async function buildGitHubBundle({ github, sha, tag, directory, path, client, packageManager, ...options } = {}) {
+export async function buildGitHubBundle({ github, sha, tag, branch, directory, path, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   checkCache('buildGitHubBundle', options.cache)
-  const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, directory, path, client, packageManager, own: true }, options))
+  const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, branch, directory, path, client, packageManager, own: true }, options))
   let { entries } = tree
   if (entries === undefined) {
     const suggested = defaultEntries('buildGitHubBundle', tree.host, tree.cwd, tree.packageManagers, options)

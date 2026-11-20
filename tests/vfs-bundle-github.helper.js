@@ -2,6 +2,7 @@ import { posix } from 'node:path'
 
 import { compress, decompress } from '@preventive/archive/compression.js'
 import { ArchiveError, pack, unpack } from '@preventive/archive/tar.js'
+import { HttpError } from '../stasis/src/validate.js'
 import { Vfs } from '../stasis/src/vfs-bundle.js'
 
 // A fake @preventive/upstream/github.js client over a repo held in memory, for the buildGitHubBundle
@@ -92,9 +93,11 @@ export const fakeClient = (files, { tags = {}, history } = {}) => {
       calls.push(['getRepo', repo])
       return { full_name: repo }
     },
-    async getRepoHead({ repo, branch }) {
-      calls.push(['getRepoHead', repo, branch])
-      return { branch: branch ?? 'main', oid: HEAD }
+    // A branch the repo hasn't is a 404, as GitHub's ref of it is.
+    async getRepoHead({ repo, branch = 'main' }) {
+      calls.push(['getRepoHead', repo, branch === 'main' ? undefined : branch])
+      if (!Object.hasOwn(branches, branch)) throw new HttpError(404, `GET git/ref/heads/${branch} 404: {"message":"Not Found"}`)
+      return { branch, oid: headOf(branch) }
     },
     async getRepoTag({ repo, tag }) {
       calls.push(['getRepoTag', repo, tag])
