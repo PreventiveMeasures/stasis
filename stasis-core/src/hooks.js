@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { State } from './state.js'
 import { excludedText } from './policy.js'
 import { installFsHooks } from './fs.js'
-import { inScope } from './state-util.js'
+import { inScope, sha512integrity } from './state-util.js'
 import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
 
 // Snapshot off the namespace so `--fs` can't redirect stasis's own capture/shard reads.
@@ -474,7 +474,47 @@ export function install() {
   installed = true
   registerHooks({ load, resolve })
   patchCjsResolution()
+  patchDlopen()
   // The --fs patches wait for initState: their mode may come from stasis.config.json.
+}
+
+// The native addons loaded before the entry resolved, a preload's: runner infrastructure, as its modules are. Each
+// by the hash of its bytes then, which the process keeps loaded; and those the app reached since, held to it.
+const infraAddons = new Map()
+const infraAddonsHeld = new Set()
+
+// One the lockfile or the bundle attests is held to it (State's assertNativeAddon); `loaded` as it takes it.
+function holdNativeAddon(url, loaded) {
+  if (inScope(state, url)) recording(() => state.assertNativeAddon(url, loaded))
+}
+
+// A preload's addon the app requires in turn comes from the require cache, with no load to hold: the one a
+// preload loaded is held, as its module the app reaches is (assertInfraMatchesBundle).
+function holdInfraAddon(url, parentURL) {
+  if (entryUnresolved || !infraAddons.has(url) || infraAddonsHeld.has(url) || infraUrls.has(parentURL)) return
+  holdNativeAddon(url, infraAddons.get(url))
+  infraAddonsHeld.add(url)
+}
+
+// Node loads a native addon from disk by its path, past both hooks: require()'s `.node` handler comes down to
+// process.dlopen, as a call of it does. One the lockfile or the bundle attests is held to it before it runs.
+function patchDlopen() {
+  const original = process.dlopen
+  process.dlopen = function dlopen(module, filename, ...rest) {
+    // A bare name is one the system searches for, and no file of the project's.
+    if (typeof filename === 'string' && filename.includes('/')) {
+      const path = resolvePath(filename)
+      const url = pathToFileURL(path).toString()
+      if (!entryUnresolved) {
+        if (state) holdNativeAddon(url)
+      } else if (!infraAddons.has(url)) {
+        try {
+          infraAddons.set(url, sha512integrity(readFileSync(path)))
+        } catch { /* the load itself fails on it */ }
+      }
+    }
+    return original.call(this, module, filename, ...rest)
+  }
 }
 
 // registerHooks doesn't intercept the require() the ESM->CJS translator builds, which resolves against disk.
@@ -534,6 +574,7 @@ function patchCjsResolution() {
       state.observeExecution(resolvedUrl)
       promoteInfraUrl(resolvedUrl)
     }
+    if (resolvedUrl !== undefined) holdInfraAddon(resolvedUrl, pathToFileURL(parent.filename).toString())
     const result = originalLoad.call(this, request, parent, ...rest)
     // An attested source the load hook never served ran from DISK: fail closed, before anything trusts the run.
     if (resolvedUrl !== undefined && state.config.loadBundle

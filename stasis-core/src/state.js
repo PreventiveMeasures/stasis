@@ -1426,12 +1426,29 @@ export class State {
     return file !== undefined && this.sources.has(file)
   }
 
+  // Node loads a native addon from disk by its path, past the load hook, as no process loads one from memory. Before
+  // it runs, the one there is held to the bytes a bundle carries of it (this one, or one of a plugin's it reads),
+  // else to the hash the lockfile records. One neither attests is loaded as it is: no run captures one, below.
+  // `loaded`: the hash of one in the process already, in place of the one on disk.
+  assertNativeAddon(url, loaded) {
+    const file = this.#canonicalFileMaybe(url)
+    if (file === undefined) return
+    // Held to the lockfile itself, where there is one (getFile).
+    const carried = this.getFsFileFamily(url)
+    const attested = carried === undefined ? this.hashes.get(file) : sha512integrity(carried)
+    if (attested === undefined) return
+    loaded ??= sha512integrity(this.#host.readFile(this.absolute(url)))
+    if (loaded === attested) return
+    throw new Error(`stasis: refusing to load the native addon ${file}: it is not the one the ${carried === undefined ? 'lockfile records' : 'bundle carries'}`)
+  }
+
   // A resolve-only edge stays byte-less by design, but an EXECUTED file the load hook never saw is a hole a
   // frozen replay would never verify. addFile re-checks bytes in frozen modes, so tampering fails loudly.
   #backfillExecutedFiles() {
     for (const file of this.#executedFiles) {
       if (this.#filesCapturedThisRun.has(file)) continue
-      // A native addon is deliberately not captured: non-deterministic across installs.
+      // A native addon is deliberately not captured: non-deterministic across installs. One an artifact attests
+      // already is held to it as it loads (assertNativeAddon).
       if (isNativeArtifact(file)) continue
       const url = this.#urlOf(file)
       if (inScope(this, url)) this.addFile(url, { reason: 'run' })
