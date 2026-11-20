@@ -9,7 +9,7 @@ import { stripVTControlCharacters, styleText } from 'node:util'
 
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { AuditError, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
+import { AuditError, EMOJI, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
 import { DIM } from '../stasis/src/table.js'
 import { GITHUB, NPM, OSV, logos } from '../stasis/src/sixel.js'
@@ -760,6 +760,17 @@ test('printAuditReport: with icons, each id has its source\'s sixel icon drawn b
   for (const icon of [NPM, GITHUB, OSV]) shown = shown.replaceAll(`\x1b7${icon}\x1b8\x1b[2C`, '  ')
   t.assert.deepStrictEqual(rowsOf(shown).map((cells) => cells.at(-1)), ['id', 'GHSA-1111-1111-1111', 'GHSA-2222-2222-2222', 'MAL-2025-20690', 'X-1'], 'a source with no icon, its cells blank')
   t.assert.equal(new Set(shown.trimEnd().split('\n').map((line) => line.length)).size, 1, 'every line as wide')
+})
+
+test('printAuditReport: with EMOJI, each id has its source\'s emoji in the two cells, as text, with no room made below', (t) => {
+  const row = (source, id) => ({ ecosystem: 'npm', package: 'foo', installed: '1.0.0', vulnerable: '<2', severity: 'high', title: 't', id, source, reason: '' })
+  const report = { packages: [{}], rows: [row('registry', 'GHSA-1111-1111-1111'), row('repository', 'GHSA-2222-2222-2222'), row('osv', 'MAL-2025-20690'), row('elsewhere', 'X-1')] }
+  let out = ''
+  printAuditReport(report, { out: { write: (s) => { out += s } }, err: { write() {} }, colors: false, icons: EMOJI })
+  t.assert.ok(!out.includes('\x1b'), 'no escapes')
+  t.assert.deepStrictEqual(rowsOf(out).map((cells) => cells.at(-1)), ['id', '📦 GHSA-1111-1111-1111', '🐙 GHSA-2222-2222-2222', '🌐 MAL-2025-20690', 'X-1'], 'a source with no emoji, its cells blank')
+  // An emoji two cells wide, as its two UTF-16 units are: the borders where they are without one.
+  t.assert.equal(new Set(out.trimEnd().split('\n').map((line) => line.length)).size, 1, 'every line as wide')
 })
 
 test('printAuditReport: icons the size given, as sixel.js logos() picks them for the terminal\'s cells', (t) => {
