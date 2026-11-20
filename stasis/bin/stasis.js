@@ -393,7 +393,7 @@ if (command === '-v' || command === '--version') {
   // answers from it without asking: a per-user directory, never one shared with less trusted jobs.
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(await cacheDir())
-  const { AuditError, audit, printAuditReport } = await import('../src/audit.js')
+  const { AuditError, EMOJI, audit, printAuditReport } = await import('../src/audit.js')
   // With no file, the package manager's lockfile installing the project too, or each JS one its
   // stasis.config.json names in its `lockfiles`: their packages the bundle doesn't hold checked for
   // malware (npm's registry alone), their being found or refused told, not failed.
@@ -414,11 +414,13 @@ if (command === '-v' || command === '--version') {
     if (cause instanceof AuditError) fail(`Error: ${cause.message}`)
     throw cause
   }
-  // Each advisory's source as an icon, where the terminal draws sixel images, sized to its cells.
+  // Each advisory's source as an icon, where the terminal draws sixel images, sized to its cells; else, in a
+  // terminal, as an emoji, but in the Linux console, which has no glyphs for them. Piped, as neither.
   const { capabilities, logos } = await import('../src/sixel.js')
   const terminal = await capabilities()
+  const emoji = process.stdout.isTTY && process.env.TERM !== 'linux' ? EMOJI : null
   const notes = tokenless ? ['Repository advisories require GITHUB_TOKEN; continuing without them'] : []
-  printAuditReport(report, { icons: terminal.sixel && logos(terminal.cell, terminal.background), notes })
+  printAuditReport(report, { icons: terminal.sixel ? logos(terminal.cell, terminal.background) : emoji, notes })
   // Malware npm's registry tells of in any dependency fails it too, whatever --reason.
   process.exitCode = report.rows.length === 0 && report.npmMalware.length === 0 ? 0 : 1
 } else if (command === 'validate') {

@@ -82,7 +82,10 @@ where it reports none. It is an eighth of a row shorter than the row, and set
 in its middle, so icons on lines one under another don't touch. Where the
 terminal reports its background colour (`OSC 11`), what an icon leaves undrawn
 is that colour in iTerm2, which draws it opaque; other terminals leave it
-transparent.
+transparent. Where the terminal draws no images, the icon is an emoji instead:
+📦 for npm's registry, 🐙 for a GitHub repository's advisories, 🌐 for OSV
+(but in the Linux console, `TERM=linux`, which has no glyphs for them). Piped
+or written to a file, an id has neither.
 
 An advisory of malware, not a vulnerability, is rated `malware`, above
 critical, whatever its source rates it. `@preventive/upstream` flags it as

@@ -312,17 +312,20 @@ const badge = (severity, text, colored) => (severity === 'malware' && colored ? 
 
 // Packagist's, standing for an advisory only where OSV has no record of it, has no icon.
 const SOURCE_LOGOS = { registry: 'npm', repository: 'github', osv: 'osv' }
-// As sixel.js logos() picks icons no wider than two of the terminal's cells.
+// Where the terminal draws no images, each source's emoji instead (keyed as sixel.js logos()'s are): npm's
+// registry its packages, a GitHub repository's the Octocat its logo is, OSV a database of every ecosystem's.
+export const EMOJI = { npm: '📦', github: '🐙', osv: '🌐' }
+// As sixel.js logos() picks icons no wider than two of the terminal's cells, and as wide as an emoji is.
 const ICON_CELLS = 2
-// An icon, drawn with the cursor saved and put back, as a terminal may leave it below the image, then
-// moved past the cells it covers, as text written over them would erase it.
-const drawIcon = (icon) => `\x1b7${icon}\x1b8\x1b[${ICON_CELLS}C`
+// A sixel icon, drawn with the cursor saved and put back, as a terminal may leave it below the image, then
+// moved past the cells it covers, as text written over them would erase it. An emoji is text, covering them.
+const drawIcon = (icon) => (icon.startsWith('\x1bP') ? `\x1b7${icon}\x1b8\x1b[${ICON_CELLS}C` : icon)
 // Written before a line with an icon: two lines below it, then back up. A terminal moving the cursor
 // below the image then never scrolls, which would put the cursor back a line off.
 const ROOM_BELOW = '\n\n\x1b[2A'
 
 // The advisories as a table on `out`, fitted to `width`; on `err`, `notes` before it, then the packages not audited
-// and the summary. With `icons` (sixel.js logos()'s, true for its 16-pixel ones), each id has its source's.
+// and the summary. With `icons` (sixel.js logos()'s, true for its 16-pixel ones, or EMOJI), each id has its source's.
 export function printAuditReport({ packages, skipped = [], rows, npmMalware = [], why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false, notes = [] } = {}) {
   const icons = given === true ? logos() : given || null
   const paintOut = painter(out, colors)
