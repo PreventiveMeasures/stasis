@@ -102,7 +102,7 @@ function findCallSpecifiers(ast, push, fold = null) {
   const pushSpec = (kind, node) => {
     const spec = literalSpec(node)
     if (spec != null) return push({ kind, spec })
-    // Only require() loads a native addon.
+    // A require() alone is followed to a native addon.
     const pattern = kind === 'require' ? nativePattern(node) : null
     push({ kind, dynamic: true, ...(pattern === null ? {} : { pattern }) })
   }

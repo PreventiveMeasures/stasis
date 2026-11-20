@@ -429,7 +429,7 @@ test('scan leaves a require() dynamic where its path spells no native addon ther
     'require(`natives-${process.platform}/a.node`)', // a package's
     'require(`./native/${process.env.NAME}`)', // not spelled as an addon
     'require(`./native/${process.env.NAME}.js`)',
-    'import(`./native/${process.env.NAME}.node`)', // only require() loads one
+    'import(`./native/${process.env.NAME}.node`)', // a require() alone is followed
     'require(`./missing/${process.env.NAME}.node`)', // names none there
     "require('./native/' + 'a.node')", // spelled whole: no literal, as before
     'require(`./${process.env.DIR}.node`)', // an expression spells no `/`

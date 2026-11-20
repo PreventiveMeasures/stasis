@@ -379,7 +379,7 @@ entry, and attested by the `--lockfile` as any file is.
 - Any other path stays one too: a path that starts with an expression
   (`` `${__dirname}/native/…` ``) or names a package
   (`` `@scope/lib-${target}` ``), one that doesn't end in `.node`, and an
-  `import()`, which loads no addon.
+  `import()`: a `require()` alone is followed.
 - Under `--mainFields` and `--metro` none is followed: a browser or React
   Native target loads no native addon. The configs and toolchain a `--metro`
   bundle traces as Node's are followed as Node's.
