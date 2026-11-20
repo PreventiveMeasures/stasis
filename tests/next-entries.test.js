@@ -217,6 +217,21 @@ test('stasis bundle builds a next.config.* entry as the app\'s entries, with the
   t.assert.deepStrictEqual([...configured.sources.keys()].toSorted(), NEXT_SOURCES)
 }))
 
+test('a pattern among stasis.config.json\'s entries stands for each Next app\'s config it matches', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - apps/*\n',
+    'stasis.config.json': json({ entries: { 'apps/*/next.config.mjs': {} } }),
+    'apps/web/next.config.mjs': 'export default {}\n',
+    'apps/web/app/page.tsx': "export default function Page() { return 'web' }\n",
+    'apps/docs/next.config.mjs': 'export default {}\n',
+    'apps/docs/pages/index.tsx': "export default function Index() { return 'docs' }\n",
+  })
+  const r = await runCli(['bundle', '--output=apps.br'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual([...readBundle(join(tmp, 'apps.br')).entries].toSorted(), ['apps/docs/next.config.mjs', 'apps/docs/pages/index.tsx', 'apps/web/app/page.tsx', 'apps/web/next.config.mjs'])
+}))
+
 // A Turborepo-style pnpm workspace, the Next app in apps/web.
 const workspace = {
   'package.json': json({ name: 'root', version: '1.0.0', private: true }),
