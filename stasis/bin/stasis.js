@@ -134,7 +134,7 @@ if (command === '-v' || command === '--version') {
   const loader = import.meta.resolve(values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader')
   await runProgram(argv, { nodeArgs, loader, imports: run.imports })
 } else if (command === 'bundle') {
-  const { BUNDLE_FLAGS, bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
+  const { BUNDLE_FLAGS, bundlePlan, configEntries, readConfigEntries } = await import('../src/cmd/bundle-options.js')
   const values = parseLeadingOptions(argv, BUNDLE_FLAGS, { valueFlags: valueFlagsOf(BUNDLE_FLAGS), onError: fail })
   const cwd = process.cwd()
   let plan
@@ -142,7 +142,7 @@ if (command === '-v' || command === '--version') {
     // stasis.config.json's `bundle`, where it is an object: its entries' options, and with no entry
     // given, the entries.
     const config = readConfigEntries(cwd)
-    const entries = argv.length > 0 ? argv : [...(config?.values() ?? [])].map(({ entry }) => entry)
+    const entries = argv.length > 0 ? argv : configEntries(config)
     if (entries.length === 0) fail('Nothing to bundle: no entry file given')
     plan = bundlePlan({ cwd, entries, values, config })
   } catch (cause) {
@@ -359,10 +359,10 @@ if (command === '-v' || command === '--version') {
   let plan
   if (argv.length === 0) {
     const cwd = process.cwd()
-    const { bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
+    const { bundlePlan, configEntries, readConfigEntries } = await import('../src/cmd/bundle-options.js')
     try {
       const config = readConfigEntries(cwd)
-      const entries = [...(config?.values() ?? [])].map(({ entry }) => entry)
+      const entries = configEntries(config)
       if (entries.length === 0) fail('Nothing to audit: no path to file given, nor entries in stasis.config.json to bundle')
       plan = { cwd, ...bundlePlan({ cwd, entries, values: {}, config }) }
     } catch (cause) {

@@ -106,6 +106,10 @@ export function parseExtraOption(label, extra) {
 
 export const extraPattern = (entry) => posix.normalize(unnegated(entry)).replace(/\/+$/u, '')
 
+// Whether Node's glob reads `path` as other than itself: a `*`, `?`, class, brace list or extglob. A name holding
+// none (`@scope/name`, `(group)`) is a path, globbed for nothing.
+export const isGlobPattern = (path) => /[*?[{]|[!+@]\(/u.test(path)
+
 // Paths from the config's dir, which `../` may climb out of to a workspace root's.
 export function parseLockfilesOption(label, lockfiles) {
   if (lockfiles === undefined) return undefined

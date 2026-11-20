@@ -189,8 +189,8 @@ stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
 
 The `entries` of the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson)
 give entries their options: each key is an entry, a path relative to that
-directory, and its value the flags building it, named as they are without the
-`--`.
+directory (or a [glob pattern](#entry-patterns) of them), and its value the
+flags building it, named as they are without the `--`.
 
 ```json
 {
@@ -272,6 +272,38 @@ runs nothing: see its [Entries](github-bundle.md#entries).
 stasis bundle --metro-resolver   # bundles index.js with --metro and bin.js without
 stasis bundle --metro-resolver --output=app.br index.js
 ```
+
+### Entry patterns
+
+A key may be a glob pattern instead of a path, standing for every path it
+matches, each an entry built with its options:
+
+```json
+{ "entries": { "apps/*/src/index.js": { "metro": true, "platforms": ["ios", "android"] } } }
+```
+
+Node's built-in glob (`fs.globSync`) expands it from the config's directory, as
+it expands [`extra`](file-formats.md#stasisconfigjson)'s, and as a shell would
+expand `stasis bundle apps/*/src/index.js`: `*` is any run of a name's
+characters, `?` one, and `**` any number of directories, none taking a
+dotfile, `{a,b}` is either, `[ab]` a class, `!(a)` any name but `a`. A key
+holding none of these is a path, as ever.
+
+- A pattern matches nothing in a `node_modules` directory, which its `**`
+  never walks: name an entry there by its path. So it matches the same files
+  whether the dependencies are installed or not, as `--deptree` and
+  [`stasis github-bundle`](github-bundle.md#entries) expand it, before they lay
+  them out.
+- A pattern matching nothing stands for itself, as a shell's does, so it is
+  reported as a missing entry. A file whose own name holds one of those
+  characters (`app/[id].tsx`) is so named by its path, unless that matches
+  another file as a pattern (`app/i.tsx`).
+- Two keys naming the same file are refused, a pattern and a path or two
+  patterns, whatever options they set: which of them builds it is no guess to
+  make. Leave a file out of a pattern to give it options of its own
+  (`apps/!(web)/src/index.js` beside `apps/web/src/index.js`).
+- An entry given on the command line is one the config names where a pattern
+  there matches it, as where a key is its path.
 
 ## Resolution
 

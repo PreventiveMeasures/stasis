@@ -1,12 +1,12 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
-import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isGlobPattern, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
@@ -197,7 +197,10 @@ function configEntryOptions(state, entry) {
   const shared = config?.define !== undefined
   if (entries === undefined && !shared) return null
   if (entries !== undefined && !isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
-  const name = entries === undefined ? undefined : Object.keys(entries).find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry)
+  // As `stasis bundle` names it: by its path, else by a glob pattern matching it, none of them in a node_modules.
+  const keys = Object.keys(entries ?? {}).map((key) => [key, toPosix(relative(state.root, resolve(state.root, key)))])
+  const matches = ([, path]) => isGlobPattern(path) && !entry.split('/').includes('node_modules') && posix.matchesGlob(entry, path)
+  const name = (keys.find(([, path]) => path === entry) ?? keys.find(matches))?.[0]
   if (name === undefined && !shared) return null
   const what = `the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(name)}`
   const options = name === undefined ? {} : entries[name]
