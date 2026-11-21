@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { isUtf8 } from 'node:buffer'
+import { pathToFileURL } from 'node:url'
 
 import { DEFAULT_LOCK, assertKnownKeys, assertOption } from '@exodus/stasis-core/config'
 import { ensureStateForLoader, isLoaderInstalled } from '@exodus/stasis-core/hooks'
@@ -101,42 +102,28 @@ export function resolvePluginState(label, options, cwd) {
       throw new Error(`${label}: bundle='${bundle}' conflicts with active preload bundle='${pc.bundleMode}'`)
     }
     if (bundleFile !== undefined && bundleFile !== pc.bundleFile) return sidecar(pc.bundleMode)
-    assertOptionsMatchConfig(pc, options)
-    return { state: ambient, isNoop: false }
-  }
-
-  if (bundle === undefined || bundle === 'none' || bundle === 'ignore') {
-    // 'ignore' and the preload's 'none' both mean no bundle, so the field leaves the cross-check; the assert pins
-    // that to today's no-bundle modes, so that a future one can't silently mask a disagreement.
+  } else if (bundle === undefined || bundle === 'none' || bundle === 'ignore') {
+    // 'ignore' and the preload's 'none' both mean no bundle; the assert pins that to today's no-bundle modes, so
+    // that a future one can't silently mask a disagreement.
     assert.ok(pc.bundleMode === 'none' || pc.bundleMode === 'ignore',
       `unexpected preload bundleMode='${pc.bundleMode}' in the no-bundle branch`)
-    const { bundle: _b, ...rest } = options
-    assertOptionsMatchConfig(pc, rest)
-    return { state: ambient, isNoop: false }
+  } else {
+    if (!bundleFile) {
+      throw new Error(`${label}: bundle='${bundle}' alongside a preload without bundle requires an explicit bundleFile`)
+    }
+    return sidecar(bundle)
   }
-  if (!bundleFile) {
-    throw new Error(`${label}: bundle='${bundle}' alongside a preload without bundle requires an explicit bundleFile`)
-  }
-  return sidecar(bundle)
+  // The bundle field is settled above, and leaves the cross-check.
+  assertOptionsMatchConfig(pc, { ...options, bundle: undefined })
+  return { state: ambient, isNoop: false }
 }
 
 // A State the caller owns (`stasis build`'s), else resolvePluginState's; a foreign copy's State fails the instanceof.
 export const ownOrResolvedState = (label, options) =>
   (options instanceof State ? options : resolvePluginState(label, options, process.cwd()).state)
 
-// Dedupe is by path, so a rebuild with new bytes would emit them while the bundle and lockfile keep the old ones.
-export const rebuildRefused = (label) =>
-  `${label}: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)`
-
 export const unsupportedExtension = (label, what) =>
   `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
-
-// A file's kind (code|resource), or a throw naming it as `what` where it's neither.
-export function classifyOrThrow(label, path, resources, what = `'${path}'`) {
-  const kind = classifyExtension(path, resources)
-  if (kind === 'unknown') throw new Error(unsupportedExtension(label, what))
-  return kind
-}
 
 // Refuse non-UTF-8 code rather than silently encode it as a resource.
 export function assertCodeUtf8(label, path, source) {
@@ -148,13 +135,65 @@ export function assertPersistableAttributes(attrs) {
   for (const k of Object.keys(attrs)) assert.equal(k, 'type', `unsupported import attribute: ${k}`)
 }
 
-// `state.getImport(...)`, or undefined where the bundle attests no such edge: an EXTERNAL at capture, which the
-// bundler resolves as without us (file BYTES still fail closed where the plugin loads them).
-export function attestedImport(state, parentURL, specifier, options) {
-  try {
-    return state.getImport(parentURL, specifier, options)
-  } catch (err) {
-    if (err?.code === 'ERR_MODULE_NOT_FOUND') return undefined
-    throw err
+export const fileURL = (path) => pathToFileURL(path).toString()
+
+// The lifecycle every bundler plugin shares over the State it runs against (null: inert), by file path: a one-shot
+// capture deduped by path, its edges and files recorded, edges looked up at load, and the write.
+export class PluginState {
+  seen = new Set()
+  #builds = 0
+
+  constructor(label, reason, state) {
+    this.label = label
+    this.reason = reason
+    this.state = state
+  }
+
+  // Dedupe is by path, so a rebuild with new bytes would emit them while the bundle and lockfile keep the old ones.
+  // -> `refusal` for each build after the first
+  startBuild(refusal = `${this.label}: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)`) {
+    this.#builds += 1
+    if (this.#builds === 1) return undefined
+    return refusal
+  }
+
+  // A file's kind (code|resource), or a throw naming it as `what` where it's neither.
+  classify(path, what = `'${path}'`) {
+    const kind = classifyExtension(path, this.state.config.resources)
+    if (kind === 'unknown') throw new Error(unsupportedExtension(this.label, what))
+    return kind
+  }
+
+  // Whether `path` is new to this plugin, marking it seen.
+  claim(path) {
+    if (this.seen.has(path)) return false
+    this.seen.add(path)
+    return true
+  }
+
+  // `options` go on to State#addFile as given (Metro's format and inferFormat).
+  addFile(path, source, kind, isEntry, options) {
+    if (kind === 'code') assertCodeUtf8(this.label, path, source)
+    this.state.addFile(fileURL(path), { source, isEntry, resource: kind === 'resource', reason: this.reason, ...options })
+  }
+
+  addImport(importer, specifier, target, importAttributes) {
+    this.state.addImport(fileURL(importer), specifier, fileURL(target), { importAttributes })
+  }
+
+  // `state.getImport(...)`, or undefined where the bundle attests no such edge: an EXTERNAL at capture, which the
+  // bundler resolves as without us (file BYTES still fail closed where the plugin loads them).
+  attestedImport(importer, specifier, options) {
+    try {
+      return this.state.getImport(fileURL(importer), specifier, options)
+    } catch (err) {
+      if (err?.code === 'ERR_MODULE_NOT_FOUND') return undefined
+      throw err
+    }
+  }
+
+  // The preload writes itself.
+  get ownsWrite() {
+    return this.state !== State.preload
   }
 }

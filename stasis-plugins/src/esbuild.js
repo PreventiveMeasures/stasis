@@ -1,14 +1,13 @@
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { assertCodeUtf8, assertPersistableAttributes, attestedImport, ownOrResolvedState, rebuildRefused, unsupportedExtension } from './plugins.js'
-import { State } from '@exodus/stasis-core/state'
+import { PluginState, assertCodeUtf8, assertPersistableAttributes, fileURL, ownOrResolvedState, unsupportedExtension } from './plugins.js'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route esbuild's reads through the capture hook.
 import { realReadFile } from '@exodus/stasis-core/state-util'
-import { EMPTY_MODULE_PATH, classifyExtension, upsert } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, classifyExtension, isPlainObject, memoized } from '@exodus/stasis-core/util'
 
 // The build options esbuild's resolver reads, replayed into the disabled-import probe.
 const RESOLVE_OPTIONS = ['absWorkingDir', 'alias', 'conditions', 'external', 'mainFields', 'nodePaths',
@@ -28,50 +27,35 @@ function probeSource(specifier, kind) {
 // with or without './'): equal loose keys are a SUPERSET of esbuild's matches -- only a probe decides.
 function looseBrowserKey(path) {
   const parts = path.replaceAll('\\', '/').split('/').filter((part) => part !== '' && part !== '.')
-  while (parts.length > 0) {
-    const stem = parts.at(-1).replace(/\..*$/su, '')
-    if (stem !== 'index' || parts.length === 1) {
-      parts[parts.length - 1] = stem
-      break
-    }
-    parts.pop()
-  }
+  const stem = (part) => part.replace(/\..*$/su, '')
+  while (parts.length > 1 && stem(parts.at(-1)) === 'index') parts.pop()
+  if (parts.length > 0) parts[parts.length - 1] = stem(parts.at(-1))
   return parts.join('/')
 }
 
 // The loose keys a directory's package.json `browser` map sends to `false` (esbuild's "disabled").
 async function browserFalseKeys(dir) {
-  let pkg
-  try {
-    pkg = JSON.parse(await realReadFile(join(dir, 'package.json'), 'utf8'))
-  } catch {
-    return new Set()
-  }
-  const browser = pkg?.browser
-  if (browser === null || typeof browser !== 'object' || Array.isArray(browser)) return new Set()
+  const browser = await realReadFile(join(dir, 'package.json'), 'utf8')
+    .then((text) => JSON.parse(text)?.browser)
+    .catch(() => undefined)
+  if (!isPlainObject(browser)) return new Set()
   return new Set(Object.keys(browser).filter((key) => browser[key] === false).map(looseBrowserKey))
 }
 
 export class StasisEsbuild {
-  #seen = new Set()
-  #state
-  #resources
+  name = 'stasis'
+  #stasis
   #loaders
   #transform
   #resource
   #platform
   #emptyModule // URL of the empty module disabled imports point at, once capture recorded it
-  #browserScopes = new Map() // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
-  #probes = new Map() // [kind, resolveDir, specifier] -> Promise<disabled path | null>
-  #captureBuildCount = 0
 
   // Only for load mode: `loaders` per-extension overrides (RN's '.js' -> 'jsx'), `transform(source, { path, loader })`
   // a code rewrite (`stasis build --platform=hermes`), `resource(source, { path })` a module for a resource no loader
   // names (`stasis build --metro`'s asset module), `platform` the one a --metro per-platform edge resolves for.
   constructor(options = {}, { loaders, transform, resource, platform } = {}) {
-    const state = ownOrResolvedState('StasisEsbuild', options)
-    this.#state = state
-    this.#resources = state?.config.resources ?? new Set()
+    this.#stasis = new PluginState('StasisEsbuild', 'esbuild', ownOrResolvedState('StasisEsbuild', options))
     this.#loaders = loaders ?? new Map()
     this.#transform = transform
     this.#resource = resource
@@ -84,19 +68,13 @@ export class StasisEsbuild {
     return this.#loaders.get(ext) ?? ext.replace(/^\.[cm]?/u, '')
   }
 
-  get name() {
-    return 'stasis'
-  }
-
-  // Every directory from `dir` up whose `browser` map disables something, nearest first: a superset, as esbuild
-  // consults only the nearest map.
-  #browserFalseScopes(dir) {
-    return upsert(this.#browserScopes, dir, () => {
-      const parent = dirname(dir)
-      return Promise.all([browserFalseKeys(dir), parent === dir ? [] : this.#browserFalseScopes(parent)])
-        .then(([keys, above]) => (keys.size > 0 ? [{ dir, keys }, ...above] : above))
-    })
-  }
+  // dir -> Promise<[{ dir, keys }]>: every directory from `dir` up whose `browser` map disables something, nearest
+  // first. A superset, as esbuild consults only the nearest map.
+  #browserFalseScopes = memoized((dir) => {
+    const parent = dirname(dir)
+    return Promise.all([browserFalseKeys(dir), parent === dir ? [] : this.#browserFalseScopes(parent)])
+      .then(([keys, above]) => (keys.size > 0 ? [{ dir, keys }, ...above] : above))
+  })
 
   // Whether some `browser` map `false` entry could match this resolution: the resolved path (and, for a relative
   // specifier, the path it names) under each map's dir, or a bare specifier as is or as './<importer dir>/<specifier>'
@@ -115,25 +93,23 @@ export class StasisEsbuild {
 
   // esbuild's own verdict: a one-import build with the build's resolve options and every load stubbed empty, whose
   // metafile still names a disabled module `(disabled):<path>`. -> that path (absolute), or null
-  #probeDisabled(specifier, kind, resolveDir, { esbuild, initialOptions }) {
-    return upsert(this.#probes, JSON.stringify([kind, resolveDir, specifier]), () => {
-      const options = Object.fromEntries(RESOLVE_OPTIONS.filter((k) => initialOptions[k] !== undefined).map((k) => [k, initialOptions[k]]))
-      const cwd = initialOptions.absWorkingDir ?? process.cwd()
-      return esbuild.build({
-        ...options,
-        stdin: { ...probeSource(specifier, kind), resolveDir },
-        bundle: true,
-        write: false,
-        metafile: true,
-        logLevel: 'silent',
-        plugins: [{ name: 'stasis-probe', setup: (build) => build.onLoad({ filter: /$/ }, () => ({ contents: '', loader: 'empty' })) }],
-      }).then(({ metafile }) => {
-        const found = metafile.inputs['<stdin>']?.imports.find((i) => i.original === specifier)?.path
-        if (!found?.startsWith('(disabled):')) return null
-        return resolvePath(cwd, found.slice('(disabled):'.length))
-      }, () => null)
-    })
-  }
+  #probeDisabled = memoized(({ specifier, kind, resolveDir, build: { esbuild, initialOptions } }) => {
+    const options = Object.fromEntries(RESOLVE_OPTIONS.filter((k) => initialOptions[k] !== undefined).map((k) => [k, initialOptions[k]]))
+    const cwd = initialOptions.absWorkingDir ?? process.cwd()
+    return esbuild.build({
+      ...options,
+      stdin: { ...probeSource(specifier, kind), resolveDir },
+      bundle: true,
+      write: false,
+      metafile: true,
+      logLevel: 'silent',
+      plugins: [{ name: 'stasis-probe', setup: (build) => build.onLoad({ filter: /$/ }, () => ({ contents: '', loader: 'empty' })) }],
+    }).then(({ metafile }) => {
+      const found = metafile.inputs['<stdin>']?.imports.find((i) => i.original === specifier)?.path
+      if (!found?.startsWith('(disabled):')) return null
+      return resolvePath(cwd, found.slice('(disabled):'.length))
+    }, () => null)
+  }, ({ specifier, kind, resolveDir }) => JSON.stringify([kind, resolveDir, specifier]))
 
   // A `browser` field `false` makes esbuild resolve an import to an empty "disabled" module, but its resolve API
   // drops that flag: a bare name comes back namespace-less, a file as its plain path, which a probe confirms where a
@@ -144,51 +120,53 @@ export class StasisEsbuild {
     if (res.namespace !== 'file' || (build.initialOptions.platform ?? 'browser') !== 'browser') return false
     if (!(await this.#mayBeDisabled(res.path, specifier, resolveDir))) return false
     // A sibling plugin may have resolved the import to something else entirely.
-    return (await this.#probeDisabled(specifier, kind, resolveDir, build)) === res.path
+    return (await this.#probeDisabled({ specifier, kind, resolveDir, build })) === res.path
   }
 
   setup = ({ onResolve, onLoad, onStart, onEnd, resolve, initialOptions, esbuild }) => {
-    if (!this.#state) return
-    const emptyModuleURL = pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
+    const stasis = this.#stasis
+    const { state } = stasis
+    if (!state) return
+    const { loadBundle } = state.config
+    const emptyModuleURL = fileURL(resolvePath(state.root, EMPTY_MODULE_PATH))
 
     // Rebuilds re-fire onStart against the same registrations.
-    if (!this.#state.config.loadBundle) {
+    if (!loadBundle) {
       onStart(() => {
-        this.#captureBuildCount += 1
-        return this.#captureBuildCount === 1 ? undefined : { errors: [{ text: rebuildRefused('StasisEsbuild') }] }
+        const text = stasis.startBuild()
+        return text && { errors: [{ text }] }
       })
     }
 
-    // The preload writes itself; a failed build mustn't overwrite the user's good file.
-    if (this.#state !== State.preload) {
+    // A failed build mustn't overwrite the user's good file.
+    if (stasis.ownsWrite) {
       onEnd((result) => {
-        if (result.errors.length === 0) this.#state.write()
+        if (result.errors.length === 0) state.write()
       })
     }
 
     // Load mode resolves through the bundle's import map: the file may not be on disk. namespace 'file' with the
     // original path (esbuild doesn't stat a plugin's) keeps the output (banners, asset names, maps) a capture's.
-    onResolve({ filter: /$/ }, ({ path: specifier, importer, kind: resolveKind, with: attrs }) => {
-      if (!this.#state.config.loadBundle) return undefined
-      const isEntry = resolveKind === 'entry-point'
-      let url
-      if (isEntry) {
-        // Anchored to cwd, as the run loader does, so the file needn't be on disk.
-        url = specifier.startsWith('file:') ? specifier : pathToFileURL(resolvePath(process.cwd(), specifier)).toString()
-        if (this.#state.config.full) this.#state.assertEntry(url)
-      } else {
-        // Looked up even for a built-in's name: a browser build records `fs` where a `browser` field disables it or a
-        // package by that name serves it. KNOWN GAP: a Node-loader-captured bundle keys an attributed edge under
-        // specific conditions, which this `*` lookup won't match.
-        const parentURL = pathToFileURL(importer).toString()
-        const attested = attestedImport(this.#state, parentURL, specifier, { importAttributes: attrs, platform: this.#platform })
-        if (attested === undefined) return undefined
-        ;({ url } = attested)
-      }
-      const format = this.#state.getFormat(url)
-      const kind = url === emptyModuleURL ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
-      return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
-    })
+    if (loadBundle) {
+      onResolve({ filter: /$/ }, ({ path: specifier, importer, kind: resolveKind, with: attrs }) => {
+        const isEntry = resolveKind === 'entry-point'
+        let url
+        if (isEntry) {
+          // Anchored to cwd, as the run loader does, so the file needn't be on disk.
+          url = specifier.startsWith('file:') ? specifier : fileURL(resolvePath(process.cwd(), specifier))
+          if (state.config.full) state.assertEntry(url)
+        } else {
+          // Looked up even for a built-in's name: a browser build records `fs` where a `browser` field disables it or
+          // a package by that name serves it. KNOWN GAP: a Node-loader-captured bundle keys an attributed edge under
+          // specific conditions, which this `*` lookup won't match.
+          url = stasis.attestedImport(importer, specifier, { importAttributes: attrs, platform: this.#platform })?.url
+          if (url === undefined) return undefined
+        }
+        const format = state.getFormat(url)
+        const kind = url === emptyModuleURL ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
+        return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
+      })
+    }
 
     onResolve({ filter: /$/, namespace: 'file' }, async ({ path: specifier, with: attrs, ...args }) => {
       const isEntry = !args.importer
@@ -198,9 +176,9 @@ export class StasisEsbuild {
       if (res.errors.length > 0) return undefined
       // Declined, esbuild re-resolves a disabled import into its own empty module, the attested one bundle=load serves.
       if (!isEntry && await this.#isDisabled(res, specifier, args, { esbuild, initialOptions })) {
-        if (!this.#state.config.loadBundle) {
-          this.#emptyModule ??= this.#state.addEmptyModule({ reason: 'esbuild' })
-          this.#state.addImport(pathToFileURL(args.importer).toString(), specifier, this.#emptyModule, { importAttributes: attrs })
+        if (!loadBundle) {
+          this.#emptyModule ??= state.addEmptyModule({ reason: 'esbuild' })
+          state.addImport(fileURL(args.importer), specifier, this.#emptyModule, { importAttributes: attrs })
         }
         return undefined
       }
@@ -210,11 +188,11 @@ export class StasisEsbuild {
 
       let kind = 'skip'
       if (res.namespace === 'file' && !res.external) {
-        kind = classifyExtension(res.path, this.#resources)
+        kind = classifyExtension(res.path, state.config.resources)
         if (kind === 'unknown') return { errors: [{ text: unsupportedExtension('StasisEsbuild', `'${res.path}'`) }] }
         // Resources too: load mode resolves every specifier through this map, so one with no edge would fall through
         // to esbuild's disk resolver, unattested.
-        if (!isEntry) this.#state.addImport(pathToFileURL(args.importer).toString(), specifier, pathToFileURL(res.path).toString(), { importAttributes: attrs })
+        if (!isEntry) stasis.addImport(args.importer, specifier, res.path, attrs)
       }
       return { ...res, pluginData: { ...res.pluginData, isEntry, kind } }
     })
@@ -225,31 +203,26 @@ export class StasisEsbuild {
       assertPersistableAttributes(attrs)
 
       // getFile verifies the hash and throws on a file the bundle doesn't carry: no disk fallback.
-      if (this.#state.config.loadBundle) {
-        const { source } = this.#state.getFile(pathToFileURL(path).toString())
+      if (loadBundle) {
+        const { source } = state.getFile(fileURL(path))
         // esbuild's own loader for disabled modules, which a CSS @import, `composes` or url() accepts too.
         if (kind === 'empty') return { contents: source, loader: 'empty' }
         if (kind === 'resource') {
           const override = this.#loaders.get(extname(path))
           if (override) return { contents: source, loader: override }
-          const built = await this.#resource?.(source, { path })
-          if (built) return built
-          // The build's own loader for it, so a resource none loads fails as at capture, not parsed as js.
-          return { contents: source, loader: 'default' }
+          // Else the build's own loader for it, so a resource none loads fails as at capture, not parsed as js.
+          return (await this.#resource?.(source, { path })) || { contents: source, loader: 'default' }
         }
         const loader = this.#loaderFor(path)
         return (await this.#transform?.(source, { path, loader })) ?? { contents: source, loader }
       }
 
       const source = await realReadFile(path)
-      const resource = kind === 'resource'
-      if (!resource) assertCodeUtf8('StasisEsbuild', path, source)
-      if (!this.#seen.has(path)) {
-        this.#seen.add(path)
-        this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, resource, reason: 'esbuild' })
-      }
+      // A file loads once per set of import attributes: each read is checked, the first recorded.
+      if (stasis.claim(path)) stasis.addFile(path, source, kind, pluginData.isEntry)
+      else if (kind === 'code') assertCodeUtf8('StasisEsbuild', path, source)
       // A resource is emitted by esbuild, through the build's own `loader` config.
-      return resource ? undefined : { contents: source, loader: this.#loaderFor(path) }
+      return kind === 'resource' ? undefined : { contents: source, loader: this.#loaderFor(path) }
     })
   }
 }

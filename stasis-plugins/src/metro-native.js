@@ -37,42 +37,37 @@ export function isExcludedNativeDir(name, { win32 = process.platform === 'win32'
 const NATIVE_BUILD_OUTPUT_DIRS = new Set(['node_modules', 'build', '.gradle', '.cxx', 'Pods', 'DerivedData'])
 const isSkippedNativeWalkDir = (name) => NATIVE_BUILD_OUTPUT_DIRS.has(name) || isAutoExcludedDir(name) || isNativeArtifact(name)
 
-// A compiled tool (Hermes' `hermesc`), never source.
-const isExtensionlessBinary = (name, content) => pathExt(name) === '' && Buffer.isBuffer(content) && !isUtf8(content)
-
 // A native capture's view of a file by name: { action: 'code', format } for a native build input, 'skip' for noise
 // or a JS-family file by extension (Metro owns those), else 'resource'.
 export function classifyNativeCapture(name, { win32 = process.platform === 'win32', content } = {}) {
   // `.env` files carry secrets: an automated capture must never sweep them in.
   if (isExcludedNativeFile(name, { win32 }) || isDotEnvFile(name)) return { action: 'skip' }
   // Name-matched code is a native build input even where its tag is a Node format the JS graph would own.
-  const byName = nameFormat(name)
-  if (byName !== undefined) return { action: 'code', format: byName }
-  if (CODE_EXTENSIONS.has(pathExt(name))) return { action: 'skip' }
+  if (nameFormat(name) === undefined && CODE_EXTENSIONS.has(pathExt(name))) return { action: 'skip' }
   const format = classifyFormat(name, { content })
   return format === undefined ? { action: 'resource' } : { action: 'code', format }
 }
 
 // classifyNativeCapture refined by the bytes, which only ever demote; a 'resource' gets its format from its bytes.
 export function refineNativeCapture(classified, name, content, resources = new Set()) {
-  if (isExtensionlessBinary(name, content)) return { action: 'skip' }
+  // A compiled tool (Hermes' `hermesc`), never source.
+  if (pathExt(name) === '' && Buffer.isBuffer(content) && !isUtf8(content)) return { action: 'skip' }
   if (isBinaryPlist(name, content)) return { action: resources.has('plist') ? 'resource' : 'skip' }
   return classified
 }
 
-// A file name as Metro's AssetPaths reads it (parsePlatformFilePath, then parseBaseName): its asset, `${name}.${type}`
-// less any scale (`a@2x.png` is `a.png`'s), its scale (`resolution`, 1 where it names none), and its platform where it
-// names `platform` (`a.ios.png`; `a.android.png` is an asset of its own). -> null for a name with no type
+// A file name as Metro's AssetPaths reads it (parsePlatformFilePath, then parseBaseName) for `platform` (a name or
+// null): its asset, `${name}.${type}` less any scale (`a@2x.png` is `a.png`'s), and its platform where it names
+// `platform` (`a.ios.png`; `a.android.png` is an asset of its own). -> null for a name with no type
 const METRO_PLATFORM_FILE = /^(.+?)(?:\.([^.]+))?\.([^.]+)$/u
-const METRO_ASSET_SCALE = /^(.+?)(?:@([\d.]+)x)?$/u
-export function parseMetroAssetName(name, platform) {
+const METRO_ASSET_SCALE = /^(.+?)(?:@[\d.]+x)?$/u
+function parseMetroAssetName(name, platform) {
   const match = METRO_PLATFORM_FILE.exec(name)
   if (match === null) return null
   const [, base, suffix, type] = match
-  const ofPlatform = suffix !== undefined && suffix === platform
-  const [, root, scale] = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)
-  const resolution = Number.parseFloat(scale)
-  return { asset: `${root}.${type}`, name: root, type, resolution: Number.isNaN(resolution) ? 1 : resolution, platform: ofPlatform ? platform : null }
+  const ofPlatform = suffix === platform
+  const [, root] = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)
+  return { asset: `${root}.${type}`, platform: ofPlatform ? platform : null }
 }
 
 // A file's stat for metroAssetFiles, where a listing names one the disk lacks.
@@ -100,7 +95,7 @@ export function metroAssetFiles(path, platform = null, host = diskHost) {
     if (parsed?.asset !== own.asset || host.stat(join(dir, name))?.isFile() !== true) continue
     upsert(byPlatform, parsed.platform, () => []).push(join(dir, name))
   }
-  return (platform === null ? undefined : byPlatform.get(platform)) ?? byPlatform.get(null) ?? []
+  return byPlatform.get(platform) ?? byPlatform.get(null) ?? []
 }
 
 // Whether the package at `root` ships native code: an ios/ or android/ dir, or a podspec under it.
@@ -179,7 +174,7 @@ const PACKAGE_NAME = /^(?:@[^/\\@.][^/\\]*\/)?[^/\\@.][^/\\]*$/u
 export function linkedPackages(projectDir, fs) {
   const manifest = readJson(join(projectDir, 'package.json'), fs)
   const listed = (field) => (manifest?.[field] && typeof manifest[field] === 'object' ? Object.keys(manifest[field]) : [])
-  const names = new Set([...listed('dependencies'), ...listed('peerDependencies'), ...listed('devDependencies')])
+  const names = new Set(['dependencies', 'peerDependencies', 'devDependencies'].flatMap(listed))
   const dirs = []
   for (const name of names) {
     if (!PACKAGE_NAME.test(name)) continue
