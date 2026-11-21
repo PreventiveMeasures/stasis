@@ -46,14 +46,6 @@ export function getParser() {
   return _parser
 }
 
-// null for a typeless .js/.ts: Node detects its format from its syntax.
-function formatForFile(file, host, kept) {
-  const format = classifyFormat(file)
-  if (format != null) return format
-  const type = packageType(file, host, kept)
-  return type === null ? null : `${type}${extname(file) === '.ts' ? '-typescript' : ''}`
-}
-
 export const syntaxErrors = (parsed) => (parsed.errors ?? []).filter((e) => e.severity !== 'Warning' && e.severity !== 'Advice')
 
 export function literalSpec(node) {
@@ -95,54 +87,20 @@ function nativePattern(node) {
   return RELATIVE_REQUEST.test(path) && path.endsWith(NATIVE_EXT) ? path : null
 }
 
+// Keys no node is under.
 const NO_CHILD_KEYS = new Set(['type', 'loc', 'range', 'start', 'end'])
 
-// `fn` called on each node of an AST, parent before children.
+// `fn` called on each node of an AST, parent before children; where it returns a list, that is walked in place of the
+// node's children.
 export function walkAst(node, fn) {
   if (Array.isArray(node)) {
     for (const child of node) walkAst(child, fn)
     return
   }
   if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
-  fn(node)
-  for (const key of Object.keys(node)) if (key !== 'type') walkAst(node[key], fn)
-}
-
-// `fold`: define.js's branchFolder, or null. The side of a branch that can't run is never walked.
-function findCallSpecifiers(ast, push, fold = null) {
-  const pushSpec = (kind, node) => {
-    const spec = literalSpec(node)
-    if (spec != null) return push({ kind, spec })
-    // A require() alone is followed to a native addon.
-    const pattern = kind === 'require' ? nativePattern(node) : null
-    push({ kind, dynamic: true, ...(pattern === null ? {} : { pattern }) })
-  }
-  const visit = (node) => {
-    if (!node || typeof node !== 'object') return
-    if (Array.isArray(node)) {
-      for (const c of node) visit(c)
-      return
-    }
-    if (typeof node.type !== 'string') return
-    const live = fold?.(node)
-    if (live !== undefined) {
-      for (const c of live) visit(c)
-      return
-    }
-
-    if (node.type === 'CallExpression') {
-      const { callee, arguments: args } = node
-      if (callee.type === 'Identifier' && callee.name === 'require' && args.length >= 1) pushSpec('require', args[0])
-    } else if (node.type === 'ImportExpression') {
-      pushSpec('dynamic-import', node.source)
-    } else if (node.type === 'TSImportEqualsDeclaration') {
-      // `import lib = require('./dep.cts')`; the qualified-name form (`import A = B.C`) carries no file edge.
-      if (node.moduleReference?.type === 'TSExternalModuleReference') pushSpec('require', node.moduleReference.expression)
-    }
-
-    for (const key of Object.keys(node)) if (!NO_CHILD_KEYS.has(key)) visit(node[key])
-  }
-  visit(ast)
+  const children = fn(node)
+  if (children !== undefined) return walkAst(children, fn)
+  for (const key of Object.keys(node)) if (!NO_CHILD_KEYS.has(key)) walkAst(node[key], fn)
 }
 
 // Statement-level type-ness decides an edge, as type erasure does (`import { type A }` still loads its module). oxc's
@@ -158,7 +116,28 @@ function collectSpecifiers(program, defines = new Map(), typesOnly = () => false
       if (node.exportKind !== 'type') specs.push({ kind: 'export-from', spec: node.source.value })
     }
   }
-  findCallSpecifiers(program, (s) => specs.push(s), branchFolder(defines, program))
+  const pushSpec = (kind, node) => {
+    const spec = literalSpec(node)
+    if (spec != null) return specs.push({ kind, spec })
+    // A require() alone is followed to a native addon.
+    const pattern = kind === 'require' ? nativePattern(node) : null
+    specs.push({ kind, dynamic: true, ...(pattern === null ? {} : { pattern }) })
+  }
+  // The side of a branch that can't run is never walked.
+  const fold = branchFolder(defines, program)
+  walkAst(program, (node) => {
+    const live = fold?.(node)
+    if (live !== undefined) return live
+    if (node.type === 'CallExpression') {
+      const { callee, arguments: args } = node
+      if (callee.type === 'Identifier' && callee.name === 'require' && args.length >= 1) pushSpec('require', args[0])
+    } else if (node.type === 'ImportExpression') {
+      pushSpec('dynamic-import', node.source)
+    } else if (node.type === 'TSImportEqualsDeclaration') {
+      // `import lib = require('./dep.cts')`; the qualified-name form (`import A = B.C`) carries no file edge.
+      if (node.moduleReference?.type === 'TSExternalModuleReference') pushSpec('require', node.moduleReference.expression)
+    }
+  })
   return specs
 }
 
@@ -225,7 +204,7 @@ export class Scan {
     this.#types = hostMemo(host)
   }
 
-  // The `type` of each package.json the files scanned are under (formatForFile's).
+  // The `type` of each package.json the files scanned are under (parseFile's).
   #types
 
   // classifyExtension gives 'resource' only for a non-code name.
@@ -416,7 +395,14 @@ export class Scan {
   // As Node loads it: under the format its name and package declare, or for a typeless .js/.ts the one Node detects.
   parseFile(file) {
     const ext = extname(file)
-    const declared = formatForFile(file, this.host, this.#types)
+    // Only .ts takes `-typescript`: .jsx/.tsx are bundler-transformed, not Node-strippable.
+    const tsSuffix = ext === '.ts' ? '-typescript' : ''
+    // null for a typeless .js/.ts: Node detects its format from its syntax.
+    let declared = classifyFormat(file)
+    if (declared == null) {
+      const type = packageType(file, this.host, this.#types)
+      declared = type === null ? null : `${type}${tsSuffix}`
+    }
     const src = this.host.readFile(file).toString('utf8')
     // Outside the try: a missing oxc-parser is an env error, not this file's, never a silent zero-edge leaf.
     const parser = getParser()
@@ -439,8 +425,6 @@ export class Scan {
       return { declared, crash: cause.message }
     }
 
-    // Only .ts takes `-typescript`: .jsx/.tsx are bundler-transformed, not Node-strippable.
-    const tsSuffix = ext === '.ts' ? '-typescript' : ''
     const detectedFormat = (p) => `${p.module.hasModuleSyntax ? 'module' : 'commonjs'}${tsSuffix}`
     let format = declared ?? detectedFormat(parsed)
     let errors = syntaxErrors(parsed)
@@ -526,13 +510,13 @@ export class Scan {
       edges.push({ ...s, error: reason })
       this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
     }
-    const addChild = (s, key, childURL, childPath) => {
+    const addChild = (s, conditions, childURL, childPath) => {
       if (this.excludes?.(childPath) !== undefined) {
         addExcluded(s, EXCLUDED_REASON)
         return
       }
       edges.push({ ...s, child: childURL })
-      nestedMap(specMaps, key).set(s.spec, childURL)
+      nestedMap(specMaps, [...conditions].join(', ')).set(s.spec, childURL)
       if (s.native) this.#natives.add(childURL)
       if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
     }
@@ -541,7 +525,6 @@ export class Scan {
     const addNatives = (s) => {
       if (s.pattern === undefined || this.customResolve) return false
       const conditions = this.#conditionSet('require')
-      const key = [...conditions].join(', ')
       let named = false
       for (const spec of this.#spelledBy(file, s.pattern)) {
         let childPath
@@ -551,7 +534,7 @@ export class Scan {
           continue // a directory, which names no file
         }
         if (extname(childPath) !== NATIVE_EXT) continue
-        addChild({ kind: s.kind, spec, native: true }, key, pathToFileURL(childPath).toString(), childPath)
+        addChild({ kind: s.kind, spec, native: true }, conditions, pathToFileURL(childPath).toString(), childPath)
         named = true
       }
       return named
@@ -572,13 +555,12 @@ export class Scan {
       }
       const context = this.customResolve ? formatContext : (s.kind === 'require' ? 'require' : 'import')
       const conditions = this.#conditionSet(context)
-      const key = [...conditions].join(', ')
       // An `empty` edge (a browser/RN `false` redirect) is recorded but neither queued nor counted as unresolved.
       if (this.customResolve) {
         const r = this.customResolve(file, s.spec, conditions)
         if (r?.builtin) edges.push({ ...s, builtin: true })
         else if (r?.empty) edges.push({ ...s, empty: true })
-        else if (r?.url) addChild(s, key, r.url, fileURLToPath(r.url))
+        else if (r?.url) addChild(s, conditions, r.url, fileURLToPath(r.url))
         else addUnresolved(s, 'MODULE_NOT_FOUND', conditions, this.missTargets ? this.customResolve.missTargets?.(file, s.spec, conditions) : undefined)
         continue
       }
@@ -602,7 +584,7 @@ export class Scan {
           continue
         }
       }
-      addChild(s, key, pathToFileURL(childPath).toString(), childPath)
+      addChild(s, conditions, pathToFileURL(childPath).toString(), childPath)
     }
 
     for (const [key, specMap] of specMaps) nestedMap(this.imports, key).set(url, specMap)

@@ -25,27 +25,14 @@ const isWhitespace = (b) => b === 0x20 || b === 0x0a || b === 0x0d || b === 0x09
 // The bytes a number can span; NUMBER_RE checks its grammar once it ends.
 const isNumberByte = (b) => (b >= 0x30 && b <= 0x39) || b === 0x2d || b === 0x2b || b === 0x2e || b === 0x65 || b === 0x45
 const isLetter = (b) => b >= 0x61 && b <= 0x7a
-
-const hasControlByte = (bytes) => {
-  for (let i = 0; i < bytes.length; i++) if (bytes[i] < 0x20) return true
-  return false
-}
+// A raw control byte, which JSON refuses: one below 0x20 is never part of a multi-byte UTF-8 sequence, so decodes as
+// itself.
+// eslint-disable-next-line no-control-regex -- those are what it finds
+const CONTROL_RE = /[\u0000-\u001f]/u
 
 const indexOrEnd = (bytes, byte, from) => {
   const at = bytes.indexOf(byte, from)
   return at === -1 ? bytes.length : at
-}
-
-const concat = (parts) => {
-  let length = 0
-  for (const part of parts) length += part.length
-  const out = new Uint8Array(length)
-  let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.length
-  }
-  return out
 }
 
 export class JsonStreamParser {
@@ -63,7 +50,7 @@ export class JsonStreamParser {
   #nextBackslash = -1
   #tokenStart = 0
   #isKey = false
-  #parts = [] // copied bytes of a string straddling chunks
+  #text = '' // a string straddling chunks, decoded so far (the decoder holds a sequence a chunk cut short)
   #escaped = false
   #pendingEscape = false // a chunk ended on a string's backslash
   #word = '' // a number or literal straddling chunks
@@ -74,7 +61,7 @@ export class JsonStreamParser {
     this.#onString = onString
   }
 
-  // A chunk may be reused once write() returns: the bytes of a token left open are copied.
+  // A chunk may be reused once write() returns: what a token left open has of it is decoded (or held by the decoder).
   write(bytes) {
     if (this.#closed) throw new Error('JsonStreamParser: write after end or failure')
     if (!ArrayBuffer.isView(bytes)) throw new TypeError('JsonStreamParser: write() takes a Uint8Array')
@@ -202,18 +189,13 @@ export class JsonStreamParser {
         return quote + 1
       }
     }
-    this.#parts.push(bytes.slice(start))
+    this.#text += this.#decoder.decode(bytes.subarray(start), { stream: true })
     return n
   }
 
   #finishString(tail) {
-    let bytes = tail
-    if (this.#parts.length > 0) {
-      this.#parts.push(tail)
-      bytes = concat(this.#parts)
-      this.#parts = []
-    }
-    let value = this.#decoder.decode(bytes)
+    let value = this.#text + this.#decoder.decode(tail)
+    this.#text = ''
     if (this.#escaped) {
       // JSON.parse handles the escapes, and rejects raw control bytes.
       this.#escaped = false
@@ -222,7 +204,7 @@ export class JsonStreamParser {
       } catch (cause) {
         throw new SyntaxError(`Bad string at byte ${this.#tokenStart}`, { cause })
       }
-    } else if (hasControlByte(bytes)) {
+    } else if (CONTROL_RE.test(value)) {
       throw new SyntaxError(`Bad control character in string at byte ${this.#tokenStart}`)
     }
     if (this.#isKey) {

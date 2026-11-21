@@ -1,114 +1,52 @@
-import { isUtf8 } from 'node:buffer'
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
-import { archiveIntegrity, assertRealPathWithinBase, fileInBucket, isPlainObject, moduleInfo, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
+import { archiveIntegrity, fileInBucket, isPlainObject, memoized, moduleInfo, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
+import { collectFromDisk } from './bash.js'
 import { ancestors, applyToDir, isDotRelative } from './paths.js'
 import { readUtf8OrNull } from './solidity-ownership.js'
 import { nameErrors } from './toml.js'
 
-// Reads at once: a wave can be huge (a dynamic include's directory), and opening every file at once EMFILE.
-const READ_CONCURRENCY = 64
-
-// The end of the heredoc/nowdoc opening at `start`, or `start` where none does; an unterminated one runs to the end.
-function heredocEnd(code, start) {
-  const n = code.length
-  let j = start + 3
-  while (j < n && (code[j] === ' ' || code[j] === '\t')) j++
-  const quote = code[j] === '"' || code[j] === "'" ? code[j++] : ''
-  let label = ''
-  while (j < n && /\w/u.test(code[j])) label += code[j++]
-  if (label === '') return start
-  if (quote && code[j] === quote) j++
-  for (let nl = code.indexOf('\n', j); nl !== -1; nl = code.indexOf('\n', nl + 1)) {
-    let q = nl + 1
-    while (q < n && (code[q] === ' ' || code[q] === '\t')) q++
-    if (code.startsWith(label, q) && !/\w/u.test(code[q + label.length] ?? '')) {
-      const end = code.indexOf('\n', q)
-      return end === -1 ? n : end
-    }
-  }
-  return n
-}
+// A string literal, its quote and what it holds; an unterminated one runs to the end.
+const LITERAL = String.raw`(['"])((?:\\[\s\S]?|(?!\1)[^\\])*)\1?`
+const LITERAL_RE = new RegExp(LITERAL, 'uy')
+// A string literal (group 1), a comment, or a heredoc/nowdoc to the end of its closing label's line, else of the code.
+const NON_CODE_RE = new RegExp([
+  LITERAL,
+  // `#[` is a PHP 8 attribute, code.
+  String.raw`//[^\n]*|#(?!\[)[^\n]*|/\*[\s\S]*?(?:\*/|$)`,
+  String.raw`<<<[ \t]*["']?(\w+)[^\n]*(?:\n(?![ \t]*\3(?!\w))[^\n]*)*(?:\n[ \t]*\3[^\n]*)?`,
+].join('|'), 'gu')
 
 // Comments, heredocs/nowdocs and (unless `keepStrings`) string literals blanked, newlines kept so offsets stay
-// the input's. `#[` (a PHP 8 attribute) is code.
-function maskNonCode(code, keepStrings) {
-  const n = code.length
-  let out = ''
-  let i = 0
-  while (i < n) {
-    const c = code[i]
-    let end = i + 1
-    let masked = true
-    if ((c === '/' && code[i + 1] === '/') || (c === '#' && code[i + 1] !== '[')) {
-      end = code.indexOf('\n', i)
-      if (end === -1) end = n
-    } else if (c === '/' && code[i + 1] === '*') {
-      const close = code.indexOf('*/', i + 2)
-      end = close === -1 ? n : close + 2
-    } else if (c === '<' && code[i + 1] === '<' && code[i + 2] === '<') {
-      end = Math.max(heredocEnd(code, i), i + 1)
-      masked = end > i + 1
-    } else if (c === "'" || c === '"') {
-      while (end < n) {
-        if (code[end] === '\\') { end += 2; continue }
-        if (code[end++] === c) break
-      }
-      masked = !keepStrings
-    } else masked = false
-    out += masked ? code.slice(i, end).replace(/[^\n]/gu, ' ') : code.slice(i, end)
-    i = end
-  }
-  return out
+// the input's.
+const maskNonCode = (content, keepStrings) =>
+  content.replace(NON_CODE_RE, (token, quote) => (keepStrings && quote !== undefined ? token : token.replace(/[^\n]/gu, ' ')))
+
+// The literal opening at `pos` of maskNonCode's code, null where none does. Only `\\` and the closing quote unescaped,
+// as PHP's single quotes do: good enough for path values.
+function literalAt(code, pos) {
+  LITERAL_RE.lastIndex = pos
+  const m = LITERAL_RE.exec(code)
+  if (m === null) return null
+  const [, quote, body] = m
+  const value = body.replace(/\\([\s\S])/gu, (escape, c) => (c === '\\' || c === quote ? c : escape))
+  return { end: LITERAL_RE.lastIndex, quote, value }
 }
 
-// String literals kept, as include paths live in them.
-function maskedPhp(content) {
-  const code = maskNonCode(content, true)
-  return { code, strings: stringLiterals(code) }
-}
-
-// Only `\\` and the closing quote unescaped, as PHP's single quotes do: good enough for path values.
-function stringLiterals(code) {
-  const out = []
-  let i = 0
-  while (i < code.length) {
-    const q = code[i]
-    if (q !== "'" && q !== '"') { i++; continue }
-    let j = i + 1
-    let value = ''
-    while (j < code.length) {
-      const c = code[j]
-      if (c === '\\') {
-        const next = code[j + 1]
-        value += next === '\\' || next === q ? next : c + (next ?? '')
-        j += next === undefined ? 1 : 2
-        continue
-      }
-      if (c === q) { j++; break }
-      value += c
-      j++
-    }
-    out.push({ start: i, end: j, value, quote: q })
-    i = j
-  }
-  return out
-}
-
-const inString = (strings, pos) => strings.some(({ start, end }) => pos > start && pos < end)
-const stringAt = (strings, pos) => strings.find(({ start }) => start === pos)
+// `pattern` in maskNonCode's code outside its string literals: a literal matches first, as group 1, to be skipped.
+const codeRegExp = (pattern, flags) => new RegExp(`${LITERAL}|${pattern}`, flags)
+const codeMatches = (code, re) => code.matchAll(re).filter((m) => m[1] === undefined)
 
 // The lookbehind rejects `$x->require` and `Foo::include`, the `\b` `requireConfig`.
-const PHP_INCLUDE_KEYWORD_RE = /(?<![\w$>:])(?:require_once|require|include_once|include)\b/gidu
+const PHP_INCLUDE_KEYWORD_RE = codeRegExp(String.raw`(?<![\w$>:])(?:require_once|require|include_once|include)\b`, 'giu')
 const PHP_DIR_ANCHOR_RE = /__DIR__\b|dirname\s*\(\s*(__FILE__|__DIR__)\s*(?:,\s*(\d+)\s*)?\)/y
-const PHP_DIR_ANCHOR_FIND_RE = /(?<![\w$>])(?:__DIR__\b|dirname\s*\(\s*(?:__FILE__|__DIR__))/gu
+const PHP_DIR_ANCHOR_FIND_RE = codeRegExp(String.raw`(?<![\w$>])(?:__DIR__\b|dirname\s*\(\s*(?:__FILE__|__DIR__))`, 'gu')
 
 // Laravel's helpers taking a path from the project root (or a directory of it): they name PHP files it require()s.
 const PHP_PATH_HELPERS = new Map([
@@ -121,7 +59,7 @@ const PHP_PATH_HELPERS = new Map([
   ['resource_path', 'resources'],
   ['storage_path', 'storage'],
 ])
-const PHP_PATH_HELPER_FIND_RE = new RegExp(String.raw`(?<![\w$>:])(${[...PHP_PATH_HELPERS.keys()].join('|')})\s*\(`, 'giu')
+const PHP_PATH_HELPER_FIND_RE = codeRegExp(String.raw`(?<![\w$>:])(?<helper>${[...PHP_PATH_HELPERS.keys()].join('|')})\s*\(`, 'giu')
 
 // A double-quoted string's interpolation; a single-quoted one's `$` is literal.
 const PHP_INTERPOLATION_RE = /\$[A-Za-z_{]|\{\$/u
@@ -131,13 +69,6 @@ function skipWs(code, pos) {
   return pos
 }
 
-function matchDirAnchor(code, pos) {
-  PHP_DIR_ANCHOR_RE.lastIndex = pos
-  const m = PHP_DIR_ANCHOR_RE.exec(code)
-  if (!m) return null
-  return { end: PHP_DIR_ANCHOR_RE.lastIndex, up: m[1] === '__DIR__' ? (m[2] ? Number(m[2]) : 1) : 0 }
-}
-
 function normalizeIncludePath(raw, dirRelative) {
   if (!dirRelative) return raw
   const rel = raw.replace(/^\/+/u, '')
@@ -145,19 +76,20 @@ function normalizeIncludePath(raw, dirRelative) {
 }
 
 // Null with neither a directory anchor nor a literal; `dynamic` from the first variable, call or interpolation.
-function parseArgPath(code, start, strings) {
-  const anchor = matchDirAnchor(code, start)
+function parseArgPath(code, start) {
+  PHP_DIR_ANCHOR_RE.lastIndex = start
+  const anchor = PHP_DIR_ANCHOR_RE.exec(code)
   const dirRelative = anchor !== null
-  const up = anchor?.up ?? 0
+  const up = anchor?.[1] === '__DIR__' ? Number(anchor[2] ?? 1) : 0
   let i = start
   if (anchor) {
-    i = skipWs(code, anchor.end)
+    i = skipWs(code, PHP_DIR_ANCHOR_RE.lastIndex)
     if (code[i] !== '.') return null
     i = skipWs(code, i + 1)
-  } else if (!stringAt(strings, i)) return null
+  } else if (!literalAt(code, i)) return null
   let prefix = '/..'.repeat(up)
   for (;;) {
-    const lit = stringAt(strings, i)
+    const lit = literalAt(code, i)
     if (!lit) return { dirRelative, up, prefix, dynamic: true }
     const interp = lit.quote === '"' ? lit.value.search(PHP_INTERPOLATION_RE) : -1
     if (interp >= 0) return { dirRelative, up, prefix: prefix + lit.value.slice(0, interp), dynamic: true }
@@ -168,54 +100,52 @@ function parseArgPath(code, start, strings) {
   }
 }
 
-// A dynamic include's static directory prefix (`dir`): any `.php` file in it may be its target at runtime.
-function scanIncludes({ code, strings }) {
-  const out = []
-  for (const m of code.matchAll(PHP_INCLUDE_KEYWORD_RE)) {
-    if (inString(strings, m.index)) continue
+// Each include's file, and a dynamic one's static directory prefix (`dirs`): any `.php` file in it may be its target
+// at runtime.
+function scanIncludes(code) {
+  const files = []
+  const dirs = []
+  for (const m of codeMatches(code, PHP_INCLUDE_KEYWORD_RE)) {
     let i = skipWs(code, m.index + m[0].length)
     if (code[i] === '(') i = skipWs(code, i + 1)
-    const arg = parseArgPath(code, i, strings)
+    const arg = parseArgPath(code, i)
     if (!arg) continue
     const { dirRelative, up, prefix, dynamic } = arg
-    if (!dynamic) out.push({ kind: 'file', spec: normalizeIncludePath(prefix, dirRelative) })
+    if (!dynamic) files.push(normalizeIncludePath(prefix, dirRelative))
     else if (dirRelative || prefix.includes('/')) {
       let dir = prefix.includes('/') ? prefix.slice(0, prefix.lastIndexOf('/')) : ''
       if (dir === '' && up > 0) dir = '/..'.repeat(up)
-      out.push({ kind: 'dir', spec: normalizeIncludePath(dir, dirRelative) })
+      dirs.push(normalizeIncludePath(dir, dirRelative))
     }
   }
-  return out
+  return { files, dirs }
 }
 
-// `.php` path literals outside a `require`, which frameworks require() themselves.
-function scanPathLiterals({ code, strings }) {
-  const out = []
-  for (const m of code.matchAll(PHP_DIR_ANCHOR_FIND_RE)) {
-    if (inString(strings, m.index)) continue
-    const arg = parseArgPath(code, m.index, strings)
-    if (!arg || arg.dynamic || !arg.dirRelative) continue
-    const spec = normalizeIncludePath(arg.prefix, true)
-    if (spec.endsWith('.php')) out.push({ spec, anchor: 'file' })
+// `.php` path literals outside a `require`, which frameworks require() themselves, each once: a directory-anchored
+// one's from the file, a path helper's from the project root.
+function scanPathLiterals(code) {
+  const refs = new Map()
+  const add = (spec, anchor) => {
+    if (spec.endsWith('.php')) refs.set(`${anchor}:${spec}`, { spec, anchor })
   }
-  for (const m of code.matchAll(PHP_PATH_HELPER_FIND_RE)) {
-    if (inString(strings, m.index)) continue
-    const lit = stringAt(strings, skipWs(code, m.index + m[0].length))
+  for (const m of codeMatches(code, PHP_DIR_ANCHOR_FIND_RE)) {
+    const arg = parseArgPath(code, m.index)
+    if (arg && !arg.dynamic && arg.dirRelative) add(normalizeIncludePath(arg.prefix, true), 'file')
+  }
+  for (const m of codeMatches(code, PHP_PATH_HELPER_FIND_RE)) {
+    const lit = literalAt(code, skipWs(code, m.index + m[0].length))
     if (!lit || (lit.quote === '"' && PHP_INTERPOLATION_RE.test(lit.value))) continue
-    const sub = PHP_PATH_HELPERS.get(m[1].toLowerCase())
+    const sub = PHP_PATH_HELPERS.get(m.groups.helper.toLowerCase())
     const arg = lit.value.replace(/^\/+/u, '')
-    const spec = sub ? `${sub}/${arg}` : arg
-    if (spec.endsWith('.php')) out.push({ spec, anchor: 'root' })
+    add(sub ? `${sub}/${arg}` : arg, 'root')
   }
-  return out
+  return [...refs.values()]
 }
 
-const includeSpecs = (includes, kind) => includes.filter((e) => e.kind === kind).map((e) => e.spec)
-
-export const extractPhpImports = (content) => includeSpecs(scanIncludes(maskedPhp(content)), 'file')
-export const extractPhpImportDirs = (content) => includeSpecs(scanIncludes(maskedPhp(content)), 'dir')
-const pathRefs = (masked) => [...new Map(scanPathLiterals(masked).map((ref) => [`${ref.anchor}:${ref.spec}`, ref])).values()]
-export const extractPhpPathRefs = (content) => pathRefs(maskedPhp(content))
+// String literals kept, as include paths live in them.
+export const extractPhpImports = (content) => scanIncludes(maskNonCode(content, true)).files
+export const extractPhpImportDirs = (content) => scanIncludes(maskNonCode(content, true)).dirs
+export const extractPhpPathRefs = (content) => scanPathLiterals(maskNonCode(content, true))
 
 const isFileOnDisk = (baseDir, rel) => isFile(join(baseDir, rel))
 
@@ -254,7 +184,7 @@ function listPhpFiles(baseDir, dir) {
   try {
     return readdirSync(join(baseDir, dir), { withFileTypes: true })
       .filter((e) => e.isFile() && e.name.endsWith('.php'))
-      .map((e) => (dir === '.' ? e.name : `${dir}/${e.name}`))
+      .map((e) => `${dir}/${e.name}`)
   } catch {
     return []
   }
@@ -274,12 +204,9 @@ function normalizeProjectRel(baseDir, p) {
 function evalPathExpr(expr, vars) {
   const s = expr.trim().replace(/,+$/u, '').trim()
   let out = ''
-  let consumed = 0
-  const re = /\$(\w+)|'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|\.|\s+/gy
-  let m
-  while ((m = re.exec(s)) !== null) {
-    // A sticky regex resets lastIndex to 0 when exec() returns null: how far it parsed is kept here.
-    consumed = re.lastIndex
+  let parsed = 0
+  for (const m of s.matchAll(/\$(\w+)|'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|\.|\s+/gy)) {
+    parsed = m.index + m[0].length
     if (m[1] !== undefined) {
       if (vars[m[1]] === undefined) return null
       out += vars[m[1]]
@@ -289,7 +216,7 @@ function evalPathExpr(expr, vars) {
       out += m[3]
     }
   }
-  if (consumed !== s.length) return null
+  if (parsed !== s.length) return null
   return out
 }
 
@@ -325,28 +252,10 @@ function readComposerJson(baseDir) {
   return { composerJson, vendorDir }
 }
 
-// Composer 2's `{ packages }`, or Composer 1's flat array.
-function readInstalledPackages(baseDir, vendorDir) {
-  const json = readJsonIfExists(join(baseDir, vendorDir, 'composer', 'installed.json'))
-  return Array.isArray(json) ? json : (json?.packages ?? [])
-}
-
 // An integer past ±(2^53 − 1) a BigInt, as @preventive/lockfile reads one, so two values compare equal only
 // where PHP's do.
 const parseJsonExact = (text) => JSON.parse(text, (key, value, { source }) =>
   (typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/u.test(source) ? BigInt(source) : value))
-
-// installed.json's install-path is from vendor/composer, null for a metapackage; Composer 1's gives none.
-function installedDir(baseDir, vendorDir, p) {
-  const path = p['install-path']
-  if (path === undefined) return projectRel(baseDir, resolve(baseDir, vendorDir, p.name))
-  return typeof path === 'string' ? projectRel(baseDir, resolve(baseDir, vendorDir, 'composer', path)) : null
-}
-
-// As LibraryInstaller::getInstallPath puts a package; one an installer plugin takes goes elsewhere, where its
-// own composer.json's name finds it.
-const lockedDir = (baseDir, vendorDir, p) =>
-  (p.type === 'metapackage' ? null : projectRel(baseDir, resolve(baseDir, vendorDir, p.name, p.targetDir ?? '')))
 
 // What Composer adds to a locked package in installed.json as it installs it.
 const INSTALL_FIELDS = new Set(['version_normalized', 'installation-source', 'install-path'])
@@ -404,23 +313,32 @@ function composerRepo({ source, dist }, fromSource, at) {
   return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
 }
 
-// As installed.json's `installation-source` says, as it must with no dist, or as a git checkout at `at` shows.
-const installedFromSource = ({ dist }, from, at) => from === 'source' || dist == null || (at !== null && existsSync(join(at, '.git')))
-
-function composerInstall(p, from, at) {
-  const fromSource = installedFromSource(p, from, at)
-  return { repo: composerRepo(p, fromSource, at), integrity: fromSource ? undefined : archiveIntegrity('composer', p.dist.shasum) }
-}
-
 // Of composer.lock, each where Composer installs it, or where installed.json, which must be its install, says.
 export function loadComposerPackages(baseDir) {
   const { vendorDir } = readComposerJson(baseDir)
-  const packageAt = (p, dir, from) => ({ name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, from, dir == null ? null : join(baseDir, dir)) })
+  const vendored = (...path) => projectRel(baseDir, resolve(baseDir, vendorDir, ...path))
+  // Where `installed`, its installed.json entry, says: its install-path is from vendor/composer, null for a
+  // metapackage; Composer 1's gives none. Without one, as LibraryInstaller::getInstallPath puts it; one an installer
+  // plugin takes goes elsewhere, where its own composer.json's name finds it.
+  const dirOf = (p, installed) => {
+    if (installed === undefined) return p.type === 'metapackage' ? null : vendored(p.name, p.targetDir ?? '')
+    const path = installed['install-path']
+    if (path === undefined) return vendored(p.name)
+    return typeof path === 'string' ? vendored('composer', path) : null
+  }
+  const packageAt = (p, installed) => {
+    const dir = dirOf(p, installed)
+    const at = dir === null ? null : join(baseDir, dir)
+    // As installed.json's `installation-source` says, as it must with no dist, or as a git checkout at `at` shows.
+    const fromSource = installed?.['installation-source'] === 'source' || p.dist == null || (at !== null && existsSync(join(at, '.git')))
+    const integrity = fromSource ? undefined : archiveIntegrity('composer', p.dist.shasum)
+    return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, fromSource, at), integrity }
+  }
   const lockText = readUtf8OrNull(join(baseDir, 'composer.lock'), 'composer.lock')
   if (lockText === null) {
-    return readInstalledPackages(baseDir, vendorDir)
-      .filter((p) => p?.name && p.version)
-      .map((p) => packageAt(p, installedDir(baseDir, vendorDir, p), p['installation-source']))
+    // Composer 2's `{ packages }`, or Composer 1's flat array.
+    const json = readJsonIfExists(join(baseDir, vendorDir, 'composer', 'installed.json'))
+    return (Array.isArray(json) ? json : (json?.packages ?? [])).filter((p) => p?.name && p.version).map((p) => packageAt(p, p))
   }
 
   const composerJson = readUtf8OrNull(join(baseDir, 'composer.json'), 'composer.json')
@@ -428,11 +346,8 @@ export function loadComposerPackages(baseDir) {
   const installedFile = toPosix(join(vendorDir, 'composer', 'installed.json'))
   const installedText = readUtf8OrNull(join(baseDir, installedFile), installedFile)
   const installed = installedText === null ? null : assertInstalledAsLocked(lockText, installedText, { installedFile, vendorDir })
-  const dirs = installed === null ? null : new Map(installed.packages.map((p) => [p.name, installedDir(baseDir, vendorDir, p)]))
-  const from = new Map(installed?.packages.map((p) => [p.name, p['installation-source']]))
-  return Object.values(lock.packages)
-    .filter((p) => dirs === null || dirs.has(p.name))
-    .map((p) => packageAt(p, dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), from.get(p.name)))
+  const byName = installed && new Map(installed.packages.map((p) => [p.name, p]))
+  return Object.values(lock.packages).filter((p) => byName === null || byName.has(p.name)).map((p) => packageAt(p, byName?.get(p.name)))
 }
 
 // Null where there is no Composer config.
@@ -445,35 +360,32 @@ export function loadComposerAutoload(baseDir) {
   const files = new Set()
   let found = false
 
-  const mergeDirs = (map, prefix, dirs) => map.set(prefix, [...new Set([...(map.get(prefix) ?? []), ...dirs])])
-  const addPrefixDirs = (map, prefix, paths) =>
-    mergeDirs(map, prefix, [paths].flat().map((p) => normalizeProjectRel(baseDir, String(p))).filter((rel) => rel !== null))
+  const addDirs = (map, prefix, dirs) => map.set(prefix, [...new Set([...(map.get(prefix) ?? []), ...dirs.filter((dir) => dir !== null)])])
+  const declared = (p) => normalizeProjectRel(baseDir, String(p))
 
   // PSR-4 keys keep their trailing '\'.
   for (const block of [composerJson?.autoload, composerJson?.['autoload-dev']]) {
     if (!block || typeof block !== 'object') continue
     found = true
-    for (const [prefix, paths] of Object.entries(block['psr-4'] ?? {})) addPrefixDirs(psr4, prefix, paths)
-    for (const [prefix, paths] of Object.entries(block['psr-0'] ?? {})) addPrefixDirs(psr0, prefix, paths)
+    for (const [map, key] of [[psr4, 'psr-4'], [psr0, 'psr-0']]) {
+      for (const [prefix, paths] of Object.entries(block[key] ?? {})) addDirs(map, prefix, [paths].flat().map(declared))
+    }
     for (const f of block.files ?? []) {
-      const rel = normalizeProjectRel(baseDir, String(f))
+      const rel = declared(f)
       if (rel) files.add(rel)
     }
   }
 
-  const composerGenDir = join(baseDir, vendorDir, 'composer')
   const vars = { baseDir: resolve(baseDir), vendorDir: resolve(baseDir, vendorDir) }
   const toRel = (abs) => projectRel(baseDir, abs) || null
   const generated = (name, multi) => {
-    const file = join(composerGenDir, name)
+    const file = join(baseDir, vendorDir, 'composer', name)
     if (!existsSync(file)) return new Map()
     found = true
     return parseGeneratedMap(readFileSync(file, 'utf8'), vars, multi)
   }
-  for (const [name, target] of [['autoload_psr4.php', psr4], ['autoload_namespaces.php', psr0]]) {
-    for (const [prefix, dirs] of generated(name, true)) {
-      mergeDirs(target, prefix, dirs.map(toRel).filter((d) => d !== null).map((d) => d.replace(/\/+$/u, '')))
-    }
+  for (const [name, map] of [['autoload_psr4.php', psr4], ['autoload_namespaces.php', psr0]]) {
+    for (const [prefix, dirs] of generated(name, true)) addDirs(map, prefix, dirs.map(toRel))
   }
   for (const [fqcn, abs] of generated('autoload_classmap.php', false)) {
     const rel = toRel(abs)
@@ -499,55 +411,35 @@ export function resolveClassFile(fqcn, autoload, baseDir) {
   const ns = name.lastIndexOf('\\') + 1
   const psr0 = `${name.slice(0, ns).replace(/\\/gu, '/')}${name.slice(ns).replace(/_/gu, '/')}.php`
   const psr4 = (prefix) => `${name.slice(prefix.length).replace(/\\/gu, '/')}.php`
+  const matching = (map) => [...map].filter(([prefix]) => name.startsWith(prefix)).toSorted((a, b) => b[0].length - a[0].length)
   const candidates = [
     ...[autoload.classmap.get(name)].filter(Boolean),
-    ...matchingPrefixes(autoload.psr4, name).flatMap(([prefix, dirs]) => dirs.map((dir) => within(dir, psr4(prefix)))),
-    ...matchingPrefixes(autoload.psr0, name).flatMap(([, dirs]) => dirs.map((dir) => within(dir, psr0))),
+    ...matching(autoload.psr4).flatMap(([prefix, dirs]) => dirs.map((dir) => within(dir, psr4(prefix)))),
+    ...matching(autoload.psr0).flatMap(([, dirs]) => dirs.map((dir) => within(dir, psr0))),
   ]
   return candidates.find((file) => isFileOnDisk(baseDir, file)) ?? null
 }
 
-const matchingPrefixes = (map, name) => [...map].filter(([prefix]) => name.startsWith(prefix)).toSorted((a, b) => b[0].length - a[0].length)
-
-// From loadComposerPackages, as a package's own composer.json usually omits its `version`.
-function packageVersions(packages) {
-  const byDir = new Map()
-  const byName = new Map()
-  for (const { name, version, dir, repo, integrity } of packages) {
-    const known = { version, repo, integrity }
-    byName.set(name, known)
-    if (dir) byDir.set(dir, known)
-  }
-  return { byDir, byName }
-}
-
-function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
-  for (const dir of ancestors(dirname(fileRelPath))) {
-    const cj = readJsonIfExists(join(baseDir, dir, 'composer.json'))
-    if (cj?.name) {
-      const known = installed.byDir.get(dir) ?? installed.byName.get(cj.name)
-      return { pkgDir: dir, name: cj.name, version: known?.version ?? cj.version ?? fallbackVersion, repo: known?.repo, integrity: known?.integrity }
-    }
-  }
-  return null
-}
-
 // By the nearest composer.json's directory; workspace files and orphans in the root "." bucket, the placeholder's.
+// A package's own composer.json usually omits its `version`, which `packages` (loadComposerPackages') tell.
 export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion, packages = loadComposerPackages(baseDir)) {
-  const installed = packageVersions(packages)
+  const byDir = new Map(packages.filter((p) => p.dir).map((p) => [p.dir, p]))
+  const byName = new Map(packages.map((p) => [p.name, p]))
+  const manifest = memoized((dir) => readJsonIfExists(join(baseDir, dir, 'composer.json')))
   const modules = new Map()
-  const ensureBucket = (dir, name, version, ecosystem, { repo, integrity } = {}) =>
-    upsert(modules, dir, () => moduleInfo({ name, version, ecosystem, ...(ecosystem !== undefined && { integrity, repo }), files: Object.create(null) }))
+  const bucket = (dir, info) => upsert(modules, dir, () => moduleInfo({ ...info, files: Object.create(null) }))
 
   for (const [path, content] of sources) {
-    const pkg = findComposerPackage(baseDir, path, installed, fallbackVersion)
-    if (pkg) {
-      // The root package is workspace code; one below it an installed dependency.
-      const ecosystem = pkg.pkgDir === '.' ? undefined : 'composer'
-      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem, pkg).files[fileInBucket(pkg.pkgDir, path)] = content
-    } else {
-      ensureBucket('.', fallbackName, fallbackVersion).files[path] = content
+    const dir = ancestors(dirname(path)).find((at) => manifest(at)?.name)
+    if (dir === undefined) {
+      bucket('.', { name: fallbackName, version: fallbackVersion }).files[path] = content
+      continue
     }
+    const { name, version } = manifest(dir)
+    const known = byDir.get(dir) ?? byName.get(name)
+    // The root package is workspace code; one below it an installed dependency.
+    const installed = dir === '.' ? {} : { ecosystem: 'composer', integrity: known?.integrity, repo: known?.repo }
+    bucket(dir, { name, version: known?.version ?? version ?? fallbackVersion, ...installed }).files[fileInBucket(dir, path)] = content
   }
   return modules
 }
@@ -559,8 +451,7 @@ export function loadLaravelProviderFiles(baseDir, autoload, packages = loadCompo
   if (existsSync(join(baseDir, 'bootstrap', 'providers.php'))) files.add('bootstrap/providers.php')
   if (!autoload) return [...files]
 
-  const { composerJson } = readComposerJson(baseDir)
-  const fqcns = new Set(composerJson?.extra?.laravel?.providers ?? [])
+  const fqcns = new Set(readComposerJson(baseDir).composerJson?.extra?.laravel?.providers ?? [])
   for (const pkg of packages) {
     for (const fqcn of pkg.extra?.laravel?.providers ?? []) fqcns.add(fqcn)
   }
@@ -582,60 +473,50 @@ const RESERVED = new Set([
   'endif', 'endswitch', 'endwhile', 'endfor',
 ])
 
-// As PHP resolves a name: a leading `\` fully qualified, a first segment an alias expands, else relative to `ns`.
-function addRef(set, raw, ns, aliasMap) {
-  const n = raw.trim().replace(/^\?/u, '') // drop a nullable-type marker (`?Foo`)
-  if (!n || !/^\\?[A-Za-z_][\w\\]*$/u.test(n)) return
-  if (n.startsWith('\\')) {
-    set.add(n.replace(/^\\+/u, ''))
-    return
-  }
-  const [first, ...rest] = n.split('\\')
-  if (rest.length === 0 && RESERVED.has(n.toLowerCase())) return
-  if (aliasMap.has(first)) set.add([aliasMap.get(first), ...rest].join('\\'))
-  else set.add(ns ? `${ns}\\${n}` : n)
-}
-
-function parseUseBody(body) {
+function* parseUseBody(body) {
   const grouped = body.match(/^([\w\\]+\\)\{([\s\S]*)\}$/u)
   const entries = grouped
     ? grouped[2].split(',').map((p) => `${grouped[1]}${p.trim()}`)
     : body.split(',')
-  const out = []
   for (const entry of entries) {
     const [name, alias] = entry.trim().split(/\s+as\s+/iu).map((s) => s.trim())
-    if (!name || !/^\\?[\w\\]+$/u.test(name)) continue
-    const fqcn = name.replace(/^\\+/u, '')
-    out.push({ name, short: alias || fqcn.split('\\').pop() })
+    if (!/^\\?[\w\\]+$/u.test(name)) continue
+    yield { name, short: alias || name.replace(/^\\+/u, '').split('\\').pop() }
   }
-  return out
 }
-
-// The first class-like declaration ends the import region: a `use` before it is an alias import; after it, an
-// in-body trait use, which loads the trait.
-const firstDeclPos = (stripped) => stripped.match(/(?<![:\w$\\>])\b(?:class|interface|trait|enum)\b/iu)?.index ?? Infinity
 
 // A `use` import only aliases and loads nothing, so is no dependency: only where a class is referenced is.
 export function phpClassDependencies(content) {
   // Strings blanked too, so class-reference scans don't trip over text in them.
   const stripped = maskNonCode(content, false)
-  const nsMatch = stripped.match(/\bnamespace\s+([\w\\]+)/u)
-  const ns = nsMatch ? nsMatch[1].replace(/^\\+|\\+$/gu, '') : ''
+  const ns = stripped.match(/\bnamespace\s+([\w\\]+)/u)?.[1].replace(/^\\+|\\+$/gu, '') ?? ''
   const set = new Set()
   const aliasMap = new Map()
-  const add = (raw) => addRef(set, raw, ns, aliasMap)
+  // As PHP resolves a name: a leading `\` fully qualified, a first segment an alias expands, else relative to `ns`.
+  const add = (raw) => {
+    const n = raw.trim().replace(/^\?/u, '') // drop a nullable-type marker (`?Foo`)
+    if (!/^\\?[A-Za-z_][\w\\]*$/u.test(n)) return
+    if (n.startsWith('\\')) {
+      set.add(n.slice(1))
+      return
+    }
+    const [first, ...rest] = n.split('\\')
+    if (rest.length === 0 && RESERVED.has(n.toLowerCase())) return
+    if (aliasMap.has(first)) set.add([aliasMap.get(first), ...rest].join('\\'))
+    else set.add(ns ? `${ns}\\${n}` : n)
+  }
   const addAll = (re, separator) => {
     for (const m of stripped.matchAll(re)) for (const nm of separator ? m[1].split(separator) : [m[1]]) add(nm)
   }
 
-  const declAt = firstDeclPos(stripped)
+  // The first class-like declaration ends the import region: a `use` before it is an alias import; after it, an
+  // in-body trait use, which loads the trait.
+  const declAt = stripped.match(/(?<![:\w$\\>])\b(?:class|interface|trait|enum)\b/iu)?.index ?? Infinity
   for (const m of stripped.matchAll(/\buse\s+(?!\()(function\s+|const\s+)?([\s\S]*?);/giu)) {
     if (m[1]) continue
-    const entries = parseUseBody(m[2].trim())
-    if (m.index < declAt) {
-      for (const e of entries) aliasMap.set(e.short, e.name.replace(/^\\+/u, ''))
-    } else {
-      for (const e of entries) add(e.name)
+    for (const { name, short } of parseUseBody(m[2].trim())) {
+      if (m.index < declAt) aliasMap.set(short, name.replace(/^\\+/u, ''))
+      else add(name)
     }
   }
 
@@ -643,8 +524,7 @@ export function phpClassDependencies(content) {
   addAll(/(?<![\w$\\])instanceof\s+(\\?[\w\\]+)/giu)
   addAll(/(?<![\w$\\])(\\?[\w\\]+)\s*::/giu)
   addAll(/#\[\s*(\\?[\w\\]+)/giu)
-  for (const m of stripped.matchAll(/\b(?:class|interface|trait|enum)\b[^{;]*?\{/giu)) {
-    const header = m[0]
+  for (const [header] of stripped.matchAll(/\b(?:class|interface|trait|enum)\b[^{;]*?\{/giu)) {
     const ext = header.match(/\bextends\s+([\w\\\s,?]+?)(?:\bimplements\b|\{)/iu)
     if (ext) for (const nm of ext[1].split(',')) add(nm)
     const impl = header.match(/\bimplements\s+([\w\\\s,?]+?)\{/iu)
@@ -660,14 +540,13 @@ export function phpClassDependencies(content) {
   return set
 }
 
-function autoloadEdges(content, autoload, baseDir, sources) {
-  const edges = new Map()
-  if (!autoload) return edges
+// Each class `content` references and the file Composer's `autoload` finds it in on disk.
+function* autoloadEdges(content, autoload, baseDir) {
+  if (!autoload) return
   for (const fqcn of phpClassDependencies(content)) {
     const file = resolveClassFile(fqcn, autoload, baseDir)
-    if (file && (sources === null || sources.has(file))) edges.set(fqcn, file)
+    if (file) yield [fqcn, file]
   }
-  return edges
 }
 
 // Explicit includes are strict (unresolvable -> `missing`); Composer-autoloaded class refs (with `autoload`)
@@ -686,62 +565,37 @@ export function buildPhpTree(sources, { baseDir, autoload = null } = {}) {
         missing.push({ spec, from: path })
       }
     }
-    for (const [fqcn, file] of autoloadEdges(content, autoload, baseDir, sources)) specMap.set(fqcn, file)
+    for (const [fqcn, file] of autoloadEdges(content, autoload, baseDir)) if (sources.has(file)) specMap.set(fqcn, file)
     resolutions.set(path, specMap)
   }
   return { sources, resolutions, missing }
 }
 
+// No file, or a specifier resolved to a directory: buildPhpTree tells a real include's edge unresolved.
+const PHP_FILES = {
+  what: 'PHP source',
+  skipped: { ENOENT: '[loader.php] Missing import', EISDIR: '[loader.php] Missing import' },
+}
+
 export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = null } = {}) {
-  const sources = new Map()
-  const realBase = realpathSync(baseDir)
-
-  const readOne = async (relPath) => {
-    try {
-      assertRealPathWithinBase(realBase, baseDir, relPath)
-      const bytes = await readFile(join(baseDir, relPath))
-      // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
-      if (!isUtf8(bytes)) throw new Error(`PHP source is not valid UTF-8: ${relPath}`)
-      return [relPath, bytes.toString('utf8')]
-    } catch (err) {
-      // No file, or a specifier resolved to a directory: buildPhpTree tells a real include's edge unresolved.
-      if (err.code === 'ENOENT' || err.code === 'EISDIR') {
-        console.warn(`[loader.php] Missing import: ${relPath}`)
-        return null
-      }
-      throw err
+  function* refsOf(relPath, content) {
+    const code = maskNonCode(content, true)
+    const { files, dirs } = scanIncludes(code)
+    for (const spec of files) {
+      const resolved = resolvePhpImport(spec, relPath, { baseDir })
+      if (resolved) yield resolved
+      else console.warn(`[loader.php] Missing import: ${spec} from ${relPath}`)
     }
+    for (const spec of dirs) {
+      const dir = resolvePhpDir(spec, relPath, baseDir)
+      if (dir) yield* listPhpFiles(baseDir, dir)
+    }
+    for (const { spec, anchor } of scanPathLiterals(code)) {
+      const resolved = anchor === 'root' ? normalizeProjectRel(baseDir, spec) : resolvePhpImport(spec, relPath, { baseDir })
+      if (resolved && isFileOnDisk(baseDir, resolved)) yield resolved
+    }
+    for (const [, file] of autoloadEdges(content, autoload, baseDir)) yield file
   }
-
   // Composer `files` autoload entries load unconditionally, so they're roots too.
-  for (let wave = [...entries, ...(autoload?.files ?? [])]; wave.length > 0;) {
-    const toLoad = [...new Set(wave)].filter((p) => !sources.has(p))
-    const reads = []
-    for (let k = 0; k < toLoad.length; k += READ_CONCURRENCY) {
-      // eslint-disable-next-line no-await-in-loop -- batches are intentionally sequential to cap open files
-      reads.push(...(await Promise.all(toLoad.slice(k, k + READ_CONCURRENCY).map(readOne))))
-    }
-    const next = []
-    for (const [relPath, content] of reads.filter(Boolean)) {
-      sources.set(relPath, content)
-      const masked = maskedPhp(content)
-      const includes = scanIncludes(masked)
-      for (const spec of includeSpecs(includes, 'file')) {
-        const resolved = resolvePhpImport(spec, relPath, { baseDir })
-        if (resolved) next.push(resolved)
-        else console.warn(`[loader.php] Missing import: ${spec} from ${relPath}`)
-      }
-      for (const dirSpec of includeSpecs(includes, 'dir')) {
-        const dir = resolvePhpDir(dirSpec, relPath, baseDir)
-        if (dir) for (const file of listPhpFiles(baseDir, dir)) next.push(file)
-      }
-      for (const { spec, anchor } of pathRefs(masked)) {
-        const resolved = anchor === 'root' ? normalizeProjectRel(baseDir, spec) : resolvePhpImport(spec, relPath, { baseDir })
-        if (resolved && isFileOnDisk(baseDir, resolved)) next.push(resolved)
-      }
-      for (const file of autoloadEdges(content, autoload, baseDir, null).values()) next.push(file)
-    }
-    wave = next
-  }
-  return sources
+  return collectFromDisk(baseDir, [...entries, ...(autoload?.files ?? [])], PHP_FILES, refsOf)
 }

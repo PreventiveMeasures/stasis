@@ -79,8 +79,13 @@ export function buildBashTree(sources) {
   return { sources, resolutions, missing }
 }
 
-// A ref missing on disk warns and is skipped without aborting the walk.
-export async function collectBashFilesFromDisk(baseDir, entries) {
+// Reads at once: a wave can be huge (a PHP dynamic include's directory), and opening every file at once EMFILE.
+const READ_CONCURRENCY = 64
+
+// The `what` files (UTF-8) `entries` reach on disk, wave by wave, `refsOf(relPath, content)` the paths each one
+// reaches in turn. One not there, or a directory, is warned of as `skipped[err.code]` says and left out without
+// aborting the walk.
+export async function collectFromDisk(baseDir, entries, { what, skipped }, refsOf) {
   const sources = new Map()
   const realBase = realpathSync(baseDir)
 
@@ -88,26 +93,39 @@ export async function collectBashFilesFromDisk(baseDir, entries) {
     try {
       assertRealPathWithinBase(realBase, baseDir, relPath)
       const bytes = await readFile(join(baseDir, relPath))
-      if (!isUtf8(bytes)) throw new Error(`Shell script is not valid UTF-8: ${relPath}`)
+      // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
+      if (!isUtf8(bytes)) throw new Error(`${what} is not valid UTF-8: ${relPath}`)
       return [relPath, bytes.toString('utf8')]
     } catch (err) {
-      // A slash ref can resolve to a directory (`source ./lib`).
       if (err.code !== 'ENOENT' && err.code !== 'EISDIR') throw err
-      console.warn(`[loader.bash] ${err.code === 'ENOENT' ? 'Missing file' : 'Skipping directory reference'}: ${relPath}`)
+      console.warn(`${skipped[err.code]}: ${relPath}`)
       return null
     }
   }
 
-  const processWave = async (wave) => {
-    if (wave.size === 0) return
-    const next = new Set()
-    for (const [relPath, content] of (await Promise.all([...wave].map(read))).filter(Boolean)) {
-      sources.set(relPath, content)
-      for (const ref of extractBashCalls(content)) next.add(resolveBashCall(ref, relPath, { baseDir }))
+  for (let wave = entries; ;) {
+    const toLoad = [...new Set(wave)].filter((p) => !sources.has(p))
+    if (toLoad.length === 0) return sources
+    const reads = []
+    for (let k = 0; k < toLoad.length; k += READ_CONCURRENCY) {
+      // eslint-disable-next-line no-await-in-loop -- batches are intentionally sequential to cap open files
+      reads.push(...(await Promise.all(toLoad.slice(k, k + READ_CONCURRENCY).map(read))))
     }
-    await processWave(new Set([...next].filter((p) => p && !sources.has(p))))
+    wave = []
+    for (const [relPath, content] of reads.filter(Boolean)) {
+      sources.set(relPath, content)
+      for (const ref of refsOf(relPath, content)) wave.push(ref)
+    }
   }
+}
 
-  await processWave(new Set(entries))
-  return sources
+// A slash ref can resolve to a directory (`source ./lib`).
+const BASH_FILES = {
+  what: 'Shell script',
+  skipped: { ENOENT: '[loader.bash] Missing file', EISDIR: '[loader.bash] Skipping directory reference' },
+}
+
+export async function collectBashFilesFromDisk(baseDir, entries) {
+  return collectFromDisk(baseDir, entries, BASH_FILES, (relPath, content) =>
+    extractBashCalls(content).map((ref) => resolveBashCall(ref, relPath, { baseDir })).filter(Boolean))
 }
