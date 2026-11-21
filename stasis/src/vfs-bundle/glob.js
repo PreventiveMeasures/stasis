@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module'
 import { posix } from 'node:path'
 
+import { upsert } from '@exodus/stasis-core/util'
+
 // Node 24.22.2's and 26.13.0's fs.globSync (internal/fs/glob.js, without `followSymlinks`, `maxDepth` or an array
 // `exclude`) and path.matchesGlob over a `host`. Matching never folds case: git's names may differ by case alone.
 
@@ -369,11 +371,7 @@ const MATCHERS_KEPT = 250
 const matchers = new Map()
 
 export function matchesGlob(path, pattern) {
-  let matcher = matchers.get(pattern)
-  if (matcher === undefined) {
-    matcher = createMatcher(pattern)
-    matchers.set(pattern, matcher)
-    if (matchers.size >= MATCHERS_KEPT) matchers.delete(matchers.keys().next().value)
-  }
+  const matcher = upsert(matchers, pattern, () => createMatcher(pattern))
+  if (matchers.size >= MATCHERS_KEPT) matchers.delete(matchers.keys().next().value)
   return matcher.match(path)
 }

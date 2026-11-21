@@ -8,7 +8,7 @@ import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle, configuredLockfiles, debugTimed, prismaClientsOf } from '../cmd/bundle.js'
 import { checkAhead, defaultEntries, entryPattern, expandEntries } from './entries.js'
-import { checkCache, checkTarget, detectPackageManager, installedAlone, listsFile, lockfileOf, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
+import { checkCache, checkNonEmpty, checkTarget, detectPackageManager, listsFile, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
@@ -24,17 +24,19 @@ const resolvesOutside = (from, target) => target.startsWith('/') || posixPathEsc
 // As a checkout under umask 022 makes them: git keeps only the executable bit, and GitHub's tar.umask is 0002.
 const checkoutMode = ({ type, mode }) => (type === 'symlink' ? mode : type === 'directory' || mode & 0o100 ? 0o755 : 0o644)
 
-async function treeEntries(tarball, where) {
+// A symlink out of them is refused, or for a `subtree`, null: the whole repo resolves it.
+async function treeEntries(tarball, where, { subtree = false } = {}) {
   const entries = []
   for (const entry of unpack(await decompress(tarball, 'gzip', { limit: MAX_TAR_BYTES }))) {
     const name = entry.name.slice(entry.name.indexOf('/') + 1)
     if (!TREE_TYPES.has(entry.type)) throw new Error(`${where}: unexpected ${entry.type} ${JSON.stringify(name)} in the tarball`)
     if (entry.name.includes('/')) entries.push({ ...entry, name, mode: checkoutMode(entry) })
   }
-  return entries
+  const link = entries.find((entry) => entry.type === 'symlink' && resolvesOutside(entry.name, entry.linkname))
+  if (link === undefined) return entries
+  if (subtree) return null
+  throw new Error(`${where}: symlink ${JSON.stringify(link.name)} points outside the repo`)
 }
-
-const escapingLink = (entries) => entries.find((entry) => entry.type === 'symlink' && resolvesOutside(entry.name, entry.linkname))
 
 function refersAbove(entries, lockfile) {
   const text = (entry) => new TextDecoder().decode(entry.data)
@@ -53,27 +55,17 @@ function ancestorsOf(directory) {
 // Upstream refuses symlinks above the tarball's root (its top directory) unless told how far they may climb: to the repo's.
 async function treeFiles(client, { github, tree, directory, where }) {
   try {
-    const files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where)
-    return escapingLink(files) ? null : files
+    return await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where, { subtree: true })
   } catch (error) {
     if (error instanceof ArchiveError) return null // e.g. a symlink out of the subtree
     throw error
   }
 }
 
-async function repoFiles(client, { github, sha, where }) {
-  const files = await treeEntries(await client.getRepoTarball({ repo: github, sha }), where)
-  const link = escapingLink(files)
-  if (link) throw new Error(`${where}: symlink ${JSON.stringify(link.name)} points outside the repo`)
-  return files
-}
-
 // Checked as the Bundle checks them, before anything is fetched; a `path` as a `directory`, but for a pattern's `*`.
 function checkRepo(name, { github, sha, tag, branch, directory, path }) {
   if (github === undefined) throw new Error(`${name}: github is required`)
-  for (const [key, value] of Object.entries({ tag, branch })) {
-    if (value !== undefined && (typeof value !== 'string' || value === '')) throw new TypeError(`${name}: ${key} must be a non-empty string`)
-  }
+  checkNonEmpty(name, { tag, branch })
   if (sha !== undefined && tag !== undefined) throw new Error(`${name}: sha and tag both name the commit: give one`)
   if (tag !== undefined && branch !== undefined) throw new Error(`${name}: tag and branch both name the commit: give one`)
   if (directory !== undefined && path !== undefined) throw new Error(`${name}: directory and path both name the directory: give one`)
@@ -120,6 +112,7 @@ async function listedPackageManager(list, { directory, where }) {
 }
 
 async function subtreeEntries(client, list, { github, directory, packageManager, where }) {
+  const pm = packageManagerOf('buildGitHubBundle', packageManager)
   const names = async (path) => (await list(path)).map((entry) => entry.path)
   let listing
   try {
@@ -127,15 +120,15 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   } catch {
     return null // no plain directory in git (a symlink, or under one): the whole repo resolves it
   }
-  if (!listsFile(listing, lockfileOf(packageManager))) return null
+  if (!listsFile(listing, pm.lockfile)) return null
   const above = ancestorsOf(directory)
   const aboveNames = () => Promise.all(above.map(names))
-  if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), aboveNames))) return null
-  if (packageManagerOf('buildGitHubBundle', packageManager).kind === 'js' && (await aboveNames()).some((dir) => dir.includes(YARNCLEAN))) return null
+  if (!(await pm.alone(listing.map((entry) => entry.path), aboveNames))) return null
+  if (pm.kind === 'js' && (await aboveNames()).some((dir) => dir.includes(YARNCLEAN))) return null
   // Its tree id, as the listing above it holds it, held to that directory's own.
   const tree = (await list(above[0])).find((entry) => entry.path === posix.basename(directory) && entry.type === 'tree')?.sha
   const files = tree === undefined ? null : await treeFiles(client, { github, tree, directory, where })
-  return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
+  return files === null || refersAbove(files, pm.lockfile) ? null : files
 }
 
 // GitHub serves a commit pushed to any fork of a repo through the repo's name too, its tarball and trees alike: one
@@ -181,13 +174,14 @@ async function repoTree(name, { github, sha, tag, branch, directory, path, clien
     const vfs = vfsFromEntries(files)
     return { vfs, host: vfsHost(vfs), cwd: posix.resolve('/', at) }
   }
+  const whole = async () => open(await treeEntries(await client.getRepoTarball({ repo: github, sha }), where), directory ?? '.')
   let subtree = directory && found !== undefined ? await subtreeEntries(client, list, { github, directory, packageManager: found, where }) : null
-  let opened = open(subtree ?? await repoFiles(client, { github, sha, where }), subtree ? '.' : directory ?? '.')
+  let opened = subtree === null ? await whole() : open(subtree, '.')
   // Lockfiles it names may climb out of the directory: the whole repo, which holds the same config there.
   const lockfiles = configuredLockfiles(where, opened.cwd, opened.host)
   if (lockfiles !== undefined && subtree !== null) {
     subtree = null
-    opened = open(await repoFiles(client, { github, sha, where }), directory)
+    opened = await whole()
   }
   options = { ...options, entries: expandEntries(where, opened.host, opened.cwd, options.entries) }
   if (lockfiles === undefined && packageManager === undefined) {

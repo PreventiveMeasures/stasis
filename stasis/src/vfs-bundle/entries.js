@@ -69,19 +69,15 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
 const SKIPPED_DIRS = new Set(['test', 'tests', 'script', 'scripts', 'mock', 'mocks', 'lib', 'node_modules', 'dependencies', 'out', 'cache', 'artifacts', 'build'])
 const isEntrySol = (entry) => entry.isFile() && entry.name.endsWith('.sol') && !/\.(?:t|s|test|spec)\.sol$/u.test(entry.name)
 
-function solidityFiles(host, real, rel) {
+function solidityEntries(host, dir) {
+  const real = host.realpath(dir)
+  const isDirectory = (rel) => !posixPathEscapes(rel) && host.stat(join(real, rel))?.isDirectory() && host.readlink(join(real, rel)) === null
   const walk = (sub) => host.readdir(join(real, sub)).flatMap((entry) => {
     const path = sub === '.' ? entry.name : `${sub}/${entry.name}`
     if (entry.isDirectory()) return SKIPPED_DIRS.has(entry.name.toLowerCase()) || isAutoExcludedDir(entry.name) ? [] : walk(path)
     return isEntrySol(entry) ? [path] : []
   })
-  return walk(rel).toSorted()
-}
-
-function solidityEntries(host, dir) {
-  const real = host.realpath(dir)
-  const isDirectory = (rel) => !posixPathEscapes(rel) && host.stat(join(real, rel))?.isDirectory() && host.readlink(join(real, rel)) === null
-  const under = (rel) => (isDirectory(rel) ? solidityFiles(host, real, rel) : [])
+  const under = (rel) => (isDirectory(rel) ? walk(rel).toSorted() : [])
   const src = normalize(foundrySourceDir(real, { host })).replace(/\/+$/u, '')
   const own = host.readdir(real).filter(isEntrySol).map((entry) => entry.name).toSorted()
   return [...new Set([...own, ...under('contracts'), ...(src === 'contracts' ? [] : under(src))])]

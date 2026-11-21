@@ -62,24 +62,19 @@ function warnHeld(...args) {
   if (held === undefined) passed.apply(console, args)
   else held.push(args)
 }
-async function holding(held, fn) {
+
+export async function warningsHeld(fn) {
+  const warnings = []
   if (holders++ === 0) {
     passed = console.warn
     console.warn = warnHeld
   }
   try {
-    return await rounds.run(held, fn)
-  } finally {
-    if (--holders === 0 && console.warn === warnHeld) console.warn = passed
-  }
-}
-
-export async function warningsHeld(fn) {
-  const warnings = []
-  try {
-    return { value: await holding(warnings, fn), warnings }
+    return { value: await rounds.run(warnings, fn), warnings }
   } catch (error) {
     return { error, warnings }
+  } finally {
+    if (--holders === 0 && console.warn === warnHeld) console.warn = passed
   }
 }
 

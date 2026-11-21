@@ -49,7 +49,7 @@ export function yarnclean(host, cwd) {
       kept.add(path)
       for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) holdingKept.add(up)
     }
-    for (const { path, loc } of negations.length === 0 ? [] : entries) if (negations.some((filter) => matches(filter, loc))) keep(path)
+    for (const { path, loc } of entries) if (negations.some((filter) => matches(filter, loc))) keep(path)
     // So is a link to either: pnpm links each package into its store, where Yarn's hoisted layout holds the package.
     const leadsToKept = (path) => {
       try {
