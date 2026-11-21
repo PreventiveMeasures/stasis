@@ -18,11 +18,12 @@ const require = createRequire(import.meta.url)
 
 const TRANSFORMER = fileURLToPath(new URL('./metro-transformer.js', import.meta.url))
 
-// A graph module's absolute path, or undefined for a virtual one (require.context's ?ctx=, __prelude__).
-function diskPath(module) {
-  const modPath = module?.path
-  return typeof modPath === 'string' && isAbsolute(modPath) && existsSync(modPath) ? modPath : undefined
-}
+// An absolute path on disk, else undefined: a virtual module's (require.context's ?ctx=, __prelude__), an unresolved
+// edge's.
+const diskPath = (path) => (typeof path === 'string' && isAbsolute(path) && existsSync(path) ? path : undefined)
+
+// Metro's asset module, whose files (its `scales` and `hash`) Metro reads to build it and copies out with it.
+const isAsset = (module) => module.output?.[0]?.type === 'js/module/asset'
 
 // Metro's `graph.entryPoints` is a Set, an Array before ~0.71.
 const entrySet = ({ entryPoints }) => new Set(entryPoints instanceof Set || Array.isArray(entryPoints) ? entryPoints : [])
@@ -81,26 +82,24 @@ let metroDefault
 function metroDefaultSerializer() {
   if (metroDefault) return metroDefault
   const M = 'metro'
-  const load = (dir) => ['DeltaBundler/Serializers/baseJSBundle', 'lib/bundleToString'].map((lib) => {
-    const mod = require(`${M}/${dir}/${lib}`)
-    return mod.default ?? mod
-  })
-  let baseJSBundle, bundleToString
-  try {
-    [baseJSBundle, bundleToString] = load('src')
-  } catch {
+  let cause
+  for (const dir of ['src', 'private']) {
     try {
-      [baseJSBundle, bundleToString] = load('private')
-    } catch (cause) {
-      throw new Error(
-        "StasisMetro: couldn't load Metro's default serializer (tried metro/src and " +
-        'metro/private). Pass your existing customSerializer to withStasis()/customSerializer() instead.',
-        { cause }
-      )
+      const [baseJSBundle, bundleToString] = ['DeltaBundler/Serializers/baseJSBundle', 'lib/bundleToString'].map((lib) => {
+        const mod = require(`${M}/${dir}/${lib}`)
+        return mod.default ?? mod
+      })
+      metroDefault = (entryPoint, preModules, graph, options) => bundleToString(baseJSBundle(entryPoint, preModules, graph, options)).code
+      return metroDefault
+    } catch (error) {
+      cause = error
     }
   }
-  metroDefault = (entryPoint, preModules, graph, options) => bundleToString(baseJSBundle(entryPoint, preModules, graph, options)).code
-  return metroDefault
+  throw new Error(
+    "StasisMetro: couldn't load Metro's default serializer (tried metro/src and " +
+    'metro/private). Pass your existing customSerializer to withStasis()/customSerializer() instead.',
+    { cause }
+  )
 }
 
 // Hooks Metro's serializer, which runs once in the main process with the full graph (a worker's State could never
@@ -159,9 +158,7 @@ export class StasisMetro {
     }
   }
 
-  serializerHook = (graph, _delta) => {
-    this.#run(graph)
-  }
+  serializerHook = (graph) => this.#run(graph)
 
   #run(graph, preModules) {
     if (!this.#state) return
@@ -192,17 +189,35 @@ export class StasisMetro {
 
   #capture(graph, preModules) {
     const entries = entrySet(graph)
-    const platform = graph.transformOptions?.platform ?? null
-    if (preModules) this.#captureModules(preModules, entries, platform)
-    this.#captureModules(graph.dependencies.values(), entries, platform)
+    const platform = graph.transformOptions?.platform
+    for (const module of [...(preModules ?? []), ...graph.dependencies.values()]) {
+      const modPath = diskPath(module?.path)
+      if (modPath === undefined) continue
+      const kind = classifyOrThrow('StasisMetro', modPath, this.#resources)
+      const url = pathToFileURL(modPath).toString()
+      for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
+      if (!this.#captureRead(modPath, kind, entries.has(modPath))) continue
+      for (const { file } of this.#consumedResources(module, modPath)) this.#captureRead(file, 'resource')
+      if (!isAsset(module)) continue
+      // An asset's files: it and its other scales (metroAssetFiles, Metro's own rule for `platform`), by the name Metro
+      // reads each by, with the bytes it reads there, so a load holds that name to them; no import names one, so no
+      // edge. One linked from outside the project is passed over, as is one of a kind unknown (the module was refused).
+      for (const read of metroAssetFiles(modPath, platform)) {
+        const readKind = classifyExtension(read, this.#resources)
+        if (readKind !== 'unknown' && this.#realWithin(read) !== null) this.#captureRead(read, readKind)
+      }
+    }
     this.#captureAutoIncludes()
     this.#captureTransformPlugins()
     // Last, past what is already captured: the native build inputs no module graph carries.
     this.#captureNativeModules()
   }
 
-  #recordCapture(full, source, { format, resource, inferFormat = true, reason = 'metro' }) {
-    this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, inferFormat, reason })
+  // Marks `file` seen and records it, its bytes `source` as read from disk (addFile re-reads it to assert them), as
+  // addFile `options` say.
+  #record(file, source, options) {
+    this.#seen.add(file)
+    this.#state.addFile(pathToFileURL(file).toString(), { source, inferFormat: false, reason: 'metro', ...options })
   }
 
   // Each of AUTO_INCLUDES resolving within the project root, tagged by the shared classifier so it agrees with any
@@ -216,10 +231,9 @@ export class StasisMetro {
         continue
       }
       if (this.#seen.has(modPath) || !this.#within(modPath)) continue
-      this.#seen.add(modPath)
       const source = realReadFileSync(modPath)
       const format = classifyFormat(modPath, { content: source })
-      this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false, reason: 'run' })
+      this.#record(modPath, source, { format: format ?? undefined, resource: format === undefined, reason: 'run' })
     }
   }
 
@@ -228,11 +242,10 @@ export class StasisMetro {
   #captureTransformPlugins() {
     for (const file of metroTransformPluginFiles(this.#projectDir)) {
       if (this.#seen.has(file) || !this.#within(file)) continue
-      this.#seen.add(file)
       try {
         require(file)
       } catch { /* one that can't load can't run under Metro either: its bytes are still recorded */ }
-      this.#recordCapture(file, realReadFileSync(file), { reason: 'run' })
+      this.#record(file, realReadFileSync(file), { inferFormat: true, reason: 'run' })
     }
   }
 
@@ -245,38 +258,28 @@ export class StasisMetro {
     for (const dep of Object.values(config.dependencies ?? {})) {
       if (isNativeDependency(dep) && typeof dep.root === 'string' && isAbsolute(dep.root)) roots.add(dep.root)
     }
-    for (const root of this.#reachedNativePackageRoots()) roots.add(root)
+    // RN core is walked as reactNativePath.
+    const reached = this.#seen.values().map((abs) => splitNodeModulesPath(abs)).filter((nm) => nm && nm.name !== 'react-native')
+    for (const root of new Set(reached.map((nm) => nm.dir))) if (looksNative(root, diskHost)) roots.add(root)
     const rnPath = typeof config.reactNativePath === 'string' && isAbsolute(config.reactNativePath) ? config.reactNativePath : null
     if (rnPath !== null) roots.add(rnPath)
-    for (const root of roots) if (this.#within(root)) this.#captureNativeTree(root)
-    // RN core's `.js` build scripts, which the walk leaves to Metro but its graph never has.
-    if (rnPath !== null && this.#within(rnPath)) for (const file of RN_CORE_INCLUDE_FILES) this.#captureNativeFile(join(rnPath, file))
-  }
-
-  #captureNativeFile(full) {
-    if (this.#seen.has(full)) return
-    let source
-    try {
-      source = realReadFileSync(full)
-    } catch {
-      return
+    for (const root of roots) {
+      if (!this.#within(root)) continue
+      // In the format nativeInputs gives (a codegen source's generic, as Metro's code has, so none is inferred).
+      const inputs = nativeInputs(root, diskHost, { resources: this.#resources, skip: (file) => this.#seen.has(file) })
+      for (const { file, source, action, format } of inputs) this.#record(file, source, { format, resource: action === 'resource' })
     }
-    this.#seen.add(full)
-    const format = classifyFormat(full, { content: source })
-    this.#recordCapture(full, source, { format, resource: format === undefined })
-  }
-
-  // RN core is walked as reactNativePath.
-  #reachedNativePackageRoots() {
-    const reached = this.#seen.values().map((abs) => splitNodeModulesPath(abs)).filter((nm) => nm && nm.name !== 'react-native')
-    return [...new Set(reached.map((nm) => nm.dir))].filter((root) => looksNative(root, diskHost))
-  }
-
-  // In the format nativeInputs gives (a codegen source's generic, as Metro's code has, so none is inferred).
-  #captureNativeTree(root) {
-    for (const { file, source, action, format } of nativeInputs(root, diskHost, { resources: this.#resources, skip: (f) => this.#seen.has(f) })) {
-      this.#seen.add(file)
-      this.#recordCapture(file, source, { format, resource: action === 'resource', inferFormat: false })
+    // RN core's `.js` build scripts, which the walk leaves to Metro but its graph never has, typed as the loader would.
+    if (rnPath === null || !this.#within(rnPath)) return
+    for (const file of RN_CORE_INCLUDE_FILES.map((rel) => join(rnPath, rel))) {
+      if (this.#seen.has(file)) continue
+      let source
+      try {
+        source = realReadFileSync(file)
+      } catch {
+        continue
+      }
+      this.#record(file, source, { inferFormat: true })
     }
   }
 
@@ -285,43 +288,27 @@ export class StasisMetro {
   #assertEdges(graph, preModules) {
     const platform = graph.transformOptions?.platform ?? undefined
     for (const module of [...(preModules ?? []), ...graph.dependencies.values()]) {
-      const modPath = diskPath(module)
+      const modPath = diskPath(module?.path)
       if (modPath === undefined) continue
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
       for (const files of this.#consumedResources(module, modPath)) {
         this.#assertOnDisk(files, { what: `which a Babel plugin inlines into '${modPath}'`, servedBy: ['sync', 'async'] })
       }
-      this.#assertAssetFiles(module, modPath, platform ?? null)
+      if (isAsset(module)) this.#assertAssetFiles(modPath, platform)
     }
   }
 
   // A module's edges, keyed as the source wrote them (`stasisAsWritten`, where Babel rewrote one), to code and resource
   // targets alike. One the source doesn't write (`stasisInserted`: a Babel helper, Metro's asyncRequire) is no edge.
-  #edges(module) {
-    const edges = []
+  * #edges(module) {
     for (const dep of module.dependencies?.values?.() ?? []) {
       if (dep?.data?.stasisInserted === true) continue
-      const target = dep?.absolutePath
-      if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
-      if (classifyExtension(target, this.#resources) === 'unknown') continue
+      const target = diskPath(dep?.absolutePath)
+      if (target === undefined || classifyExtension(target, this.#resources) === 'unknown') continue
       for (const specifier of dep.data?.stasisAsWritten ?? [dep.data?.name]) {
-        if (typeof specifier === 'string') edges.push([specifier, pathToFileURL(target).toString()])
+        if (typeof specifier === 'string') yield [specifier, pathToFileURL(target).toString()]
       }
-    }
-    return edges
-  }
-
-  #captureModules(modules, entries, platform) {
-    for (const module of modules) {
-      const modPath = diskPath(module)
-      if (modPath === undefined) continue
-      const kind = classifyOrThrow('StasisMetro', modPath, this.#resources)
-      const url = pathToFileURL(modPath).toString()
-      for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
-      if (!this.#captureRead(modPath, kind, entries.has(modPath))) continue
-      for (const { file } of this.#consumedResources(module, modPath)) this.#captureRead(file, 'resource')
-      this.#captureAssetFiles(module, modPath, platform)
     }
   }
 
@@ -355,61 +342,34 @@ export class StasisMetro {
   }
 
   // Capture `path` once, as the `kind` classifyExtension gives it: code in the format Metro builds it in
-  // (metroFormat), as Metro transforms it from source. From disk: addFile re-reads it to assert the bytes.
-  // -> whether it was new
+  // (metroFormat), as Metro transforms it from source. -> whether it was new
   #captureRead(path, kind, isEntry = false) {
     if (this.#seen.has(path)) return false
-    this.#seen.add(path)
     const source = realReadFileSync(path)
     if (kind === 'code') assertCodeUtf8('StasisMetro', path, source)
     const format = kind === 'code' ? metroFormat(path) : undefined
-    const resource = kind === 'resource'
-    this.#state.addFile(pathToFileURL(path).toString(), { source, format, isEntry, resource, inferFormat: false, reason: 'metro' })
+    this.#record(path, source, { format, isEntry, resource: kind === 'resource' })
     return true
-  }
-
-  // The files Metro reads to build the asset module `module` (its `scales` and `hash`) and copies out with it: it
-  // and its other scales (metroAssetFiles, Metro's own rule for `platform`). No import names one, so no edge.
-  #assetFiles(module, modPath, platform) {
-    return module.output?.[0]?.type === 'js/module/asset' ? metroAssetFiles(modPath, platform, this.#assetDirHost()) : []
-  }
-
-  // Where Metro lists an asset's files: on disk, but under load with --fs=async, which serves the listing, the
-  // bundle's (a file added on disk since is none of the asset's; one gone from disk holds no drift).
-  #assetDirHost() {
-    const state = this.#state
-    if (!state.config.loadBundle || state.config.fs !== 'async') return diskHost
-    return {
-      readdir: (dir) => state.getFsDirFamily(pathToFileURL(dir).toString())?.map((name) => ({ name })) ?? diskHost.readdir(dir),
-      stat: (path) => diskHost.stat(path) ?? (state.getFsStatFamily(pathToFileURL(path).toString()) === 'file' ? FILE_STAT : null),
-    }
-  }
-
-  #bundleDirHost() {
-    return (this.#bundleDirs ??= bundleDirHost(this.#state))
-  }
-
-  // By the name Metro reads each by, with the bytes it reads there, so a load holds that name to them. One linked
-  // from outside the project is passed over, as is one of a kind unknown (the module itself was refused).
-  #captureAssetFiles(module, modPath, platform) {
-    for (const read of this.#assetFiles(module, modPath, platform)) {
-      const kind = classifyExtension(read, this.#resources)
-      if (kind !== 'unknown' && this.#realWithin(read) !== null) this.#captureRead(read, kind)
-    }
   }
 
   // Metro reads an asset's files from disk, past the stasis transformer: each must be the bundle's under that name (a
   // scale added since the capture, or one a symlink redirects, is drift), and each the bundle carries must still be
-  // there (one gone builds another asset) -- unless --fs=async serves them.
-  #assertAssetFiles(module, modPath, platform) {
-    const read = this.#assetFiles(module, modPath, platform)
+  // there (one gone builds another asset) -- unless --fs=async serves them, and their listing too: then a file added
+  // on disk since is none of the asset's, and one gone from disk holds no drift.
+  #assertAssetFiles(modPath, platform) {
+    const state = this.#state
+    const listed = state.config.fs !== 'async' ? diskHost : {
+      readdir: (dir) => state.getFsDirFamily(pathToFileURL(dir).toString())?.map((name) => ({ name })) ?? diskHost.readdir(dir),
+      stat: (path) => diskHost.stat(path) ?? (state.getFsStatFamily(pathToFileURL(path).toString()) === 'file' ? FILE_STAT : null),
+    }
+    const read = metroAssetFiles(modPath, platform, listed)
     if (read.length === 0) return
     const what = `a file of the asset '${modPath}' Metro builds`
     for (const path of read) {
       if (diskHost.stat(path)?.isFile()) this.#assertOnDisk({ file: path, read: path }, { what, servedBy: ['async'] })
     }
-    if (!inScope(this.#state, pathToFileURL(modPath).toString())) return
-    for (const file of metroAssetFiles(modPath, platform, this.#bundleDirHost())) {
+    if (!inScope(state, pathToFileURL(modPath).toString())) return
+    for (const file of metroAssetFiles(modPath, platform, (this.#bundleDirs ??= bundleDirHost(state)))) {
       if (read.includes(file)) continue
       throw new Error(`StasisMetro: '${file}', ${what} as the bundle carries it, is gone -- Metro would build the asset without it under load; restore it`)
     }
