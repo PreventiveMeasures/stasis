@@ -1,5 +1,5 @@
 import { packageRepo } from '@exodus/stasis-core/bundle-util'
-import { dependencyEcosystem, moduleFileKey, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, moduleFileKey, NPM_DIRECTORY, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -13,11 +13,12 @@ export { formatTable }
 // Where advisories() asks for each ecosystem's advisories (OSV has a GitHub repo's as a GitHub Action's).
 const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV', 'Packagist'], soldeer: ['Soldeer', 'GitHub'], github: ['OSV', 'GitHub'] }
 
-// Asked nowhere: by its name, crates.io's advisories would be another crate's, and a private git dependency's name
-// must not reach a public database at all.
-const UNREGISTERED_CRATES = {
+// Asked nowhere: by its name, a registry's advisories would be another package's, and the name of a private git
+// dependency, or of the project's own package installed from its directory, must not reach a public database at all.
+const UNREGISTERED = {
   'cargo-git': 'a crate vendored from a git repository, not crates.io',
   'cargo-unknown': 'a vendored crate with no .cargo-checksum.json, which may be a git checkout, not crates.io\'s',
+  [NPM_DIRECTORY]: 'an npm package installed from a directory, not the registry',
 }
 
 // A GitHub repo's `.gitmodules` branch `.` (git's for the superproject's own, which the bundle doesn't
@@ -41,7 +42,7 @@ const isComposerDev = (version) => /^dev-|-dev$/iu.test(version.replace(/#.*$/su
 // Why `pkg` cannot be audited, or undefined.
 function unaudited({ ecosystem, version, vendoredIn }) {
   if (version === undefined) return `a copy vendored in ${vendoredIn.join(', ')} whose package.json gives no version, so no advisory can be matched to it`
-  if (Object.hasOwn(UNREGISTERED_CRATES, ecosystem)) return UNREGISTERED_CRATES[ecosystem]
+  if (Object.hasOwn(UNREGISTERED, ecosystem)) return UNREGISTERED[ecosystem]
   if (!Object.hasOwn(SOURCES, ecosystem)) return `no advisories are looked up for ${ecosystem}`
   if (ecosystem === 'composer' && isComposerDev(version)) return 'a Composer dev version, which no advisory database lists'
   return undefined

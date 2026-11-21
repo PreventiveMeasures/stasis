@@ -1,10 +1,10 @@
 import { hash } from 'node:crypto'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, posix, relative, resolve } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hexIntegrity, isNpmDependency, isPlainObject, memoized, relativeEscapes, tarballIntegrityOf, toPosix, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { hexIntegrity, isNpmInstalled, isPlainObject, memoized, moduleInfo, relativeEscapes, tarballIntegrityOf, toPosix, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYaml } from '@preventive/lockfile/yaml.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
@@ -92,13 +92,26 @@ function npmLocks(file, host, strict) {
 
 const resolutionOf = (resolution) => (resolution?.type === 'git' ? `${resolution.repo}#${resolution.commit}` : resolution?.sha1 === undefined ? resolution?.tarball : `${resolution.tarball}#${resolution.sha1}`)
 
+// The directory a `file:` spec names, or with `linked` a `link:` one; none for a tarball's.
+export function localDirectory(spec, { linked = true } = {}) {
+  const path = (linked ? /^(?:file|link):(.+)$/u : /^file:(.+)$/u).exec(spec)?.[1]
+  return path === undefined || /\.(?:tgz|tar\.gz|tar)$/u.test(path) ? undefined : path
+}
+
+// yarn locks a directory by its spec alone, from yarn.lock's directory (a workspace's too), as .yarn-integrity has it
+// resolved at ''.
 const yarnEntries = (file, host, strict) => parseLock(file, host, strict, (text) => {
   const entries = new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages))
-  return [...entries].map(({ patterns, name, version, resolution }) => ({
-    id: `${name}@${version}`,
-    patterns,
-    record: { version, resolved: resolutionOf(resolution), repo: repoAt(resolutionCommit(resolution)), integrity: resolution?.integrity },
-  }))
+  return [...entries].map(({ patterns, name, version, resolution }) => {
+    const local = resolution === undefined ? (patterns ?? []).map((pattern) => localDirectory(pattern.slice(pattern.indexOf('@', 1) + 1), { linked: false })).find(Boolean) : undefined
+    return {
+      id: `${name}@${version}`,
+      patterns,
+      record: local === undefined
+        ? { version, resolved: resolutionOf(resolution), repo: repoAt(resolutionCommit(resolution)), integrity: resolution?.integrity }
+        : { version, resolved: '', directory: resolve(dirname(file), local) },
+    }
+  })
 })
 
 // As pnpm 10 to 12's depPathToFilename names `key`'s store directory, and the `_<hash>` one cut short ends with.
@@ -109,10 +122,12 @@ const storeNames = (key) => {
 }
 export const STORE_HASH = /_[\da-f]{32}$/u
 
+// node_modules/.pnpm/lock.yaml copies the pnpm-lock.yaml beside node_modules, its paths from there.
+const pnpmBase = (file) => (basename(file) === 'lock.yaml' ? resolve(file, '../../..') : dirname(file))
+
 // Of the lockfile `file` and the `patchers` (`[selector, { hash, path }]`) it locks: the file each hash's patch is in.
 function patchLocator(file, patchers, host) {
-  // node_modules/.pnpm/lock.yaml copies the pnpm-lock.yaml beside node_modules, its paths from there.
-  const base = basename(file) === 'lock.yaml' ? resolve(file, '../../..') : dirname(file)
+  const base = pnpmBase(file)
   const settings = join(base, 'pnpm-workspace.yaml')
   const named = memoized(() => {
     const patches = parseLock(settings, host, true, parseYaml)?.patchedDependencies
@@ -149,7 +164,9 @@ function pnpmLocks(file, host, strict, aliases) {
   const keyed = new Map()
   const ids = []
   for (const [key, { name, version, resolution, patchHash }] of Object.entries(lockfile?.packages ?? {})) {
-    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity, patchHash, ...(patchHash !== undefined && { patchAt }) }
+    // A directory's from the lockfile's, which pnpm copies into the store: no archive, no commit.
+    const from = resolution?.type === 'directory' ? { directory: resolve(pnpmBase(file), resolution.directory) } : { repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity }
+    const record = { version, ...from, patchHash, ...(patchHash !== undefined && { patchAt }) }
     for (const store of storeNames(key)) stored.set(store, record)
     keyed.set(key, record)
     ids.push([`${name}@${version ?? ''}`, record])
@@ -236,6 +253,7 @@ function lockDiffers(version, installed, locked, none) {
   if (locked.version !== undefined && locked.version !== version) return `${version}; it locks ${locked.version}`
   if (installed === undefined) return undefined
   if (installed.resolved !== undefined && installed.resolved !== locked.resolved) return `installed from ${installed.resolved}; it locks ${locked.resolved ?? 'none'}`
+  if (installed.directory !== locked.directory) return `installed from ${installed.directory ?? 'no directory'}; it locks ${locked.directory ?? 'none'}`
   if (commitLabel(installed.repo) !== commitLabel(locked.repo)) return `at ${commitLabel(installed.repo)}; it locks ${commitLabel(locked.repo)}`
   if (tarballIntegrityOf(installed.integrity) !== tarballIntegrityOf(locked.integrity)) return `installed with ${installed.integrity ?? 'no integrity'}; it locks ${locked.integrity ?? 'none'}`
   if (installed.patchHash !== locked.patchHash) return `installed with the patch ${installed.patchHash ?? 'none'}; it locks ${locked.patchHash ?? 'none'}`
@@ -244,12 +262,47 @@ function lockDiffers(version, installed, locked, none) {
 
 const PNPM_PACKAGE = /^(.*\/node_modules\/\.pnpm)\/([^/]+)\/node_modules\/(?:@[^/]+\/)?[^/]+$/u
 
-// An npm tarball's integrity is its sha512 alone; only an npm dependency has a patch.
-export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
-  const npm = isNpmDependency(dir, ecosystem)
+// An npm tarball's integrity is its sha512 alone; only an npm dependency has a patch. One installed from a `directory`
+// (from the bundle root) has neither: a patch to it would be to the directory's files, whose copy no record tells of.
+export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash, directory } = {}) {
+  const npm = isNpmInstalled(dir, ecosystem)
+  if (npm && directory !== undefined) {
+    if (patchHash !== undefined) throw new Error(`${dir} is installed from ${directory} with a patch, which stasis records of no package installed from a directory`)
+    return { ...(repo && { repo }), directory }
+  }
   const tarball = npm ? tarballIntegrityOf(integrity) : integrity
   const patch = npm ? patchIntegrity(patchHash) : undefined
   return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
+}
+
+// As pnpm before 12 copies a bin with a CRLF `#!` line: that line's CR dropped.
+function isCopyOf(copy, source) {
+  if (Buffer.compare(copy, source) === 0) return true
+  const lf = source.indexOf(0x0a)
+  if (source[0] !== 0x23 || source[1] !== 0x21 || lf < 2 || source[lf - 1] !== 0x0d || copy.length !== source.length - 1) return false
+  return Buffer.compare(copy.subarray(0, lf - 1), source.subarray(0, lf - 1)) === 0 && Buffer.compare(copy.subarray(lf - 1), source.subarray(lf)) === 0
+}
+
+// Each of `files` the copy at `real` holds is the one at `source` it was copied from, else the copy is stale: it was
+// edited apart from its source, or its source since (a hardlink pnpm made broken as an editor saves anew). Where no
+// source is there (node_modules alone copied into an image), nothing tells.
+function heldToSource(dir, real, files, source, directory, host) {
+  if (!host.stat(source)?.isDirectory()) return
+  for (const rel of files) {
+    let copy
+    try {
+      copy = host.readFile(join(real, rel))
+    } catch {
+      continue // none there, or a directory: the run reads none of it from here
+    }
+    let original
+    try {
+      original = host.readFile(join(source, rel))
+    } catch {
+      throw new Error(`${dir}/${rel} was installed from ${posix.join(directory, rel)}, which is gone: install from it again`)
+    }
+    if (!isCopyOf(copy, original)) throw new Error(`${dir}/${rel} is not ${posix.join(directory, rel)}, which it was installed from: install from it again`)
+  }
 }
 
 // With `locate`, a patch's record carries its file, from `root`: found and held to its hash, else refused.
@@ -260,7 +313,7 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
   const layoutAt = (dir) => upsert(layouts, dir, () => layoutOf(dir, host))
   for (const [dir, info] of modules) {
     // An untagged bucket under node_modules is npm's too (an artifact from before the tag).
-    if (!isNpmDependency(dir, info.ecosystem)) continue
+    if (!isNpmInstalled(dir, info.ecosystem)) continue
     let real
     try {
       real = toPosix(host.realpath(resolve(root, dir)))
@@ -294,7 +347,17 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
     if (differs) throw new Error(`${lockfile} doesn't lock ${dir} as installed (${differs}): install from it again`)
     const told = record ?? locked
     if (told === undefined || told.ambiguous) continue
-    const metadata = installedMetadata(dir, info.ecosystem, told)
+    let directory
+    if (told.directory !== undefined) {
+      try {
+        rootReal()
+      } catch {
+        return accounts
+      }
+      directory = toPosix(relative(top, told.directory)) || '.'
+      heldToSource(dir, real, Object.keys(info.files), told.directory, directory, host)
+    }
+    const metadata = installedMetadata(dir, info.ecosystem, { ...told, directory })
     // A record of the lockfile alone is held to, never recorded: its patch is not looked for.
     if (locate && record !== undefined && metadata.patch) metadata.patch.file = toPosix(relative(rootReal(), told.patchAt(told.patchHash)))
     accounts.set(dir, { ...metadata, ...(record === undefined && { locked: true }) })
@@ -302,8 +365,9 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
   return accounts
 }
 
+// A record given a directory is tagged npm:directory (moduleInfo).
 export function pinInstalled(bundle, root, host = diskHost) {
   const accounts = installedRecords(bundle.modules, root, host, { locate: true })
-  for (const [dir, { locked, ...metadata }] of accounts) if (!locked) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...metadata })
+  for (const [dir, { locked, ...metadata }] of accounts) if (!locked) bundle.modules.set(dir, moduleInfo({ ...bundle.modules.get(dir), ...metadata }))
   return accounts
 }

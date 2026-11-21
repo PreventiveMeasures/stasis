@@ -10,6 +10,7 @@ export const OWN_REASONS = {
 // A package's reason: unverified, or, from `misplaced` on, failing its lockfile or what it records.
 export const PACKAGE_REASONS = {
   local: 'installed from a directory of the repository, which isn\'t read',
+  'directory-outside': 'installed from a directory outside the repository',
   'patch-unverified': 'as patched by the bundle\'s patch, which isn\'t verified against the repository',
   git: 'locked from git, not a registry',
   'not-a-submodule': 'no submodule of its repository\'s tree at its path',
@@ -25,6 +26,7 @@ export const PACKAGE_REASONS = {
   'alias-unverified': 'installed under another name, an alias no lockfile read tells of',
   misplaced: 'installed where its path or its lockfile names another package or version',
   'not-locked': 'not locked by the lockfile',
+  'directory-not-locked': 'records a directory its lockfile doesn\'t install it from',
   'integrity-mismatch': 'its registry\'s tarball is not the one it is locked or recorded with',
   'integrity-conflict': 'locked or recorded with two integrities',
   'integrity-not-locked': 'records an integrity its lockfile doesn\'t lock it with',

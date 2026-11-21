@@ -24,10 +24,10 @@ export function normalizeArtifact(input, { hash } = {}) {
   if (!artifact || !KINDS.has(kind)) throw new Error("diff: each input must be { artifact, kind } with kind 'lockfile' | 'bundle'")
   const formats = artifact.formats ?? new Map()
   const modules = new Map()
-  for (const [dir, { name, version, ecosystem, repo, integrity, patch, files }] of artifact.modules) {
+  for (const [dir, { name, version, ecosystem, repo, directory, integrity, patch, files }] of artifact.modules) {
     const digests = new Map(Object.entries(files).map(([rel, value]) => [rel, digestOf(kind, formats.get(moduleFileKey(dir, rel)), value, hash)]))
     // v0 bundles record no name/version: null is the one "unknown".
-    modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo, integrity, patch, files: digests })
+    modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo, directory, integrity, patch, files: digests })
   }
   // `executable` decides what `stasis extract` chmods +x: the tree differs even where every digest matches.
   return { scope: artifact.config?.scope ?? 'full', modules, executable: artifact.executable ?? new Set() }
@@ -160,11 +160,12 @@ const repoLabel = ({ github, commit, directory }) => `${github ?? '?'}${commit ?
 
 const patchLabel = (patch) => (patch ? `${patch.integrity}${patch.file ? ` (${patch.file})` : ''}` : 'none')
 
-function describeModuleChange({ name, versionChange, nameChange, repoChange, integrityChange, patchChange }) {
+function describeModuleChange({ name, versionChange, nameChange, repoChange, directoryChange, integrityChange, patchChange }) {
   const segs = []
   if (versionChange) segs.push(`${versionChange.from} -> ${versionChange.to}`)
   if (nameChange) segs.push(`name ${nameChange.from} -> ${nameChange.to}`)
   if (repoChange) segs.push(`repo ${repoLabel(repoChange.from)} -> ${repoLabel(repoChange.to)}`)
+  if (directoryChange) segs.push(`directory ${directoryChange.from ?? 'none'} -> ${directoryChange.to ?? 'none'}`)
   if (integrityChange) segs.push(`integrity ${integrityChange.from ?? 'none'} -> ${integrityChange.to ?? 'none'}`)
   if (patchChange) segs.push(`patch ${patchLabel(patchChange.from)} -> ${patchLabel(patchChange.to)}`)
   return `${name ? `${name} ` : ''}${segs.join(', ')}`

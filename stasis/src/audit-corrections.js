@@ -48,8 +48,10 @@ const isCorrectedFile = (name, version, rel, ecosystem) => CORRECTIONS.some((cor
 // for Haste), nor are those other ecosystems' bundles carry (--cargo-manifests, --manifests).
 const CARGO_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json'])
 const FOUNDRY_MANIFESTS = new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml'])
+const NPM_MANIFESTS = new Set(['package.json'])
 const MANIFESTS = {
-  npm: new Set(['package.json']),
+  npm: NPM_MANIFESTS,
+  'npm:directory': NPM_MANIFESTS,
   cargo: CARGO_MANIFESTS,
   'cargo-git': CARGO_MANIFESTS,
   'cargo-unknown': CARGO_MANIFESTS,

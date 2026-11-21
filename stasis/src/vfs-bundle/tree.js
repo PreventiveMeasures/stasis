@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { archiveIntegrity, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf, upsert } from '@exodus/stasis-core/util'
+import { archiveIntegrity, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, moduleInfo, posixPathEscapes, tarballIntegrityOf, upsert } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -561,7 +561,8 @@ const githubRoot = (url) => {
 }
 
 // Each dependency of `bundle` at the full commit the tree installs it from: an npm package at its gitHead, only where
-// the bundle records its repo; a Soldeer git dependency at its `rev`, of its repo's root. -> accounts, by dir
+// the bundle records its repo; a Soldeer git dependency at its `rev`, of its repo's root. One installed from a directory
+// (deptree copies it from the project as read) records it, from `root`, tagged npm:directory. -> accounts, by dir
 export function pinFromTree(bundle, root, tree) {
   if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
   const { root: from, installed, packageManager } = tree
@@ -574,11 +575,12 @@ export function pinFromTree(bundle, root, tree) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash })
+    const directory = pkg.directory === undefined ? undefined : fromRoot(pkg.directory) || '.'
+    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash, directory })
     // deptree read it at the path pnpm's settings name, from the lockfile's directory, and held it to its hash.
     if (pinned.patch) pinned.patch.file = fromRoot(pkg.patch.path)
-    bundle.modules.set(dir, { ...info, ...pinned })
-    accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
+    bundle.modules.set(dir, moduleInfo({ ...info, ...pinned }))
+    accounts.set(dir, { directory: pinned.directory, integrity: pinned.integrity, patch: pinned.patch })
   }
   return accounts
 }
