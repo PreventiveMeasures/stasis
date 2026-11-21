@@ -156,7 +156,7 @@ test('State records repo in the bundle but not in the lockfile', withTmp((t, tmp
   writeJson(join(tmp, 'package.json'), { name: 'app', version: '1.0.0', repository: { url: 'https://github.com/o/n', directory: 'app' } })
   writeFileSync(join(tmp, 'index.js'), 'export {}\n')
   const state = new State(tmp, { bundle: 'replace', lock: 'replace', scope: 'full' })
-  t.assert.deepStrictEqual(JSON.parse(state.sourceData).repo, { github: 'o/n', directory: 'app' })
+  t.assert.deepStrictEqual(JSON.parse(state.sourceBundle.serialize()).repo, { github: 'o/n', directory: 'app' })
   t.assert.equal(JSON.parse(state.lockData).repo, undefined)
 }))
 
@@ -249,7 +249,7 @@ test('State adding to a bundle keeps only repo fields that agree with detection'
   writeJson(join(tmp, 'package.json'), { name: 'app', version: '1.0.0' })
   const writeExisting = (repo) =>
     writeFileSync(join(tmp, 'stasis.code.br'), brotliCompressSync(new Bundle({ config: { scope: 'full' }, repo }).serialize()))
-  const written = () => JSON.parse(new State(tmp, { bundle: 'add', lock: 'replace', scope: 'full' }).sourceData).repo
+  const written = () => JSON.parse(new State(tmp, { bundle: 'add', lock: 'replace', scope: 'full' }).sourceBundle.serialize()).repo
   const recorded = { github: 'o/n', directory: '', commit: SHA }
 
   mkdirSync(join(tmp, '.git')) // a work tree with no GitHub origin: nothing detected

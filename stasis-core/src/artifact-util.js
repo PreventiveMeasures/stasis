@@ -597,26 +597,29 @@ export function importTargetsEqual(a, b) {
 
 const fmtTarget = (t) => (t instanceof Map ? `{${[...t].map(([p, f]) => `${p}: ${f}`).join(', ')}}` : t)
 
-export function mergeImportMaps(a, b, label) {
+// The union of import maps, each edge `put(specifiers, specifier, target, parent)` into its parent's specifier map.
+export function unionImports(maps, put) {
   const out = new Map()
-  for (const imports of [a, b]) {
+  for (const imports of maps) {
     for (const [conditions, byParent] of imports) {
       const outByParent = nestedMap(out, conditions)
       for (const [parent, specs] of byParent) {
         const outSpecs = nestedMap(outByParent, parent)
-        for (const [spec, target] of specs) {
-          if (outSpecs.has(spec)) {
-            assert(importTargetsEqual(outSpecs.get(spec), target),
-              `${label}: import '${spec}' from '${parent}' resolves differently ('${fmtTarget(outSpecs.get(spec))}' vs '${fmtTarget(target)}')`)
-          } else {
-            outSpecs.set(spec, target instanceof Map ? new Map(target) : target)
-          }
-        }
+        for (const [spec, target] of specs) put(outSpecs, spec, target, parent)
       }
     }
   }
   return out
 }
+
+const mergeImportMaps = (a, b, label) => unionImports([a, b], (specs, spec, target, parent) => {
+  if (specs.has(spec)) {
+    assert(importTargetsEqual(specs.get(spec), target),
+      `${label}: import '${spec}' from '${parent}' resolves differently ('${fmtTarget(specs.get(spec))}' vs '${fmtTarget(target)}')`)
+  } else {
+    specs.set(spec, target instanceof Map ? new Map(target) : target)
+  }
+})
 
 export function upsertFormat(map, file, format) {
   const currentFormat = map.get(file)

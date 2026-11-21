@@ -400,8 +400,8 @@ test('sidecar bundle=add preserves a loaded multi-consumer `reason` on reload', 
   const gen = new State(dir, { parent, lock: 'add', bundle: 'add', bundleFile: join(dir, 'reason-rt-gen.br') })
   gen.addFile(url('r1.js'), { isEntry: true })                       // run (default)
   gen.addFile(url('r2.js'), { reason: 'metro' })               // a plugin bundles it
-  t.assert.deepStrictEqual(JSON.parse(gen.sourceData).reason, { metro: ['r2.js'], run: ['r1.js'] })
-  writeFileSync(loadPath, brotliCompressSync(gen.sourceData))
+  t.assert.deepStrictEqual(JSON.parse(gen.sourceBundle.serialize()).reason, { metro: ['r2.js'], run: ['r1.js'] })
+  writeFileSync(loadPath, brotliCompressSync(gen.sourceBundle.serialize()))
 
   // Reload under bundle=add through a fresh write-mode sidecar and re-observe the plugin's files
   // (only ever 'metro' this run) plus a new one -- exactly what a plugin re-run does.
@@ -411,6 +411,6 @@ test('sidecar bundle=add preserves a loaded multi-consumer `reason` on reload', 
 
   // The loaded 'run' attribution survives even though this run never recorded 'run'; the new
   // 'metro' file is unioned onto the loaded one. Nothing is destroyed.
-  t.assert.deepStrictEqual(JSON.parse(reload.sourceData).reason,
+  t.assert.deepStrictEqual(JSON.parse(reload.sourceBundle.serialize()).reason,
     { metro: ['r2.js', 'r3.js'], run: ['r1.js'] })
 })

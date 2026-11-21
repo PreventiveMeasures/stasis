@@ -160,7 +160,7 @@ const excludedFrom = (baseDir, excluder) => (excluder === null ? () => undefined
 const listPaths = (rels) => sortedByPath(rels).join(', ')
 
 // One error for every file validation rejected, so a sweep names all of them at once; a lone offender keeps its own message.
-export function validationError({ missing, undeclared, nonUtf8 }, label) {
+function validationError({ missing, undeclared, nonUtf8 }, label) {
   const phrase = (items, one, many) => (items.length === 1 ? [one(items[0])] : items.length > 1 ? [many(items)] : [])
   const withFormat = (format) => (format == null ? '' : ` (format '${format}')`)
   const named = ({ rel, format }) => `${rel}${withFormat(format)}`
@@ -194,38 +194,48 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost, exclude
   return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude, absentOf, host })
 }
 
-// The WHOLE set is classified before any target is touched; only a symlink escaping the root fails on the spot.
+// A file by its bytes: code of `format` (null: its loader decides), else a resource IFF `resources` declare it, else
+// neither (undefined). A binary plist can't be stored as the UTF-8 string its 'xml' format implies: a resource (base64).
+export function fileKind(path, buf, resources, format) {
+  if (format !== undefined && !isBinaryPlist(path, buf)) return { format }
+  return inResources(path, resources) ? { resource: true } : undefined
+}
+
+// Each of `files` (rel -> stats, undefined where missing) that `keeps` read, `kindOf` (fileKind's) classifying it: the
+// WHOLE set before any target is touched, one error naming every offender; only a symlink escaping the root fails on
+// the spot.
+export function* classifiedFiles({ baseDir, realBase, files, label, host, kindOf, keeps = () => true }) {
+  const rejected = { missing: [], undeclared: [], nonUtf8: [] }
+  for (const [rel, stats] of files) {
+    if (stats === undefined) {
+      rejected.missing.push(rel)
+      continue
+    }
+    assertRealPathWithinBase(realBase, baseDir, rel, host)
+    if (!keeps(rel)) continue
+    const abs = join(baseDir, rel)
+    const buf = host.readFile(abs)
+    const kind = kindOf(rel, abs, buf)
+    // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
+    if (kind === undefined) rejected.undeclared.push(rel)
+    else if (!kind.resource && !isUtf8(buf)) rejected.nonUtf8.push({ rel, format: kind.format })
+    else yield { rel, stats, buf, kind }
+  }
+  if (Object.values(rejected).some((rels) => rels.length > 0)) throw validationError(rejected, label)
+}
+
 export function validateFiles({ baseDir, realBase, files, resources, label = 'add', host = diskHost }) {
   const codeFiles = new Map()
   const resourceFiles = new Map()
-  const missing = []
-  const undeclared = []
-  const nonUtf8 = []
   const types = new Map()
   const kept = (path, read) => upsert(types, path, read)
-  for (const [rel, stats] of files) {
-    if (stats === undefined) {
-      missing.push(rel)
-      continue
-    }
+  const kindOf = (rel, abs, buf) => fileKind(rel, buf, resources, sourceFormat(abs, buf, host, kept))
+  for (const { rel, stats, buf, kind: { format, resource } } of classifiedFiles({ baseDir, realBase, files, label, host, kindOf })) {
     const executable = isExecutableMode(stats)
-    assertRealPathWithinBase(realBase, baseDir, rel, host)
-    const abs = join(baseDir, rel)
-    const buf = host.readFile(abs)
-    const format = sourceFormat(abs, buf, host, kept)
-    // A binary plist can't be stored as the UTF-8 string its 'xml' format implies: a resource (opaque base64).
-    if (format !== undefined && !isBinaryPlist(rel, buf)) {
-      // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
-      if (isUtf8(buf)) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
-      else nonUtf8.push({ rel, format })
-    } else if (inResources(rel, resources)) {
-      const utf8 = isUtf8(buf)
-      resourceFiles.set(rel, { content: buf.toString(utf8 ? 'utf8' : 'base64'), format: utf8 ? 'resource' : 'resource:base64', executable })
-    } else {
-      undeclared.push(rel)
-    }
+    if (!resource) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
+    else if (isUtf8(buf)) resourceFiles.set(rel, { content: buf.toString('utf8'), format: 'resource', executable })
+    else resourceFiles.set(rel, { content: buf.toString('base64'), format: 'resource:base64', executable })
   }
-  if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, label)
   return { codeFiles, resourceFiles }
 }
 

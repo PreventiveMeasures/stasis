@@ -356,7 +356,7 @@ test('State drops a stale execute bit once the file loses it on disk', posixOnly
   second.addFile(pathToFileURL(join(tmp, 'run.sh')).toString(), { format: 'shell', isEntry: true })
   t.assert.deepStrictEqual([...second.executable], [])
   t.assert.ok(!Object.hasOwn(JSON.parse(second.lockData), 'executable'))
-  t.assert.ok(!Object.hasOwn(JSON.parse(second.sourceData), 'executable'))
+  t.assert.ok(!Object.hasOwn(JSON.parse(second.sourceBundle.serialize()), 'executable'))
 }))
 
 test('a bundle=load State serves the executable list it absorbed', posixOnly, withTmp('exec-load')((t, tmp) => {
@@ -442,10 +442,10 @@ test('scope=node_modules never emits an executable the serialized artifact drops
 
   // The workspace script is dropped with its bucket; the dependency's CLI survives in both.
   t.assert.deepStrictEqual(JSON.parse(state.lockData).executable, ['node_modules/dep/cli.js'])
-  t.assert.deepStrictEqual(JSON.parse(state.sourceData).executable, ['node_modules/dep/cli.js'])
+  t.assert.deepStrictEqual(JSON.parse(state.sourceBundle.serialize()).executable, ['node_modules/dep/cli.js'])
   // Both artifacts round-trip through their own parsers -- the property the bug violated.
   t.assert.doesNotThrow(() => Lockfile.parse(state.lockData))
-  t.assert.doesNotThrow(() => Bundle.parse(state.sourceData))
+  t.assert.doesNotThrow(() => Bundle.parse(state.sourceBundle.serialize()))
 
   // And a second run over what the first wrote constructs cleanly.
   state.write()
