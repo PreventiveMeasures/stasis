@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { State } from '@exodus/stasis-core/state'
 import { servedByBundle } from '@exodus/stasis-core/state-util'
+import { upsert } from '@exodus/stasis-core/util'
 import { transformContext } from './metro-babel-transformer.js'
 
 // The worker half of StasisMetro, wired by withStasis() as `transformerPath` around the project's transformer. It
@@ -20,14 +21,12 @@ const require = createRequire(import.meta.url)
 const bases = new Map()
 function baseOf(config, projectRoot = process.cwd()) {
   const path = config?.stasisBaseTransformerPath ?? (process.env.EXODUS_STASIS_METRO_BASE_TRANSFORMER || 'metro-transform-worker')
-  const key = `${projectRoot}\0${path}`
-  if (!bases.has(key)) {
+  return upsert(bases, `${projectRoot}\0${path}`, () => {
     const resolve = (name) => require.resolve(name, { paths: [projectRoot, dirname(fileURLToPath(import.meta.url))] })
     let file = resolve(path)
     if (require(file).transform === transform) file = resolve('metro-transform-worker')
-    bases.set(key, { file, transformer: require(file) })
-  }
-  return bases.get(key)
+    return { file, transformer: require(file) }
+  })
 }
 
 const baseConfig = ({ stasisBaseTransformerPath: _, ...config } = {}) => config

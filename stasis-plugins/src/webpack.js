@@ -85,7 +85,7 @@ export class StasisWebpack {
         if (ownerOf(url)?.getFsStat(url) === 'directory') return callback(null, bundleStat(0, true))
         try {
           const src = serveFromBundle(p)
-          return callback(null, bundleStat(typeof src === 'string' ? Buffer.byteLength(src) : src.length))
+          return callback(null, bundleStat(Buffer.byteLength(src)))
         } catch (err) {
           return callback(err)
         }

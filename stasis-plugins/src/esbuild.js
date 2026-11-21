@@ -49,7 +49,7 @@ async function browserFalseKeys(dir) {
   }
   const browser = pkg?.browser
   if (browser === null || typeof browser !== 'object' || Array.isArray(browser)) return new Set()
-  return new Set(Object.keys(browser).filter((key) => browser[key] === false).map((key) => looseBrowserKey(key)))
+  return new Set(Object.keys(browser).filter((key) => browser[key] === false).map(looseBrowserKey))
 }
 
 export class StasisEsbuild {
@@ -102,7 +102,7 @@ export class StasisEsbuild {
   // specifier, the path it names) under each map's dir, or a bare specifier as is or as './<importer dir>/<specifier>'
   // (a Browserify quirk esbuild keeps).
   async #mayBeDisabled(path, specifier, resolveDir) {
-    const isPackagePath = !isAbsolute(specifier) && !/^\.\.?(?:\/|$)/u.test(specifier) && !specifier.startsWith('/')
+    const isPackagePath = !isAbsolute(specifier) && !/^\.\.?(?:\/|$)/u.test(specifier)
     const paths = isPackagePath ? [path] : [path, resolvePath(resolveDir, specifier)]
     const dirs = new Set([resolveDir, ...paths.map((p) => dirname(p))])
     const scopes = (await Promise.all([...dirs].map((dir) => this.#browserFalseScopes(dir)))).flat()
@@ -214,8 +214,7 @@ export class StasisEsbuild {
         if (kind === 'unknown') return { errors: [{ text: unsupportedExtension('StasisEsbuild', `'${res.path}'`) }] }
         // Resources too: load mode resolves every specifier through this map, so one with no edge would fall through
         // to esbuild's disk resolver, unattested.
-        const url = pathToFileURL(res.path).toString()
-        if (!isEntry) this.#state.addImport(pathToFileURL(args.importer).toString(), specifier, url, { importAttributes: attrs })
+        if (!isEntry) this.#state.addImport(pathToFileURL(args.importer).toString(), specifier, pathToFileURL(res.path).toString(), { importAttributes: attrs })
       }
       return { ...res, pluginData: { ...res.pluginData, isEntry, kind } }
     })

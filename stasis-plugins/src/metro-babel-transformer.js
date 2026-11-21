@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createRequire } from 'node:module'
 
+import { upsert } from '@exodus/stasis-core/util'
+
 // Stands in for the project's Babel transformer under ./metro-transformer.js, to keep each import as WRITTEN: Metro
 // names a dependency by the specifier Babel leaves, so a rewrite (babel-plugin-module-resolver's) would leave it only
 // that. An added plugin records each specifier in its `pre` (Babel runs every `pre` before any visitor) and reads it
@@ -118,8 +120,7 @@ export function transform(args) {
         context.consumed.add(specifier)
         continue
       }
-      if (!context.asWritten.has(specifier)) context.asWritten.set(specifier, new Set())
-      context.asWritten.get(specifier).add(written)
+      upsert(context.asWritten, specifier, () => new Set()).add(written)
     }
     return result
   }
