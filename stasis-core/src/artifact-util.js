@@ -253,33 +253,26 @@ const filledBlock = (field, record, other) => {
   return Object.keys(theirs).some((key) => ours[key] === undefined) ? Object.freeze({ ...theirs, ...ours }) : undefined
 }
 
-// What `record` and `other` both record agrees, and `record` takes what of it it lacks: nothing it records is replaced.
-export function withFilledOf(record, other, what = 'module') {
-  let filled
-  for (const field of ATTESTED_METADATA) {
-    if (record[field] === undefined || other[field] === undefined) continue
-    agree(field, record, other, what)
-    const block = filledBlock(field, record, other)
-    if (block) (filled ??= {})[field] = block
-  }
-  return filled === undefined ? record : moduleInfo({ ...record, ...filled })
-}
-
-export function withMetadataOf(record, other, what = 'module') {
+// What `record` and `other` both attest agrees, and `record` takes what of it it lacks (a patch's `file`); with `adds`,
+// what `other` alone records too. withFilledOf holds them to what both record, withMetadataOf to what both attest.
+function withOf(record, other, what, attests, adds) {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
-    if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) {
+    if (Object.hasOwn(AGREE, field) && attests(record, field) !== undefined && attests(other, field) !== undefined) {
       agree(field, record, other, what)
       const filled = filledBlock(field, record, other)
       if (filled) (added ??= {})[field] = filled
-    } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
+    } else if (adds && record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
-  for (const field of DIR_FIELDS) {
+  for (const field of adds ? DIR_FIELDS : []) {
     if (other[field] === undefined || Object.keys(other[field]).every((sub) => Object.hasOwn(record[field] ?? {}, sub))) continue
     ;(added ??= {})[field] = Object.freeze(fromEntries([...Object.entries(other[field]), ...Object.entries(record[field] ?? {})]))
   }
   return added === undefined ? record : moduleInfo({ ...record, ...added })
 }
+
+export const withFilledOf = (record, other, what = 'module') => withOf(record, other, what, (of, field) => of[field], false)
+export const withMetadataOf = (record, other, what = 'module') => withOf(record, other, what, attestedOf, true)
 
 export function heldToAccounts(modules, accounts, prefix = '') {
   for (const [dir, account] of accounts) {
@@ -292,20 +285,6 @@ function metadataOf(dir, info, what, fields, entriesOf) {
   for (const [field, normalize] of Object.entries(RECORD_METADATA)) metadata[field] = fields.includes(field) ? normalize(dir, info, what) : undefined
   for (const field of DIR_FIELDS) metadata[field] = fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, [field]: entriesOf(field) }, what) : undefined
   return metadata
-}
-
-// A literal null version folds into undefined, so identity comparisons and JSON round-trips can't split on it.
-export function normalizeModule(info, dir, what, fields = MODULE_METADATA) {
-  const { name, version, ecosystem } = info
-  assert(ecosystem === undefined || typeof ecosystem === 'string')
-  // An array or a string would read as files named by index ('0', '1'...).
-  if (!isPlainObject(info.files)) assert(false, `${what}: module '${dir}' files must be an object`)
-  const files = fromEntries(Object.entries(info.files))
-  return moduleInfo({
-    name, version: version ?? undefined, ecosystem,
-    ...metadataOf(dir, { ...info, files }, what, fields, (field) => info[field]),
-    files,
-  })
 }
 
 // `scope` MUST be the artifact's own: a non-full-scope artifact records only its node_modules buckets.
@@ -354,7 +333,7 @@ function parsePathList(list, at, entry, check) {
   return out
 }
 
-export function parseExecutable(list, { what, files, formats, scope = 'full' }) {
+export function parseExecutable(list, { what, files, formats, scope }) {
   if (list === undefined) return new Set()
   const entry = `${what}: executable entry`
   const out = parsePathList(list, `${what}: executable`, entry, (file) =>
@@ -367,7 +346,7 @@ export function parseExecutable(list, { what, files, formats, scope = 'full' }) 
 export function serializeExecutable(executable, { what, modules, formats, scope }) {
   if (executable.size === 0) return undefined
   assertExecutable(executable, { what, files: moduleFileKeys(modules, { scope }), formats, scope })
-  return fileSetToObject(executable)
+  return sortedByPath(executable)
 }
 
 export function assert(condition, msg) {
@@ -436,13 +415,8 @@ export function isPlainObject(x) {
 
 export const fromEntries = (entries) => Object.setPrototypeOf(Object.fromEntries(entries), null)
 
-export const fileSetToObject = (set) => sortedByPath(set)
-
-// `sorted: false` only for a machine-only payload whose reader does not care about ordering (shard.js).
-export const fileMapToObject = (map, { sorted = true } = {}) => {
-  const entries = sorted ? sortedByPath(map, entryKey) : [...map]
-  return fromEntries(entries.map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v, { sorted }) : v]))
-}
+export const fileMapToObject = (map) =>
+  fromEntries(sortedByPath(map, entryKey).map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v) : v]))
 
 export function upsert(map, key, make) {
   let value = map.get(key)
@@ -480,11 +454,6 @@ const assertEntry = (entry, what) => assert(isArtifactKey(entry), `${what}: inva
 
 export const parseEntries = (list, what) => parsePathList(list, `${what}: entries`, `${what}: entry`, (entry) => assertEntry(entry, what))
 
-export function serializeEntries(entries, what) {
-  for (const entry of entries) assertEntry(entry, what)
-  return fileSetToObject(entries)
-}
-
 function assertFormat(file, format) {
   assertArtifactPath(file, 'formats')
   assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
@@ -501,18 +470,6 @@ export function parseFormats(json) {
     formats.set(key, format)
   }
   return formats
-}
-
-// A `stat:*` record attests a path's kind alone: one reader would skip content carried for its path, another serve it.
-export function assertPayloadFree(formats, files, what) {
-  for (const [file, format] of formats) {
-    if (isStatFormat(format) && files.has(file)) assert(false, `${what}: '${file}' is a payload-free '${format}' record, yet carries content`)
-  }
-}
-
-export function serializeFormats(formats) {
-  for (const [file, format] of formats) assertFormat(file, format)
-  return fileMapToObject(formats)
 }
 
 // getImport resolves each path against the root at load. A target is a file, or (--metro) a { platform: file } map.
@@ -538,18 +495,6 @@ function assertImports(imports) {
   }
 }
 
-export function parseImports(json) {
-  assert(isPlainObject(json))
-  const imports = objectToMaps(json)
-  assertImports(imports)
-  return imports
-}
-
-export function serializeImports(imports) {
-  assertImports(imports)
-  return fileMapToObject(imports)
-}
-
 export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
   const metadata = written === true ? MODULE_METADATA : written === false ? [] : written
   const grouped = { modules: [], sources: [] }
@@ -567,7 +512,8 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
   return { modules: fromEntries(sortedByPath(grouped.modules, entryKey)), sources: fromEntries(sortedByPath(grouped.sources, entryKey)) }
 }
 
-export function parseBuckets(json, what, fields) {
+// A literal null version folds into undefined, so identity comparisons and JSON round-trips can't split on it.
+export function parseBuckets(json, what, fields = MODULE_METADATA) {
   const modules = new Map()
   for (const key of json.config.scope === 'full' ? ['modules', 'sources'] : ['modules']) {
     if (key === 'modules' && json.modules === undefined) continue
@@ -577,22 +523,69 @@ export function parseBuckets(json, what, fields) {
       assert(hasNodeModulesSegment(dir) === inNodeModules)
       assertArtifactPath(dir, what)
       assert(info?.name && (info.version || !inNodeModules) && info.files)
-      modules.set(dir, normalizeModule(info, dir, what, fields))
+      assert(info.ecosystem === undefined || typeof info.ecosystem === 'string')
+      // An array or a string would read as files named by index ('0', '1'...).
+      if (!isPlainObject(info.files)) assert(false, `${what}: module '${dir}' files must be an object`)
+      const files = fromEntries(Object.entries(info.files))
+      modules.set(dir, moduleInfo({
+        name: info.name, version: info.version ?? undefined, ecosystem: info.ecosystem,
+        ...metadataOf(dir, { ...info, files }, what, fields, (field) => info[field]),
+        files,
+      }))
     }
   }
   return modules
 }
 
-// Each part is undefined where it is none, which JSON.stringify drops. An in-memory lockfile's formats may be null.
-export function serializedParts({ config: { scope }, entries, modules, formats, imports, executable }, what, group) {
-  const full = scope === 'full'
-  const grouped = groupModules(modules, { ...group, what })
+// Bundle's and Lockfile's parts, told apart by a `kind`: `what` it is called, the artifact to `regenerate` on a duplicate
+// file key, its bucket `metadata` and `skipEmpty` (groupModules), and what else its file keys are held to (`checkFiles`).
+
+// Unique across buckets: hashes, attestation lookups and a bundle's `sources` key on the flat path.
+function checkedFileKeys(modules, formats, { what, regenerate, checkFiles }) {
+  const flatKeys = flatFileKeys(modules, what, (key) => assert(false,
+    `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
+    `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`))
+  checkFiles?.(flatKeys, formats)
+  return flatKeys
+}
+
+// Of JSON whose own shape its artifact checked; `modules` are a v0 bundle's, regrouped from its flat sources.
+export function parseParts(json, kind, modules) {
+  const { what } = kind
+  const { scope } = json.config
+  // Validated into a typed Map first: a raw-object lookup like `__proto__` would hit the prototype.
+  const formats = parseFormats(json.formats)
+  modules ??= parseBuckets(json, what, kind.metadata)
+  const flatKeys = checkedFileKeys(modules, formats, kind)
+  assert(isPlainObject(json.imports))
+  const imports = objectToMaps(json.imports)
+  assertImports(imports)
   return {
-    entries: full ? serializeEntries(entries, what) : undefined,
+    config: json.config,
+    // Empty entries are valid (`stasis add` attests files without making them entry points).
+    entries: scope === 'full' && json.entries !== undefined ? parseEntries(json.entries, what) : new Set(),
+    modules,
+    formats,
+    imports,
+    executable: parseExecutable(json.executable, { what, files: flatKeys, formats, scope }),
+  }
+}
+
+// Each part is undefined where it is none, which JSON.stringify drops. An in-memory lockfile's formats may be null.
+export function serializedParts({ config: { scope }, entries, modules, formats, imports, executable }, kind) {
+  const { what } = kind
+  checkedFileKeys(modules, formats, kind)
+  const full = scope === 'full'
+  const grouped = groupModules(modules, kind)
+  if (full) for (const entry of entries) assertEntry(entry, what)
+  for (const [file, format] of formats ?? []) assertFormat(file, format)
+  if (imports !== null) assertImports(imports)
+  return {
+    entries: full ? sortedByPath(entries) : undefined,
     sources: full ? grouped.sources : undefined,
     modules: grouped.modules,
-    formats: formats === null ? undefined : serializeFormats(formats),
-    imports: imports === null ? undefined : serializeImports(imports),
+    formats: formats === null ? undefined : fileMapToObject(formats),
+    imports: imports === null ? undefined : fileMapToObject(imports),
     executable: serializeExecutable(executable, { what, modules, formats: formats ?? new Map(), scope }),
   }
 }
@@ -669,10 +662,6 @@ export function flatFileKeys(modules, what, onDuplicate) {
   return owners
 }
 
-export const duplicateKeyError = (what, regenerate) => (key) => assert(false,
-  `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
-  `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`)
-
 // Result `files` objects are null-prototype, so a `__proto__` file name is a plain own key. With
 // `held`, `b` is held to `a`, not merged into it: what `b` alone attests stays a claim of its own files.
 export function mergeModuleMaps(a, b, label, { held = false } = {}) {
@@ -717,23 +706,33 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
   return out
 }
 
+// A strict union: any genuine conflict throws, an artifact being an attestation. An in-memory lockfile's imports and
+// formats may be null: two merge only alike.
+export function mergedParts(a, b, label, options) {
+  assert(a.config.scope === b.config.scope, `${label}: scope mismatch ('${a.config.scope}' vs '${b.config.scope}')`)
+  for (const part of ['imports', 'formats']) {
+    if ((a[part] === null) !== (b[part] === null)) assert(false, `${label}: cannot merge ${part} (one lockfile attests ${part}, the other does not)`)
+  }
+  return {
+    config: { scope: a.config.scope },
+    entries: new Set([...a.entries, ...b.entries]),
+    modules: mergeModuleMaps(a.modules, b.modules, label, options),
+    formats: a.formats === null ? null : mergeFormatMaps(a.formats, b.formats, label),
+    imports: a.imports === null ? null : mergeImportMaps(a.imports, b.imports, label),
+    executable: mergeExecutableSets(a.executable, b.executable, b.modules, a.config.scope),
+  }
+}
+
 // A full path SEGMENT, NOT a bare substring (`foo_node_modules/dep` is a source dir, not a bucket).
 export const hasNodeModulesSegment = (path) =>
   path === 'node_modules' || path.startsWith('node_modules/') || path.endsWith('/node_modules') || path.includes('/node_modules/')
 
 const NODE_MODULES_MARKER = 'node_modules/'
 
-// Segment-aligned: `lastIndexOf` alone would also match a bare substring (`foo_node_modules/`).
-function lastNodeModulesMarker(path) {
-  let idx = path.length
-  while ((idx = path.lastIndexOf(NODE_MODULES_MARKER, idx - 1)) !== -1) {
-    if (idx === 0 || path[idx - 1] === '/') return idx
-  }
-  return -1
-}
-
 export function splitNodeModulesPath(path) {
-  const idx = lastNodeModulesMarker(path)
+  // Segment-aligned: `lastIndexOf` alone would also match a bare substring (`foo_node_modules/`).
+  let idx = path.lastIndexOf(NODE_MODULES_MARKER)
+  while (idx > 0 && path[idx - 1] !== '/') idx = path.lastIndexOf(NODE_MODULES_MARKER, idx - 1)
   if (idx === -1) return null
   const after = idx + NODE_MODULES_MARKER.length
   const parts = path.slice(after).split('/')

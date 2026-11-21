@@ -1,33 +1,24 @@
 import {
   assert,
   assertArtifactPath,
-  assertPayloadFree,
   assertScope,
   canonicalFileKey,
-  duplicateKeyError,
-  fileSetToObject,
   fromEntries,
-  flatFileKeys,
   isForbiddenFile,
   isPlainObject,
-  mergeFormatMaps,
-  mergeImportMaps,
-  mergeExecutableSets,
-  mergeModuleMaps,
+  isStatFormat,
+  mergedParts,
   moduleFileKey,
   normalizeBlock,
   normalizeRepo,
   PACKAGE_BLOCK,
-  parseBuckets,
-  parseEntries,
-  parseExecutable,
-  parseFormats,
-  parseImports,
+  parseParts,
   posixPathEscapes,
   REPO_FIELDS,
   RESOURCE_FORMATS,
   sameGithub,
   serializedParts,
+  sortedByPath,
   splitNodeModulesPath,
   upsert,
 } from './artifact-util.js'
@@ -35,14 +26,18 @@ import {
 const VERSION = 1
 const LEGACY_VERSION = 0
 
-const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
-
-// Unique across buckets, else the `sources` getter would serve either payload.
-const checkedFileKeys = (modules, formats) => {
-  const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
-  for (const key of flatKeys.keys()) assert(!isForbiddenFile(key), `bundle: ${key} is a file no bundle may carry`)
-  assertPayloadFree(formats, flatKeys, 'bundle')
-  return flatKeys
+// A bundle, to the parts it shares with a lockfile: it writes no empty bucket, and holds its contents to what it may carry.
+const BUNDLE = {
+  what: 'bundle',
+  regenerate: 'artifact (bundle=replace)',
+  skipEmpty: true,
+  checkFiles: (flatKeys, formats) => {
+    for (const key of flatKeys.keys()) assert(!isForbiddenFile(key), `bundle: ${key} is a file no bundle may carry`)
+    // A `stat:*` record attests a path's kind alone: one reader would skip content carried for its path, another serve it.
+    for (const [file, format] of formats) {
+      if (isStatFormat(format) && flatKeys.has(file)) assert(false, `bundle: '${file}' is a payload-free '${format}' record, yet carries content`)
+    }
+  },
 }
 
 // '' and '.' both spell the root listing (rel '').
@@ -87,16 +82,18 @@ const mergeReason = (a, b) => {
       if (Array.isArray(files)) merged.set(consumer, new Set([...(merged.get(consumer) ?? []), ...files]))
     }
   }
-  return fromEntries([...merged.keys()].toSorted().map((c) => [c, fileSetToObject(merged.get(c))]))
+  return fromEntries([...merged.keys()].toSorted().map((c) => [c, sortedByPath(merged.get(c))]))
 }
 
 export const isValidRepoField = (key, value) => Object.hasOwn(REPO_FIELDS, key) && REPO_FIELDS[key](value)
 
-export const mergeRepo = (a, b) => {
-  if (a?.github === undefined || !sameGithub(a.github, b?.github)) return undefined
-  const kept = Object.keys(REPO_FIELDS).filter((key) => a[key] !== undefined && (key === 'github' || a[key] === b[key]))
-  return fromEntries(kept.map((key) => [key, a[key]]))
+// What normalized blocks `a` and `b` of one thing, by their `key` (`same` of the two), agree on; `a`'s key is kept.
+const agreed = (a, b, key, same) => {
+  if (a?.[key] === undefined || !same(a[key], b?.[key])) return undefined
+  return fromEntries(Object.entries(a).filter(([field, value]) => field === key || value === b[field]))
 }
+
+export const mergeRepo = (a, b) => agreed(a, b, 'github', sameGithub)
 
 // An older stasis's `root: true` is read as unknown: it recorded one from a package.json's claim too.
 const parsedRepo = (repo) => {
@@ -107,10 +104,8 @@ const parsedRepo = (repo) => {
 
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
-const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => {
-  const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
-  return [ecosystem, x?.name !== undefined && x.name === y?.name ? fromEntries(Object.entries(x).filter(([key, value]) => value === y[key])) : undefined]
-}))
+const mergePackage = (a, b) =>
+  fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => [ecosystem, agreed(a?.[ecosystem], b?.[ecosystem], 'name', Object.is)]))
 
 // JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize writes v1.
 export class Bundle {
@@ -162,7 +157,7 @@ export class Bundle {
     return RESOURCE_FORMATS.has(format) || format === 'directory'
   }
 
-  // A full-scope code bundle must declare an entry to be runnable (State#absorbCodeBundle).
+  // A full-scope code bundle must declare an entry to be runnable (State checks it on load).
   get hasCode() {
     return this.modules.entries().some(([dir, { files }]) =>
       Object.keys(files).some((rel) => !Bundle.isResourceFormat(this.formats.get(moduleFileKey(dir, rel)))))
@@ -190,24 +185,16 @@ export class Bundle {
   static fromJSON(json, { contents = true } = {}) {
     assert(json.version === VERSION || json.version === LEGACY_VERSION)
     assertScope(json.config?.scope, 'bundle')
-    // Validated into a typed Map early: a raw-object lookup like `__proto__` would hit the prototype.
-    const formats = parseFormats(json.formats)
     const v1 = json.version === VERSION
     if (v1 && json.config.scope !== 'full') assert(json.entries === undefined && json.sources === undefined)
-    const modules = v1 ? parseBuckets(json, 'bundle') : legacyModules(json.sources)
-    const flatKeys = checkedFileKeys(modules, formats)
-    const imports = parseImports(json.imports)
-    if (!contents) for (const [dir, info] of modules) modules.set(dir, lockModule(dir, info))
+    // A v0 `entries` and `executable` are ignored: with no per-file `formats` the latter could point `extract` at any
+    // path to chmod +x.
+    const parts = v1 ? parseParts(json, BUNDLE)
+      : parseParts({ ...json, entries: undefined, executable: undefined }, BUNDLE, legacyModules(json.sources))
+    if (!contents) for (const [dir, info] of parts.modules) parts.modules.set(dir, lockModule(dir, info))
     return new Bundle({
+      ...parts,
       version: json.version,
-      config: json.config,
-      // Empty entries are valid (`stasis add` attests files without making them entry points).
-      entries: v1 && json.entries !== undefined ? parseEntries(json.entries, 'bundle') : new Set(),
-      modules,
-      formats,
-      imports,
-      // A v0 `executable` is ignored: with no per-file `formats` it could point `extract` at any path to chmod +x.
-      executable: v1 ? parseExecutable(json.executable, { what: 'bundle', files: flatKeys, formats, scope: json.config.scope }) : new Set(),
       reason: isPlainObject(json.reason) ? json.reason : undefined,
       repo: parsedRepo(json.repo),
       package: json.package,
@@ -239,8 +226,7 @@ export class Bundle {
   }
 
   #serialized() {
-    checkedFileKeys(this.modules, this.formats)
-    const { entries, sources, modules, formats, imports, executable } = serializedParts(this, 'bundle', { skipEmpty: true })
+    const { entries, sources, modules, formats, imports, executable } = serializedParts(this, BUNDLE)
     // File contents are written last, after every other key: sources, then modules.
     return {
       version: VERSION, config: this.config, repo: this.repo, package: this.package, entries, formats, imports, executable,
@@ -248,24 +234,16 @@ export class Bundle {
     }
   }
 
+  // `repo` and `package` are accessors, which a spread leaves out.
   withReason(consumer, files = [...this.sources.keys()]) {
-    const { version, config, entries, modules, formats, imports, executable, repo, package: pkg } = this
     const reason = mergeReason(this.reason, { [consumer]: files })
-    return new Bundle({ version, config, entries, modules, formats, imports, executable, reason, repo, package: pkg })
+    return new Bundle({ ...this, reason, repo: this.repo, package: this.package })
   }
 
   // Strict union of two Bundles (returns a NEW one): any genuine conflict throws -- a bundle is an attestation.
   merge(other) {
-    assert(this.config.scope === other.config.scope,
-      `bundle merge: scope mismatch ('${this.config.scope}' vs '${other.config.scope}')`)
     return new Bundle({
-      config: { scope: this.config.scope },
-      entries: new Set([...this.entries, ...other.entries]),
-      modules: mergeModuleMaps(this.modules, other.modules, 'bundle merge'),
-      formats: mergeFormatMaps(this.formats, other.formats, 'bundle merge'),
-      imports: mergeImportMaps(this.imports, other.imports, 'bundle merge'),
-      // `other` (the incoming, newer build) wins for the files it carries -- see mergeExecutableSets.
-      executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
+      ...mergedParts(this, other, 'bundle merge'),
       reason: mergeReason(this.reason, other.reason),
       repo: mergeRepo(this.repo, other.repo),
       package: mergePackage(this.package, other.package),

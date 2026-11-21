@@ -1,19 +1,16 @@
 // Child->root capture forwarding (--child-process). Content, listings, stat kinds and exec bits are re-derived from
 // the root's OWN disk, so a shard can't inject content or a forged bit; `files` and `formats` are independent.
 
-import { assertScope, isArtifactKey, KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, objectToMaps } from './artifact-util.js'
+import { assertScope, isArtifactKey, KNOWN_FORMATS, assert, isPlainObject, objectToMaps } from './artifact-util.js'
 
 export const SHARD_VERSION = 1
 
+// Maps as objects, unsorted: the reader of this machine-only payload does not care about order.
+const mapsAsObjects = (_key, value) => (value instanceof Map ? Object.fromEntries(value) : value)
+
 export function serializeShard({ scope, files, formats, imports }) {
   assertShard(files, formats, imports)
-  return JSON.stringify({
-    version: SHARD_VERSION,
-    scope,
-    files,
-    formats: fileMapToObject(formats, { sorted: false }),
-    imports: fileMapToObject(imports, { sorted: false }),
-  })
+  return JSON.stringify({ version: SHARD_VERSION, scope, files, formats, imports }, mapsAsObjects)
 }
 
 // The upstream signature is what makes a shard trustworthy; this only guards a malformed message.
