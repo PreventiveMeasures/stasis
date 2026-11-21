@@ -6,11 +6,20 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { moduleFileKey, moduleInfo, narrowExecutable } from '@exodus/stasis-core/util'
 
-// An in-memory Bundle of a lockfile, each attested file read from disk under `root` and held to its SRI digest, as a
-// `stasis run --lock=frozen` replay holds it. A directory capture (format 'directory') is no file to load. Held to
-// what Bundle.parse holds a stasis.code.br's files to, which Lockfile.parse does not: a lockfile attesting a file no
-// bundle may carry, or a `files` entry for a payload-free stat record, is refused as such a bundle is.
-export function bundleFromLockfile(lockfile, { root }) {
+const onDisk = (root) => (file) => {
+  try {
+    return readFileSync(resolve(root, file))
+  } catch (cause) {
+    throw new Error(`stasis: file attested by the lockfile is missing on disk: ${file}`, { cause })
+  }
+}
+
+// An in-memory Bundle of a lockfile, each attested file read (`read(file)`, a Buffer, throwing where there is none;
+// else from disk under `root`) and held to its SRI digest, as a `stasis run --lock=frozen` replay holds it. A
+// directory capture (format 'directory') is no file to load. Held to what Bundle.parse holds a stasis.code.br's files
+// to, which Lockfile.parse does not: a lockfile attesting a file no bundle may carry, or a `files` entry for a
+// payload-free stat record, is refused as such a bundle is.
+export function bundleFromLockfile(lockfile, { root, read = onDisk(root) }) {
   if (!lockfile.imports) throw new Error('stasis: lockfile has no recorded import graph')
   const formats = lockfile.formats ?? new Map()
   const modules = new Map()
@@ -20,12 +29,7 @@ export function bundleFromLockfile(lockfile, { root }) {
       const file = moduleFileKey(dir, rel)
       const format = formats.get(file)
       if (format === 'directory') continue
-      let bytes
-      try {
-        bytes = readFileSync(resolve(root, file))
-      } catch (cause) {
-        throw new Error(`stasis: file attested by the lockfile is missing on disk: ${file}`, { cause })
-      }
+      const bytes = read(file)
       const actual = sha512integrity(bytes)
       if (actual !== integrity) throw new Error(`stasis: ${file} does not match the lockfile (expected ${integrity}, got ${actual})`)
       // Non-base64 must be UTF-8: a lossy transcode (U+FFFD) would serve other bytes than those verified.

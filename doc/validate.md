@@ -6,7 +6,7 @@ and each dependency as its published package has it, held to the lockfile that
 installed it, those two covering every file it holds.
 
 ```sh
-stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/bundle
+stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|tgz)
 ```
 
 | Flag | Meaning |
@@ -33,7 +33,7 @@ It exits:
 | 0 | `valid`: every file it was to check was checked and is as it should be. Own code skipped with `--only-deps` is no file it was to check. |
 | 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile or what it records, a copy is installed where another is, or it contradicts the `stasis.lock.json` the repository commits. |
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
-| 3 | It refused the bundle (no repository or commit, a commit of no branch or tag of the repository, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
+| 3 | It refused the bundle (no repository or commit, a commit of no branch or tag of the repository, no lockfile, a lockfile it can't read, a tgz other than its `stasis.lock.json`'s files, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
 The report goes to stdout as tables, as `stasis audit` prints its own:
 
@@ -132,6 +132,28 @@ validated of them; one written otherwise records none: give `--github` and
 `--sha`. A listing of the repository's tree, which gives git's blob ids alone, leaves its
 own code unverified; a vendored crate's `.cargo-checksum.json`, held to the
 crate by its bytes, is left out.
+
+A tgz (a gzipped tar, told by gzip's leading bytes) holding a
+`stasis.lock.json` at its top, beside the files it attests, as `tar -czf`
+packs what `stasis extract --lock=add` writes, is validated as the bundle of
+those files is, by their bytes, of the repository and commit the lockfile
+records. It must hold exactly the files the lockfile attests, else it is
+refused (exit 3), naming the path:
+
+- each file the lockfile attests, at its path from the tgz's top, of the bytes
+  its integrity is of and the execute bit it attests (any of `0o111`);
+- no other file, nor a symlink, hard link or device: directories alone besides;
+- read as `stasis build` reads a lockfile's files (code as UTF-8), and held to
+  the rules a `stasis.code.br` parses by: no content for a payload-free `stat:*`
+  record, no file no bundle may carry (a `.npmrc`, say), though a lockfile may
+  attest one;
+- no byte past the gzip stream, nor past the tar's end marker, as
+  `@preventive/archive` reads them (a second gzip member is read on into, as
+  gzip(1) reads it), but zeros, which gzip(1) and tar take for padding.
+
+A `stasis.lock.json` in a directory of it (npm's `package/`) is not at its top.
+A `directory` capture's path is a directory of it or absent, never a file;
+its listing is not held to the tgz, as no listing is validated.
 
 Composer packages, Soldeer zips and crates vendored from git, or with no
 `.cargo-checksum.json`, have no package upstream fetches by name and version:
@@ -426,7 +448,7 @@ with their types (`src/validate.d.ts`):
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
 | `validateBundle(plan, own, { fetch, locked, generated, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`), `installed(dir)` the version npm's lockfile installs at a copy's directory (`<name>@<version>`, null for none, undefined where its lockfile locks no location), `aliased(as, named)` whether it installs `named` under the name `as` (undefined for no lockfile). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. `generated()`, where given, is a promise of the Prisma Clients the repository's schemas generate (`{ dir, files, schema, generator, prisma }` each, `files` by their paths from `dir`, which is by its path from the bundle's root, as `schema` is), asked for once every other own file is checked, and only where one isn't the repository's: the report's `generated` lists the clients its files are generated by (`{ output, schema, generator, prisma, files }`), `counts.generated` counts them, and `generatedError` tells why, where `generated()` failed. |
 | `validateRepository(plan, { repository, commit, directory }, { own, lockfile, listTree, strict, fetch, deadline, generated })` | A plan validated against `repository` (`followingMoves`'s, null for none) at `commit`, held to its history (`historyOf`), as `validate` validates a file. Own code is read of the commit's tree, its files' bytes; or, given `listTree(paths)`, of a listing of it (`{ entries, cut }`, as upstream's `listRepoTree` lists it, for the paths of the bundle's own files and of its directory's), by git's blob ids, the lockfile's directories' files named by it too. `lockfile` is `true` (the repository's), lockfiles as `lockedBy` takes them, or `false`. With `strict` false, no repository or commit to read own code or the lockfile of (`no-repository`, `no-commit`), a commit not of the repository's history (`commit-not-in-history`, `history-unread`), or no lockfile to hold the dependencies to is told in the report, not thrown: own code unverified for the `ValidateError`'s code (`own.reason`), and the dependencies held to their registry alone, the code told (`lockfileError`) where their lockfile went unread for it. `generated` is `validateBundle`'s. |
-| `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. Own code the repository doesn't hold is held to the Prisma Clients its schemas generate (see [Generated Prisma Clients](#generated-prisma-clients)), read with `client`. |
+| `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client: `file` a bundle, a `stasis.lock.json`, or a tgz of one and its files (above). `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. Own code the repository doesn't hold is held to the Prisma Clients its schemas generate (see [Generated Prisma Clients](#generated-prisma-clients)), read with `client`. |
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
 | `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |

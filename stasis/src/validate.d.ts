@@ -157,6 +157,7 @@ export function validateRepository(plan: ValidationPlan, where: { repository?: R
   // What reads a git dependency's repository (followingMoves wraps it).
   client?: Reads
 }): Promise<BundleValidation>
+// `file`: a bundle, a stasis.lock.json, or a tgz of a stasis.lock.json at its top and exactly the files it attests.
 export function validate(file: string, options?: Options & { client?: Reads; github?: string; sha?: string; directory?: string; lockfile?: boolean | string[] }): Promise<BundleValidation>
 
 type Stream = { write(chunk: string): unknown }

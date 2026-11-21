@@ -31,7 +31,7 @@ const HELP = `Usage:
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories] path/to/(lockfile|bundle) ...
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories]  (the bundle stasis bundle builds of stasis.config.json's entries, not written)
- stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/bundle
+ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|tgz)
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
 
@@ -445,7 +445,7 @@ if (command === '-v' || command === '--version') {
     valueFlags: ['--github', '--sha', '--directory', '--lockfile'],
     onError: misused,
   })
-  if (argv.length !== 1) misused('Error: stasis validate takes one bundle')
+  if (argv.length !== 1) misused('Error: stasis validate takes one bundle, stasis.lock.json or tgz')
   if (values.lockfile !== undefined && values['no-lockfile']) misused('Error: --lockfile and --no-lockfile: give one')
   // The repository is read with githubToken's token and the packages with withNpmToken's, as
   // `stasis github-bundle` reads them; its trees and the packages fetched are cached where
