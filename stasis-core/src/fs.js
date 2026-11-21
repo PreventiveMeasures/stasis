@@ -47,9 +47,9 @@ const encodeRealpath = (abs, options) => (encodingOf(options) === 'buffer' ? Buf
 // Absent under --fs: `*.map` (a captured build replays byte-identically; `map` in resources opts out) and
 // `.env*` (a capture never bakes in a secret). Either serves at load only as an explicit bundle member. And what
 // excludeModules excludes (classify), as though not installed.
-function isSkippedFsPath(state, abs) {
+function isSkippedFsPath(state, abs, url) {
   const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
-  return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)
+  return skipped && !(state.config.loadBundle && state.getFsStatFamily(url) !== undefined)
 }
 
 // Indistinguishable from a real absent file's. String() spells a Buffer path as UTF-8 and a URL as its href.
@@ -60,7 +60,7 @@ function enoent(syscall, path) {
 
 // An absent path's stat answers as the real fn does for '' (never exists), re-spelled: which options it honours
 // varies by Node version (async stat takes throwIfNoEntry from 24.15, async lstat doesn't).
-const asAbsent = (syscall, path) => (err) => (err?.code === 'ENOENT' ? enoent(syscall, path) : err)
+const asAbsent = (syscall, path, err) => (err?.code === 'ENOENT' ? enoent(syscall, path) : err)
 
 // For a bundle-served path gone from disk; never throws, so wrappers reading uid/gid etc. keep working.
 function syntheticStat(isDir) {
@@ -109,7 +109,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const abs = toAbsPath(path)
     if (abs === null || !isPathWithin(state.root, abs)) return null
     const url = pathToFileURL(abs).toString()
-    if (isSkippedFsPath(state, abs)) return { mode: 'absent' }
+    if (isSkippedFsPath(state, abs, url)) return { mode: 'absent' }
     // Resolvable still: Node's require() realpaths it, and the resolution then misses as MODULE_NOT_FOUND.
     if (state.excludedModule(url) !== undefined) return { mode: 'absent', resolvable: true }
     if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
@@ -168,7 +168,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     [`${syscall}Sync`](path, options) {
       const t = classify(path)
       if (t?.mode === 'absent') {
-        try { return realFn('', options) } catch (err) { throw asAbsent(syscall, path)(err) }
+        try { return realFn('', options) } catch (err) { throw asAbsent(syscall, path, err) }
       }
       if (options == null && t?.mode === 'serve') {
         const kind = t.state.getFsStatFamily(t.url)
@@ -287,7 +287,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
       [syscall](path, options, callback) {
         const [opts, cb] = cbArgs(options, callback)
         const t = typeof cb === 'function' ? classify(path) : null
-        if (t?.mode === 'absent') return realFn('', opts, (err, stats) => cb(asAbsent(syscall, path)(err), stats))
+        if (t?.mode === 'absent') return realFn('', opts, (err, stats) => cb(asAbsent(syscall, path, err), stats))
         if (opts == null && t?.mode === 'serve') {
           const kind = t.state.getFsStatFamily(t.url)
           if (kind !== undefined) return later(cb, null, bundleStats(realSyncFn, path, kind === 'directory'))
@@ -307,7 +307,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const servedStatP = (syscall, realFn, realSyncFn) => ({
       async [syscall](path, options) {
         const t = classify(path)
-        if (t?.mode === 'absent') return realFn('', options).catch((err) => { throw asAbsent(syscall, path)(err) })
+        if (t?.mode === 'absent') return realFn('', options).catch((err) => { throw asAbsent(syscall, path, err) })
         if (options == null && t?.mode === 'serve') {
           const kind = t.state.getFsStatFamily(t.url)
           if (kind !== undefined) return bundleStats(realSyncFn, path, kind === 'directory')
