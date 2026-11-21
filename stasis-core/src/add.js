@@ -9,7 +9,7 @@ import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, sta
 import { diskHost } from './host.js'
 import { excludedText, linksOn, moduleExcluder, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withAttestedOf, withFilledOf, withMetadataOf } from './util.js'
+import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withFilledOf, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: outputMatcher must read the real disk, not be captured.
 const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
@@ -229,7 +229,7 @@ export function validateFiles({ baseDir, realBase, files, resources, withIntegri
   const undeclared = []
   const nonUtf8 = []
   const types = new Map()
-  const kept = (path, read) => (types.has(path) ? types.get(path) : types.set(path, read()).get(path))
+  const kept = (path, read) => upsert(types, path, read)
   for (const [rel, stats] of files) {
     if (stats === undefined) {
       missing.push(rel)
