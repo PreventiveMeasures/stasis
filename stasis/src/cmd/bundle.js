@@ -53,8 +53,6 @@ import {
 import { bundledSummary, lockedSummary, lockfileOnlyError, packagesLabel, unpackedSummary, writeBundle, writeFile } from './output.js'
 import { withNpmToken } from './tokens.js'
 
-const BASH_EXTS = new Set(['.sh', '.bash'])
-const RUST_EXTS = new Set(['.rs'])
 const nonEmpty = (list) => Array.isArray(list) && list.length > 0
 
 // The deepest dir holding every one of `paths`, relative to `cwd` (`..` where they escape it, by remapping).
@@ -67,23 +65,12 @@ export function outermostDir(paths, cwd) {
   return posix.relative(cwdAbs, first.slice(0, depth).join('/') || '/') || '.'
 }
 
-// A Soldeer dependency's folder `<name>-<version>`; 0.0.0 where it ends in no semver, as every bucket attests one.
-function parseSoldeerDir(seg) {
-  const m = /^(.+)-(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)$/u.exec(seg)
-  return m ? { name: m[1], version: m[2] } : { name: seg, version: '0.0.0' }
-}
-
 // A url as git fetches from a host: scp's `[user@]host:path`, or a URL of a transport of git's own (lowercase).
 // Not `ssh://git@github.com:owner/name` (host `github.com:owner` to git), `git+https://`, nor a bare path.
 const GIT_URL = /^(?:[^/]*:(?!\/\/)|(?:https?|git|ssh|git\+ssh|ssh\+git):\/\/(?:[^/@]*@)?[^/:@]*(?::\d*)?\/)/u
 
 // Not npm's `github:owner/name` (the host `github` to git), nor one with a `#`, which git keeps in the path.
 const submoduleGithub = (url) => (GIT_URL.test(url) && !/^github:/iu.test(url) && !url.includes('#') ? parseGithubRepository(url.replace(/^ssh\+git:/u, 'ssh:')) : null)
-
-function githubSubmodules(submodules) {
-  const named = submodules.map(({ path, url, branch }) => [path, { name: url && submoduleGithub(url), branch }])
-  return new Map(named.filter(([, { name }]) => name))
-}
 
 const repoRootAt = (github, commit) => (isValidRepoField('github', github) && isValidRepoField('commit', commit) ? { github, directory: '', commit } : undefined)
 
@@ -95,23 +82,24 @@ function soldeerLocks(baseDir, ownership, host) {
     const buf = reason || real === null || outside ? null : readRegularFileOrNull(join(host.realpath(baseDir), real), 'soldeer.lock', host)
     lock = buf === null ? null : parseSoldeerLockfile(decodeUtf8(buf, 'soldeer.lock'))
   } catch { /* unreadable, or not one Soldeer writes: nothing is recorded of it */ }
-  const locks = new Map()
-  for (const dep of Object.values(lock?.dependencies ?? {})) {
-    locks.set(`${dep.name}-${dep.version}`, dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: archiveIntegrity('soldeer', dep.checksum) })
-  }
-  return locks
+  return new Map(Object.values(lock?.dependencies ?? {}).map((dep) => [
+    `${dep.name}-${dep.version}`,
+    dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: archiveIntegrity('soldeer', dep.checksum) },
+  ]))
 }
 
 // A bucket's `repo` is its checkout's HEAD; a Soldeer git dependency's only at its soldeer.lock `rev`.
 function makeSolidityClassifier(baseDir, ownership, host) {
-  const submodules = githubSubmodules(ownership.submodules)
+  const named = ownership.submodules.map(({ path, url, branch }) => [path, { name: url && submoduleGithub(url), branch }])
+  const submodules = new Map(named.filter(([, { name }]) => name))
   const versionOf = memoized((sub) => readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check: ownership.assert, host })?.version)
   const commitOf = memoized((dir) => checkoutCommit(join(baseDir, dir), host))
   let soldeer
   return (path) => {
     const seg = path.startsWith('dependencies/') ? path.slice('dependencies/'.length).split('/')[0] : ''
     if (seg) {
-      const { name, version } = parseSoldeerDir(seg)
+      // A Soldeer dependency's folder `<name>-<version>`; 0.0.0 where it ends in no semver, as every bucket attests one.
+      const [, name = seg, version = '0.0.0'] = /^(.+)-(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)$/u.exec(seg) ?? []
       const bucketDir = `dependencies/${seg}`
       soldeer ??= soldeerLocks(baseDir, ownership, host)
       const { repo: locked, integrity } = soldeer.get(seg) ?? {}
@@ -156,9 +144,10 @@ function readFileWithinBase(baseDir, realBase, rel, within) {
   }
 }
 
-function assertEntries(name, entries, what, isEntry, noun = what) {
+function assertEntries(name, entries, kind, noun = KINDS[kind].what) {
+  const { what, is } = KINDS[kind]
   if (!nonEmpty(entries)) throw new Error(`${name}: at least one entry ${what} is required`)
-  for (const e of entries) if (!isEntry(e)) throw new Error(`${name}: not a ${noun}: ${e}`)
+  for (const e of entries) if (!is(e)) throw new Error(`${name}: not a ${noun}: ${e}`)
 }
 
 function assertSelfContained(lang, noun, entries, sources, missing) {
@@ -167,47 +156,39 @@ function assertSelfContained(lang, noun, entries, sources, missing) {
   if (issues.length > 0) throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}`)
 }
 
-// A file of no package goes in "." under the workspace identity: Bundle.parse needs every bucket to attest one.
-function assembleCodeBundle({
-  baseDir, entries, sources, resolutions, keyedResolutions, workspaceName, workspaceVersion = '0.0.0', format, formats, conditionKey, classifyDep, host,
-  packageOf = packageLookup(baseDir, { host }), consumer, consumerFiles,
+// A file of no package goes in "." under the workspace identity: Bundle.parse needs every bucket to attest one. A
+// PHP bundle's `modules` come bucketed already.
+function codeBundle({
+  baseDir, entries, sources, modules, resolutions, keyedResolutions = new Map(), workspaceName, workspaceVersion = '0.0.0', format, formats,
+  conditionKey = format, classifyDep, host, packageOf = packageLookup(baseDir, { host }), consumer = 'bundle', consumerFiles,
 }) {
-  const modules = new Map()
-  const ensureBucket = (dir, identity) => {
-    const bucket = modules.get(dir)
-    modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
-    return modules.get(dir)
-  }
-
-  for (const [path, content] of sources) {
-    const dep = classifyDep?.(path)
-    if (dep) {
-      ensureBucket(dep.bucketDir, dep).files[fileInBucket(dep.bucketDir, path)] = content
-      continue
+  if (modules === undefined) {
+    modules = new Map()
+    const ensureBucket = (dir, identity) => {
+      const bucket = modules.get(dir)
+      modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
+      return modules.get(dir)
     }
-    const meta = packageOf(path)
-    // One of node_modules whose nearest package.json is the workspace root's (or none) is a misconfigured dep.
-    if (splitNodeModulesPath(path) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
-      throw new Error(`No package.json with name+version found for ${path}`)
+    for (const [path, content] of sources) {
+      const dep = classifyDep?.(path)
+      if (dep) {
+        ensureBucket(dep.bucketDir, dep).files[fileInBucket(dep.bucketDir, path)] = content
+        continue
+      }
+      const meta = packageOf(path)
+      // One of node_modules whose nearest package.json is the workspace root's (or none) is a misconfigured dep.
+      if (splitNodeModulesPath(path) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
+        throw new Error(`No package.json with name+version found for ${path}`)
+      }
+      const [dir, identity] = meta ? [meta.pkgDir, meta] : ['.', { name: workspaceName, version: workspaceVersion }]
+      ensureBucket(dir, identity).files[fileInBucket(dir, path)] = content
     }
-    const [dir, identity] = meta ? [meta.pkgDir, meta] : ['.', { name: workspaceName, version: workspaceVersion }]
-    ensureBucket(dir, identity).files[fileInBucket(dir, path)] = content
-  }
-
-  return codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions, format, formats, conditionKey, host, consumer, consumerFiles })
-}
-
-function codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions = new Map(), format, formats, conditionKey, host, consumer = 'bundle', consumerFiles }) {
-  const formatsMap = new Map()
-  for (const path of sources.keys()) {
-    const fileFormat = formats?.get(path) ?? format
-    if (fileFormat !== undefined) formatsMap.set(path, fileFormat)
   }
   return new Bundle({
     config: { scope: 'full' },
     entries: new Set(entries),
     modules,
-    formats: formatsMap,
+    formats: new Map([...sources.keys()].map((path) => [path, formats?.get(path) ?? format]).filter(([, fileFormat]) => fileFormat !== undefined)),
     imports: new Map([[conditionKey, new Map(resolutions)], ...keyedResolutions]),
     // Off disk: a synthetic source with no file is not executable.
     executable: new Set([...sources.keys()].filter((path) => observeExecutable(join(baseDir, path), host) === true)),
@@ -271,6 +252,16 @@ export function directoryEntryError(entries, cwd = process.cwd(), host = diskHos
     : `a directory entry is only supported for Solidity bundles (it stands for the .sol files under it): ${dirs[0]}`
 }
 
+// Each kind of bundle: `is` an entry of it (`what` it is), and its build from disk, but a JS one's (buildJs).
+const KINDS = {
+  sol: { is: isSolidityEntry, build: buildSolidityBundle },
+  php: { what: '.php file', is: (e) => e.endsWith('.php'), build: buildPhpBundle },
+  js: { what: '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', is: (e) => JS_EXTENSIONS.has(extname(e)) },
+  bash: { what: '.sh/.bash file', is: (e) => ['.sh', '.bash'].includes(extname(e)), build: buildBashBundle },
+  rust: { what: '.rs file', is: (e) => extname(e) === '.rs', build: buildRustBundle },
+  teal: { what: '.teal file', is: (e) => e.endsWith('.teal'), build: buildTealBundle },
+}
+
 // A missing directory entry is skipped; `env` supplies FOUNDRY_PROFILE / FOUNDRY_REMAPPINGS.
 export async function buildSolidityBundle({ cwd = process.cwd(), entries, mappingFile, manifests = false, env = process.env, host = diskHost } = {}) {
   if (!nonEmpty(entries)) throw new Error('buildSolidityBundle: at least one entry .sol file or directory is required')
@@ -294,26 +285,23 @@ export async function buildSolidityBundle({ cwd = process.cwd(), entries, mappin
       formats.set(path, posix.basename(path) === 'package.json' ? 'json' : 'resource')
     }
   }
-  return assembleCodeBundle({
-    baseDir, entries: expanded, sources: bundled, resolutions, workspaceName: 'solidity-bundle', format: 'solidity', formats,
-    conditionKey: 'solidity', classifyDep, packageOf, host,
-  })
+  return codeBundle({ baseDir, entries: expanded, sources: bundled, resolutions, workspaceName: 'solidity-bundle', format: 'solidity', formats, classifyDep, packageOf, host })
 }
 
 // A local `source` resolving to no bundled script is fatal; an external one (PATH, `$VAR`, out of the root) dropped.
 export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
-  assertEntries('buildBashBundle', entries, '.sh/.bash file', (e) => BASH_EXTS.has(extname(e)))
+  assertEntries('buildBashBundle', entries, 'bash')
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
   const sources = await collectBashFilesFromDisk(baseDir, normalized)
   const { resolutions, missing } = buildBashTree(sources)
   assertSelfContained('Bash', 'script', normalized, sources, missing)
-  return assembleCodeBundle({ baseDir, entries: normalized, sources, resolutions, workspaceName: 'bash-bundle', format: 'shell', conditionKey: 'shell' })
+  return codeBundle({ baseDir, entries: normalized, sources, resolutions, workspaceName: 'bash-bundle', format: 'shell' })
 }
 
 // The entries alone, as written: a TEAL program includes no other file.
 export async function buildTealBundle({ cwd = process.cwd(), entries } = {}) {
-  assertEntries('buildTealBundle', entries, '.teal file', (e) => e.endsWith('.teal'))
+  assertEntries('buildTealBundle', entries, 'teal')
   const baseDir = resolve(cwd)
   const realBase = realpathSync(baseDir)
   const normalized = normalizeEntries(entries, cwd)
@@ -323,11 +311,11 @@ export async function buildTealBundle({ cwd = process.cwd(), entries } = {}) {
     if (buf !== null) sources.set(rel, decodeUtf8(buf, rel))
   }
   assertSelfContained('TEAL', 'program', normalized, sources, [])
-  return assembleCodeBundle({ baseDir, entries: normalized, sources, workspaceName: 'teal-bundle', format: 'teal', conditionKey: 'teal' })
+  return codeBundle({ baseDir, entries: normalized, sources, workspaceName: 'teal-bundle', format: 'teal' })
 }
 
 export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
-  assertEntries('buildRustBundle', entries, '.rs file', (e) => RUST_EXTS.has(extname(e)))
+  assertEntries('buildRustBundle', entries, 'rust')
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
   // One Cargo context for the walk, the edges and the bucketing, so their crate and feature decisions agree.
@@ -372,21 +360,18 @@ export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = fa
   const lacking = cargoCtx.lackingDependencies(bundledPackages, { buildScripts: cargoManifests })
     .filter((d) => !unresolvedCrates.has(d.key))
     .map((d) => `${d.name} (a dependency of ${d.from})`)
-  if (unresolvedCrates.size > 0 || notLoaded.length > 0 || lacking.length > 0) {
-    const names = [...new Set([...unresolvedCrates, ...notLoaded, ...lacking])].toSorted()
+  const names = [...new Set([...unresolvedCrates, ...notLoaded, ...lacking])].toSorted()
+  if (names.length > 0) {
     const shown = names.slice(0, 10).join(', ') + (names.length > 10 ? `, ... and ${names.length - 10} more` : '')
     console.warn(`[stasis] ${names.length} crate${names.length === 1 ? '' : 's'} referenced but not in the bundle: ${shown}`)
     if (!existsSync(join(baseDir, cargoCtx.vendorDir))) console.warn('[stasis] Registry dependencies are bundled only when vendored in-tree: run `cargo vendor` first.')
   }
-  return assembleCodeBundle({
-    baseDir, entries: normalized, sources, resolutions, workspaceName: 'rust-bundle', format: 'rust', formats, conditionKey: 'rust',
-    classifyDep: makeRustClassifier(cargoCtx),
-  })
+  return codeBundle({ baseDir, entries: normalized, sources, resolutions, workspaceName: 'rust-bundle', format: 'rust', formats, classifyDep: makeRustClassifier(cargoCtx) })
 }
 
 // Scanned statically, no PHP executed: the require/include graph strictly, Composer's autoload best-effort.
 export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
-  assertEntries('buildPhpBundle', entries, '.php file', (e) => e.endsWith('.php'))
+  assertEntries('buildPhpBundle', entries, 'php')
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
   const autoload = loadComposerAutoload(baseDir)
@@ -397,7 +382,7 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
   const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload })
   assertSelfContained('PHP', 'import', normalized, sources, missing)
   const modules = bucketizePhpSources(baseDir, sources, 'php-bundle', '0.0.0', packages)
-  return codeBundle({ baseDir, entries: normalized, sources, modules, resolutions, format: 'php', conditionKey: 'php' })
+  return codeBundle({ baseDir, entries: normalized, sources, modules, resolutions, format: 'php' })
 }
 
 function displayPath(url, baseDir) {
@@ -430,13 +415,13 @@ function linkedThrough(scanner, roots, follows) {
 
 const eagerlyLinked = (scanner) => linkedThrough(scanner, scanner.entries, (e) => STATIC_KINDS.has(e.kind))
 
-// A file outside the root (`within`) the entries link eagerly is `outside`, for the caller to refuse; one reached
+// A file outside the root (`within`) the entries link eagerly is the caller's to `refuse` (it throws); one reached
 // only past a require()/import() is left out with what only it reaches, its edges `leftOut`, misses load can catch.
-function withinRoot(scanner, within) {
-  const outside = [...eagerlyLinked(scanner)].filter((url) => scanner.files.has(url) && !within(url))
-  if (outside.length > 0) return { scanner, outside, leftOut: [] }
+function withinRoot(scanner, within, refuse) {
+  const outside = eagerlyLinked(scanner).values().find((url) => scanner.files.has(url) && !within(url))
+  if (outside !== undefined) refuse(outside)
   const kept = linkedThrough(scanner, [...scanner.entries].filter((url) => scanner.files.has(url)), (e) => scanner.files.has(e.child) && within(e.child))
-  if (kept.size === scanner.files.size) return { scanner, outside, leftOut: [] }
+  if (kept.size === scanner.files.size) return { scanner, leftOut: [] }
   const leftOut = []
   const files = new Map()
   for (const url of kept) {
@@ -461,7 +446,7 @@ function withinRoot(scanner, within) {
   }
   const unresolved = scanner.unresolved.filter((u) => files.has(u.parentURL))
   const parseErrors = scanner.parseErrors.filter((p) => files.has(p.url))
-  return { scanner: { entries: scanner.entries, files, imports, unresolved, parseErrors }, outside, leftOut }
+  return { scanner: { entries: scanner.entries, files, imports, unresolved, parseErrors }, leftOut }
 }
 
 const listed = (items, line = (s) => s) => {
@@ -469,9 +454,11 @@ const listed = (items, line = (s) => s) => {
   return items.slice(0, 10).map((x) => `  ${line(x)}`).join('\n') + more
 }
 
-// `fatal`: broken at load, a parse error, or a miss `generated(u)` says a generator would write; else
-// `tolerated`, a catchable runtime miss. `typescript`: whether a fatal miss resolves under --typescript.
-function analyzeScanner(scanner, { baseDir, generated }) {
+// Throws where the bundle is broken at load: a parse error, or a miss `generated(u)` says a generator would write
+// or load can't catch (`resolvesUnderTypescript` where one resolves under --typescript); warns of a catchable
+// runtime miss, and of what is `leftOut`.
+function reportScanIssues(scanner, leftOut, { baseDir, generated, label = '', root }) {
+  const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
   const staticReachable = eagerlyLinked(scanner)
   const fatal = []
@@ -495,12 +482,6 @@ function analyzeScanner(scanner, { baseDir, generated }) {
       }
     }
   }
-  return { fatal, tolerated, typescript }
-}
-
-function reportScanIssues({ fatal, tolerated, typescript, leftOut }, { label = '', baseDir, root }) {
-  const where = label ? ` (${label})` : ''
-  const show = (url) => displayPath(url, baseDir)
   if (fatal.length > 0) {
     throw Object.assign(new Error(`JS bundle would be broken at load time${where}:\n${listed(fatal)}`), { resolvesUnderTypescript: typescript })
   }
@@ -529,7 +510,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // Through a State, the graph scanned statically: no user code runs. `memo` keeps scans across a lazy tree's rounds.
 // `policy`: the entries' own, beside the config's.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated, policy = null } = {}) {
-  assertEntries('buildJsBundle', entries, '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', (e) => JS_EXTENSIONS.has(extname(e)), 'JS/TS file')
+  assertEntries('buildJsBundle', entries, 'js', 'JS/TS file')
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const scanConditions = cleanConditions(conditions)
@@ -550,10 +531,11 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
     // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
     if (root !== state.root) state = new State(baseDir, { ...stateOptions, env: { ...env, PROJECT_CWD: root } })
   }
-  const { scanner, outside, leftOut } = withinRoot(scanned, (url) => isPathWithin(state.root, fileURLToPath(url)))
   const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy(state.root, host, ', which can be removed if stale')}`
-  for (const url of outside) throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
-  reportScanIssues({ ...analyzeScanner(scanner, { baseDir, generated }), leftOut }, { baseDir, root })
+  const { scanner, leftOut } = withinRoot(scanned, (url) => isPathWithin(state.root, fileURLToPath(url)), (url) => {
+    throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
+  })
+  reportScanIssues(scanner, leftOut, { baseDir, generated, root })
   for (const [url, info] of scanner.files) {
     state.addFile(url, info.resource ? { resource: true, reason: 'bundle' } : { format: info.format, isEntry: scanner.entries.has(url), reason: 'bundle' })
   }
@@ -627,13 +609,11 @@ const REQUIRE_KEY = [...NODE_REQUIRE_CONDITIONS].join(', ')
 // What esbuild and webpack 5 both assert besides `import`/`require` and `default`, which Node and Metro never do.
 const BUNDLER_CONDITIONS = ['module']
 
-export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, sourceExts = METRO_SOURCE_EXTS, assetResolutions, conditions = [], typescript = false, typescriptPaths = null, host = diskHost, kept }) {
+// `options` the resolver's own (createFieldResolver's).
+export function fieldResolverFor(platform, { mainFields, metro, conditions = [], ...options }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : [...new Set([...BUNDLER_CONDITIONS, ...conditions])]
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
-  const resolver = createFieldResolver({
-    mainFields: fields, platform, preferNative: platform !== null && platform !== 'web', sourceExts, conditions: resolveConditions('commonjs', extras),
-    metro, assetExts, assetResolutions, typescript, typescriptPaths, host, kept,
-  })
+  const resolver = createFieldResolver({ ...options, mainFields: fields, platform, preferNative: platform !== null && platform !== 'web', conditions: resolveConditions('commonjs', extras), metro })
   return { extras, mainFields: fields, resolver }
 }
 
@@ -1005,20 +985,19 @@ function keptAcross(label, host, memo) {
 const probing = (host, fn) => (host.probing === undefined ? fn() : host.probing(fn))
 
 function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, jsx, resolver, platformResolver, conditions: conds, host, kept }) {
+  // What `spec` resolves to from the files of `list`, once a directory: it resolves alike from every file of one.
+  const resolvedFrom = (list, spec, by = resolver) => {
+    const found = new Set()
+    for (const from of new Map(list.map((file) => [dirname(file), file])).values()) {
+      const url = kept(`${by === resolver ? '' : 'platform\0'}${dirname(from)}\0${spec}`, () => by(from, spec, conds)?.url)
+      if (url !== undefined) found.add(fileURLToPath(url))
+    }
+    return found
+  }
   const inserted = new Set()
-  // A specifier resolves alike from every file of a directory.
-  const onePerDir = (list) => [...new Map(list.map((file) => [dirname(file), file])).values()]
-  const resolveFrom = (from, spec, by = resolver) => kept(`${by === resolver ? '' : 'platform\0'}${dirname(from)}\0${spec}`, () => {
-    const url = by(from, spec, conds)?.url
-    return url === undefined ? undefined : fileURLToPath(url)
-  })
   if (babelled) {
     // Every helper of each @babel/runtime a file finds: which ones Babel adds hangs on the syntax.
-    const helpersDirs = new Set()
-    for (const from of onePerDir(files)) {
-      const probe = resolveFrom(from, '@babel/runtime/helpers/interopRequireDefault')
-      if (probe !== undefined) helpersDirs.add(dirname(probe))
-    }
+    const helpersDirs = new Set([...resolvedFrom(files, '@babel/runtime/helpers/interopRequireDefault')].map((probe) => dirname(probe)))
     for (const dir of helpersDirs) {
       for (const ent of host.readdir(dir)) if (ent.isFile() && ent.name.endsWith('.js')) inserted.add(join(dir, ent.name))
     }
@@ -1036,20 +1015,14 @@ function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, 
     const file = requireFrom(baseDir, ASYNC_REQUIRE, host) ?? (metroDir === undefined ? undefined : requireFrom(metroDir, ASYNC_REQUIRE, host))
     if (file !== undefined) inserted.add(file)
   }
-  for (const from of onePerDir(jsx ? files : files.filter((file) => JSX_FILE_EXTS.has(extname(file))))) {
-    const runtime = resolveFrom(from, 'react/jsx-runtime')
-    if (runtime !== undefined) inserted.add(runtime)
-  }
+  for (const runtime of resolvedFrom(jsx ? files : files.filter((file) => JSX_FILE_EXTS.has(extname(file))), 'react/jsx-runtime')) inserted.add(runtime)
   // Metro's module of an asset requires it past Babel, so with no alias of its.
-  for (const from of onePerDir(assets)) {
-    const registry = resolveFrom(from, ASSET_REGISTRY, platformResolver)
-    if (registry !== undefined) inserted.add(registry)
-  }
+  for (const registry of resolvedFrom(assets, ASSET_REGISTRY, platformResolver)) inserted.add(registry)
   return inserted
 }
 
 // A JS/TS Bundle via the legacy-field resolver (`--mainFields`/`--metro`), scanned once per platform: an edge
-// is flat where the platforms agree, else a `{ platform: target }` map. -> { bundle, lockfile: () => Lockfile }
+// is flat where the platforms agree, else a `{ platform: target }` map. -> buildJs's result
 async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo, generated, policy = null }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
@@ -1082,11 +1055,19 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
   const excludes = moduleExcluder([parsePolicy(CONFIG_FILE, readConfigFile('buildResolvedJsBundle', baseDir, host)), policy], baseDir, host)
 
-  const formatsByRel = new Map()
+  // Each file reached: a resource, or code of the format it is carried in.
+  const reached = new Set()
   const resourceRels = new Set()
+  const formatsByRel = new Map()
+  const reach = (abs, resource, format) => {
+    const rel = toRel(abs)
+    reached.add(abs)
+    if (resource) resourceRels.add(rel)
+    else formatsByRel.set(rel, format)
+    return rel
+  }
   // parentRel -> specifier -> Map<platformKey, targetRel>; collapsed after all platforms scanned.
   const edges = new Map()
-  const reached = new Set()
   let usesEmpty = false
   // A disabled import resolves to Metro's own empty module where the project has it, else the reserved one.
   // What an excluded dependency holds is missing here too, as where it isn't installed.
@@ -1099,7 +1080,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const babelled = babel || fileAliases !== null
   const leftOutEdges = []
   const rnConfig = metro ? readRnConfig(baseDir, host) : null
-  const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host, rnConfig) : { assetExts: METRO_ASSET_EXTS, sourceExts: METRO_SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS, configs: [] }
+  // Else the resolver's own.
+  const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host, rnConfig) : {}
   // A --metro bundle builds as a release build does, so production's restrictions apply, not development's.
   const restrict = rnConfig === null ? null : restrictionsOf(rnRestrictions(rnConfig), host.realpath(baseDir), false)
   const metroTaken = new Set()
@@ -1110,9 +1092,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // but reports and refuses nothing, and stops before it reads the files in.
   const voided = () => Boolean(memo) && host.touches() > 0
   const scanWithin = (roots, options, label) => {
-    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, excludes, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
-    for (const url of outside) toRel(pathOf(url))
-    if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir, generated }), leftOut }, { baseDir, label, root: ' at .' })
+    const scanned = scan(roots, { ...options, excludes, memo: memo ? nestedMap(memo, label) : null })
+    const { scanner, leftOut } = withinRoot(scanned, (url) => relWithin(pathOf(url)) !== null, (url) => toRel(pathOf(url)))
+    if (!voided()) reportScanIssues(scanner, leftOut, { baseDir, generated, label, root: ' at .' })
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
@@ -1143,12 +1125,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       leftOutEdges.push(...leftOut)
       for (const [url, info] of scanner.files) {
         const abs = pathOf(url)
-        const rel = toRel(abs)
-        reached.add(abs)
-        if (restrict !== null && !isTransformInput(abs, info)) metroTaken.add(abs)
-        if (info.resource) resourceRels.add(rel)
         // Under --metro a code file has the format Metro builds it in, as the Metro plugin records it.
-        formatsByRel.set(rel, metro && !info.resource ? metroFormat(abs) : info.format)
+        const rel = reach(abs, info.resource, metro ? metroFormat(abs) : info.format)
+        if (restrict !== null && !isTransformInput(abs, info)) metroTaken.add(abs)
         for (const e of info.edges) {
           if (e.builtin || e.dynamic) continue
           let target
@@ -1233,12 +1212,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const { scanner, leftOut } = scanWithin(roots, { resources: resourceSet, host }, 'configs and toolchain')
       for (const [url, info] of scanner.files) {
         const abs = pathOf(url)
-        const rel = toRel(abs)
-        configReached.add(rel)
-        if (!reached.has(abs)) configOnly.add(rel)
-        reached.add(abs)
-        if (info.resource) resourceRels.add(rel)
-        formatsByRel.set(rel, info.format)
+        if (!reached.has(abs)) configOnly.add(toRel(abs))
+        configReached.add(reach(abs, info.resource, info.format))
       }
       for (const u of [...scanner.unresolved, ...leftOut]) if (u.spec !== undefined) configMissed.set(`${toRel(pathOf(u.parentURL))}\0${u.spec}`, u)
       for (const [key, byParent] of scanner.imports) {
@@ -1308,13 +1283,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     for (const specifier of AUTO_INCLUDES) {
       const file = requireFrom(baseDir, specifier, host)
       if (file === undefined || reached.has(file) || relWithin(file) === null || !present(file)) continue
-      const rel = toRel(file)
       const format = classifyFormat(file, { content: host.readFile(file) })
-      reached.add(file)
+      const rel = reach(file, format === undefined, format ?? undefined)
       configReached.add(rel)
       configOnly.add(rel)
-      if (format === undefined) resourceRels.add(rel)
-      else formatsByRel.set(rel, format ?? undefined)
     }
   }
 
@@ -1482,7 +1454,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   }
 
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
-  const assembled = assembleCodeBundle({
+  const assembled = codeBundle({
     baseDir, entries: normalized, sources, resolutions, keyedResolutions, formats: formatsByRel, workspaceName: rootPkg.name ?? 'workspace',
     workspaceVersion: rootPkg.version ?? '0.0.0', conditionKey: '*', host, packageOf, consumer: metro ? 'bundle:metro' : 'bundle',
     consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel)),
@@ -1490,7 +1462,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are.
   const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
   stageTimes.carrying += performance.now() - carryingAt
-  return { bundle, lockfile: deferredLockfile(bundle) }
+  return { bundle, lockfile: deferredLockfile(bundle), stateBuilt: false, root: baseDir }
 }
 
 // The one language of `entries`, the options checked against it; `name` prefixes errors. `partial`: a
@@ -1499,11 +1471,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   if (!nonEmpty(entries)) throw new Error(`${name}: at least one entry file is required`)
   const dirError = directoryEntryError(entries, cwd, host, { fetched })
   if (dirError !== null) throw new Error(`${name}: ${dirError}`)
-  const kinds = {
-    sol: (e) => isSolidityEntry(e, cwd, host), php: (e) => e.endsWith('.php'), js: (e) => JS_EXTENSIONS.has(extname(e)),
-    bash: (e) => BASH_EXTS.has(extname(e)), rust: (e) => RUST_EXTS.has(extname(e)), teal: (e) => e.endsWith('.teal'),
-  }
-  const kind = Object.keys(kinds).find((key) => entries.every((e) => kinds[key](e)))
+  const kind = Object.keys(KINDS).find((key) => entries.every((e) => KINDS[key].is(e, cwd, host)))
   if (kind === undefined) {
     throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
@@ -1552,13 +1520,11 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
 }
 
 // By the legacy-field resolver with `mainFields` or `metro`, whose per-platform edges a State can't hold.
-async function buildJs({ mainFields, platforms, metro, metroResolver, babel, babelAliases, innermostRoot, extra, outputsAt, ...options }) {
-  if (metro) options = { ...options, jsx: true, flow: true, define: { ...METRO_RELEASE_DEFINE, ...options.define } }
-  if (metro || mainFields !== undefined) {
-    const built = await buildResolvedJsBundle({ ...options, mainFields: metro ? METRO_MAIN_FIELDS : mainFields, platforms: metro ? platforms : [null], metro: Boolean(metro), metroResolver: Boolean(metroResolver), babel: Boolean(babel), babelAliases })
-    return { bundle: built.bundle, lockfile: built.lockfile, stateBuilt: false, root: resolve(options.cwd) }
-  }
-  const state = await buildJsBundle({ ...options, innermostRoot, extra, outputsAt })
+async function buildJs(options) {
+  const { metro, mainFields } = options
+  if (metro) options = { ...options, mainFields: METRO_MAIN_FIELDS, jsx: true, flow: true, define: { ...METRO_RELEASE_DEFINE, ...options.define } }
+  if (metro || mainFields !== undefined) return buildResolvedJsBundle({ ...options, platforms: metro ? options.platforms : [null] })
+  const state = await buildJsBundle(options)
   const bundle = state.sourceBundle
   // The `bundle` consumer, unless `extra` added files: then the State attributes each, to `bundle` or `extra`.
   return { bundle: bundle.reason === undefined ? bundle.withReason('bundle') : bundle, lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
@@ -1606,17 +1572,13 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   return { ...built, bundle, ...(lockfile && extraLock && { lockfile: () => lockfile().merge(extraLock()) }) }
 }
 
-// From disk, with stasis.config.json's `extra` unless `extra` is false (one of several builds), not yet pinned.
-async function buildOfKind(kind, { name, cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, policy, outputsAt = () => [], extra = true }) {
-  const outputs = outputsAt(resolve(cwd))
-  const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
-  if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
-  if (kind === 'php') return withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) })
-  if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
-  if (kind === 'teal') return withExtraOf({ bundle: await buildTealBundle({ cwd, entries }) })
-  if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
-  const built = await buildJs({ cwd, env, entries: withNextEntries(name, entries, cwd), scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, policy, extra, outputsAt })
-  return built.stateBuilt ? built : withExtraOf(built, resources)
+// From disk, with stasis.config.json's `extra` unless `extra` is false (one of several builds), not yet pinned; its
+// paths relative to `root`. `options` are entryOptionsOf's, and the entries' Policy.
+async function buildOfKind(kind, { name, cwd, outputsAt = () => [], extra = true, ...options }) {
+  const withExtraOf = (built, resources) => (extra ? withExtra(built, cwd, { outputs: outputsAt(resolve(cwd)), resources }) : built)
+  if (kind !== 'js') return withExtraOf({ bundle: await KINDS[kind].build({ ...options, cwd }), root: resolve(cwd) })
+  const built = await buildJs({ ...options, cwd, entries: withNextEntries(name, options.entries, cwd), extra, outputsAt })
+  return built.stateBuilt ? built : withExtraOf(built, options.resources)
 }
 
 // How each Soldeer, Composer and vendored Cargo dependency is installed, where what its integrity is read of tells.
@@ -1639,10 +1601,11 @@ function pinnedOf(built, root) {
   return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root, diskHost, cache)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
 }
 
-function unionOfBuilds(name, builds, builts, roots) {
-  const other = roots.findIndex((root) => root !== roots[0])
+function unionOfBuilds(name, builds, builts) {
+  const [{ root }] = builts
+  const other = builts.findIndex((built) => built.root !== root)
   if (other !== -1) {
-    throw new Error(`${name}: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${roots[0]} and ${roots[other]})`)
+    throw new Error(`${name}: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
   }
   return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && b.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
 }
@@ -1869,7 +1832,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     }
     if (voided !== undefined) throw voided.error
     const { root } = builts[0]
-    const union = unionOfBuilds(name, ofBuilds, builts, builts.map((built) => built.root))
+    const union = unionOfBuilds(name, ofBuilds, builts)
     // `extra` once: to the union; else to the one build given, unless its State took it.
     return { root, builts, host, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { outputs: outputsAt(root), resources: bundleExtra ? undefined : builds[0].resources, host, name }) : union }
   }
@@ -1947,11 +1910,18 @@ function reportedRounds(attempt, unpack) {
   ]
 }
 
+// The options of a build's entries, each of which stasis.config.json's `entries` may set (bundle-options.js's OPTION_FLAGS).
+const ENTRY_OPTIONS = [
+  'entries', 'mappingFile', 'manifests', 'scope', 'conditions', 'mainFields', 'platforms', 'metro', 'metroResolver', 'babel', 'babelAliases', 'jsx', 'flow',
+  'typescript', 'tsconfig', 'resources', 'define', 'packageJSON', 'cargo', 'cargoFeatures', 'cargoNoDefaultFeatures', 'cargoAllFeatures', 'cargoTarget', 'cargoManifests',
+]
+const entryOptionsOf = (options) => Object.fromEntries(ENTRY_OPTIONS.map((key) => [key, options[key]]))
+
 // `stasis bundle`'s Bundle, not written, a JS one held to the project's stasis.lock.json as `stasis bundle` holds it.
-export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+export async function buildBundle({ cwd = process.cwd(), env = process.env, ...given } = {}) {
+  const options = { ...entryOptionsOf(given), cwd, env }
   const built = await buildOfKind(classifyEntries('buildBundle', options), { ...options, name: 'buildBundle' })
-  const root = built.root ?? resolve(cwd)
+  const { root } = built
   assertPolicies('buildBundle', { bundle: built.bundle, root })
   heldOf(pinnedOf(built, root), root, { cwd, env })?.loads(built.bundle)
   return built.bundle
@@ -1977,16 +1947,21 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 
   const outAbs = target === '-' ? undefined : resolve(cwd, target)
   const lockAbs = lockData ? resolve(cwd, lockfile) : undefined
+  // The `what` at `abs` (`shown` as given) to add to, by `parse`, refused where its paths are another root's.
+  const existingAt = (what, shown, abs, parse) => {
+    let artifact
+    try {
+      artifact = parse(readFileSync(abs))
+    } catch (cause) {
+      throw new Error(`bundleCommand: --add failed to read the existing ${what} at ${shown}`, { cause })
+    }
+    refuseOtherRoot(artifact, `the ${what} at ${shown}`, root, { cwd, at: abs })
+    return artifact
+  }
   // What the bundle on disk carried; undefined where nothing is merged.
   let mergedFrom
   if (add && existsSync(outAbs)) {
-    let existing
-    try {
-      existing = parseBundleBytes(readFileSync(outAbs))
-    } catch (cause) {
-      throw new Error(`bundleCommand: --add failed to read the existing bundle at ${target}`, { cause })
-    }
-    refuseOtherRoot(existing, `the bundle at ${target}`, root, { cwd, at: outAbs })
+    const existing = existingAt('bundle', target, outAbs, parseBundleBytes)
     // What the bundle and lockfile on disk carry is written again, so held to the config's Policy too.
     const policy = parsePolicy(CONFIG_FILE, readConfigFile('bundleCommand', root))
     const links = linksOn(root)
@@ -2012,12 +1987,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
         if (!existsSync(lockAbs)) {
           throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockfile}: the bundle at ${target} already carries files a fresh lockfile wouldn't attest, and there's no existing lockfile to merge into. Write --lockfile alongside the bundle from the first build, or drop --lockfile.`)
         }
-        try {
-          existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
-        } catch (cause) {
-          throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
-        }
-        refuseOtherRoot(existingLock, `the lockfile at ${lockfile}`, root, { cwd, at: lockAbs })
+        existingLock = existingAt('lockfile', lockfile, lockAbs, (buf) => Lockfile.parse(buf.toString('utf8')))
         // It may record more than the bundle beside it (a broader run's capture).
         policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
         heldAsInstalled(existingLock, lockfile)
@@ -2076,7 +2046,7 @@ function heldOf({ bundle, lockfile: built, accounts }, root, { cwd, env, lockfil
 }
 
 // The lock mode and EXODUS_STASIS_LOCK_FILE of a run at `root` that writes a bundle, as a build does.
-function lockModeOf(root, env = process.env, host = diskHost) {
+function lockModeOf(root, env, host = diskHost) {
   const config = new Config({ env: { EXODUS_STASIS_LOCK: env.EXODUS_STASIS_LOCK, EXODUS_STASIS_LOCK_FILE: env.EXODUS_STASIS_LOCK_FILE }, bundle: 'replace' })
   const text = readFileSyncMaybe(root, CONFIG_FILE, 'utf-8', host)
   if (text !== null) config.loadConfig(text)
@@ -2167,15 +2137,15 @@ export async function buildCommandBundle(options = {}) {
 }
 
 // bundleCommand's build, not written; `extra` never takes in `output` and `lockfile`, where it would write.
-async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, builds, deptree = false } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, builds, deptree, ...given } = {}) {
+  const options = entryOptionsOf(given)
   if (builds !== undefined) {
     if (!nonEmpty(builds)) throw new TypeError('bundleCommand: builds must be a non-empty array')
-    const given = Object.entries(options).find(([key, value]) => !['cwd', 'env'].includes(key) && value !== undefined && value !== false && value !== null && !(Array.isArray(value) && value.length === 0))
-    if (given) throw new TypeError(`bundleCommand: ${given[0]} can't be combined with builds (each build sets its own)`)
+    const set = Object.entries(options).find(([, value]) => value !== undefined && value !== false && value !== null && !(Array.isArray(value) && value.length === 0))
+    if (set) throw new TypeError(`bundleCommand: ${set[0]} can't be combined with builds (each build sets its own)`)
   }
-  // Each build's options, the defaults above where it leaves one out.
-  const plans = (builds ?? [{}]).map((build) => ({ ...options, ...build, cwd, env }))
+  // Each build's options, those given where it leaves one out.
+  const plans = (builds ?? [{}]).map((build) => ({ ...entryOptionsOf({ ...options, ...build }), policy: build.policy, cwd, env }))
   const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
   const outputsAt = (root) => [output ?? join(root, BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
   // With `builds`, `extra` is the bundle's, not any build's: added to their union.
@@ -2198,11 +2168,10 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
       builts.push(await buildOfKind(kinds[i], { ...plan, name: 'bundleCommand', outputsAt, extra: !bundleExtra }))
     }
     // A State-built JS bundle's paths are relative to the project's root at or above cwd.
-    const roots = builts.map((built) => built.root ?? resolve(cwd))
-    root = roots[0]
+    root = builts[0].root
     // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
     for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
-    union = unionOfBuilds('bundleCommand', plans, builts, roots)
+    union = unionOfBuilds('bundleCommand', plans, builts)
     // By the allowlist of the stasis.config.json at the root, not any entry's.
     if (bundleExtra) union = withExtra(union, root, { outputs: outputsAt(root) })
     union = pinnedOf(union, root)
