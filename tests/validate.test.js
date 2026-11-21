@@ -1845,7 +1845,7 @@ test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the f
   t.assert.deepStrictEqual(untimed(await validated('stasis.tgz', tgz)), untimed(valid), 'stasis.tgz, as <name>.stasis.tgz')
   // A tgz under any other name, and anything else under its name, refused.
   await Promise.all(['app.tgz', 'app.tar.gz', 'tgz.stasis.code.br', 'stasis.tgz.br', 'app.stasis-tgz'].map((name) =>
-    t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)} is a tgz, which is validated as stasis.tgz or <name>.stasis.tgz alone` })))
+    t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone` })))
   await t.assert.rejects(validated('br.stasis.tgz', readFileSync(br)), { message: `${join(tmp, 'br.stasis.tgz')}: the data does not decompress` })
   // Its files held to the repository and packages by their bytes, as a bundle's are.
   const differs = await validated('edited.stasis.tgz', await gzip(pack(entriesOf(built('MAIN\n')))))

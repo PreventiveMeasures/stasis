@@ -16,7 +16,7 @@ import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { METRO_RELEASE_DEFINE } from '../define.js'
 import { FLOW_EXTS, hasFlowPragma, stripFlow } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
-import { parseFileWithKind } from '../parse.js'
+import { parseArtifactFile } from '../parse.js'
 import { getParser, syntaxErrors } from '../scan.js'
 import { writeFile } from './output.js'
 
@@ -251,7 +251,8 @@ export async function buildCommand({
     throw new Error('stasis build: --platform=hermes cannot emit ESM (Hermes has no import/export); use --format=iife (the hermes default) or cjs')
   }
   const artifactAbs = resolve(cwd, artifact)
-  const { kind, artifact: parsed } = parseFileWithKind(artifactAbs)
+  // A .stasis.tgz is the bundle of its files, held to its stasis.lock.json as it is read.
+  const { kind, artifact: parsed } = await parseArtifactFile(artifactAbs)
   assertBuildableArtifact(parsed, artifact)
 
   // Paths are the artifact's directory's, where a lockfile's sources are read and verified.

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { CONFIG_FILE, EMPTY_MODULE_PATH, TGZ_FILE, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, ecosystemFamily, hasNodeModulesSegment, integrityHex, isGzip, isStatFormat, isTgzName, LOCK_FILE, memoized, moduleFileKey, NPM_DIRECTORY, parseLockfilesOption, posixPathEscapes, sha512Of, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, ecosystemFamily, hasNodeModulesSegment, integrityHex, isStatFormat, LOCK_FILE, memoized, moduleFileKey, NPM_DIRECTORY, parseLockfilesOption, posixPathEscapes, sha512Of, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -16,14 +16,12 @@ import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 import { createVfs } from '@preventive/vfs'
-import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
 import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
-import { parseArtifactBytes, parseFileWithKind, readArtifactFile } from './parse.js'
-import { readStasisTgz } from './stasis-tgz.js'
+import { parseArtifactFile } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
 import { FILE_REASONS, LOCKFILE_ERRORS, OWN_REASONS, generatedBy, noteText } from './validate-notes.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
@@ -1269,22 +1267,9 @@ async function heldToCommitted(attested, directory, list, read) {
   }
 }
 
-// A bundle or stasis.lock.json as parseFileWithKind reads it, or a .stasis.tgz of a stasis.lock.json and its files
-// (readStasisTgz), the lockfile beside the bundle; a tgz under any other name refused.
-async function artifactOf(file) {
-  if (file instanceof Lockfile || file instanceof Bundle) return parseFileWithKind(file)
-  const bytes = readArtifactFile(file)
-  if (isTgzName(file)) {
-    const { bundle, lockfile } = await readStasisTgz(bytes, file)
-    return { kind: 'bundle', artifact: bundle, lockfile }
-  }
-  if (isGzip(bytes)) throw new Error(`${file} is a tgz, which is validated as ${TGZ_FILE} or <name>.${TGZ_FILE} alone`)
-  return parseArtifactBytes(bytes, file)
-}
-
 export async function validate(file, { client, github, sha, directory, own = true, lockfile = true, fetch, deadline } = {}) {
   // A tgz's own lockfile is what it attests, and records where it was built.
-  const { kind, artifact, lockfile: carried } = await artifactOf(file)
+  const { kind, artifact, lockfile: carried } = await parseArtifactFile(file)
   const plan = validationPlan(artifact, { lockfile: kind === 'lockfile' })
   const attested = () => carried ?? (kind === 'lockfile' ? artifact : Lockfile.fromBundle(artifact, (path, content) => bundledIntegrity(content, artifact.formats?.get(path))))
   const repo = (carried ?? artifact).repo ?? {}

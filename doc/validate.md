@@ -137,7 +137,8 @@ A `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`, a gzipped tar) holding
 a `stasis.lock.json` at its top, beside the files it attests, as `tar -czf`
 packs what `stasis extract --lock=add` writes, is validated as the bundle of
 those files is, by their bytes, of the repository and commit the lockfile
-records; [`stasis run`](run.md#a-stasistgz) runs one. A tgz under any other name
+records; [`stasis run`](run.md#a-stasistgz), [`stasis build`](build.md#bundle-vs-lockfile)
+and [`stasis audit`](audit.md) take one too. A tgz under any other name
 (gzip's leading bytes), and anything else under its name, is refused (exit 3).
 It must hold exactly the files the lockfile attests, else it is refused (exit
 3), naming the path:

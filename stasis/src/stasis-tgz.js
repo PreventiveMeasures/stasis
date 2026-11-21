@@ -1,4 +1,3 @@
-import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { EXECUTE_BITS, LOCK_FILE } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
@@ -13,7 +12,7 @@ const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 // The bytes of a .stasis.tgz (`file`, for errors): a stasis.lock.json at its top and exactly the files it attests, each
 // a file of the bytes and execute bit it attests, nothing else in it but directories. The lockfile, and the bundle of
-// those files, held to Bundle.parse's rules as a stasis.code.br of them is. archive refuses any byte past either stream
+// those files (bundleFromLockfile's, held to Bundle.parse's file rules). archive refuses any byte past either stream
 // but zeros, as gzip(1) and tar take them for padding.
 export async function readStasisTgz(bytes, file) {
   try {
@@ -44,7 +43,7 @@ export async function readStasisTgz(bytes, file) {
       if (!read.has(path)) throw new Error(`${path} is in it, but not in its ${LOCK_FILE}`)
       if (((mode & EXECUTE_BITS) !== 0) !== lockfile.executable.has(path)) throw new Error(`${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
     }
-    return { bundle: Bundle.parse(bundle.serializedBytes().toString('utf8')), lockfile }
+    return { bundle, lockfile }
   } catch (cause) {
     throw new Error(`${file}: ${cause.message}`, { cause })
   }

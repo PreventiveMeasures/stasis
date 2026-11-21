@@ -7,7 +7,11 @@ import { brotliCompressSync } from 'node:zlib'
 import { spawnSync } from 'node:child_process'
 import { stripVTControlCharacters, styleText } from 'node:util'
 
+import { Bundle } from '@exodus/stasis-core/bundle'
+import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
+import { compress } from '@preventive/archive/compression.js'
+import { pack } from '@preventive/archive/tar.js'
 
 import { AuditError, EMOJI, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
@@ -1131,6 +1135,37 @@ test('audit() collects from a brotli bundle and POSTs its node_modules versions'
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
+  }
+))
+
+// The .stasis.tgz of writeBundle's files: its stasis.lock.json at its top, and each file it attests (`files` in place).
+const writeTgz = async (dir, name, files = {}) => {
+  const modules = new Map([
+    ['.', { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': 'export const x = 1\n' } }],
+    ['node_modules/foo', { name: 'foo', version: '2.0.0', files: { 'index.js': 'export const f = 1\n' } }],
+    ['node_modules/baz', { name: 'baz', version: '0.0.1', files: { 'index.js': 'export const b = 1\n' } }],
+  ])
+  const lockfile = Lockfile.fromBundle(new Bundle({ entries: new Set(['src/entry.js']), modules }), (path, content) => sha512integrity(content)).serialize()
+  const entries = { 'stasis.lock.json': lockfile, 'src/entry.js': 'export const x = 1\n', 'node_modules/foo/index.js': 'export const f = 1\n', 'node_modules/baz/index.js': 'export const b = 1\n', ...files }
+  const path = join(dir, name)
+  writeFileSync(path, await compress(pack(Object.entries(entries).map(([entry, text]) => ({ name: entry, data: new TextEncoder().encode(text) }))), 'gzip'))
+  return path
+}
+
+test('audit() reads a .stasis.tgz as the bundle of its files, held to its stasis.lock.json; a tgz otherwise refused', withFetch(
+  () => new Response(JSON.stringify({
+    foo: [{ id: 1, severity: 'critical', title: 'bug', url: 'https://x', vulnerable_versions: '<3' }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    t.after(() => rmSync(tmp, { recursive: true, force: true }))
+    const report = await audit([await writeTgz(tmp, 'app.stasis.tgz')])
+    t.assert.deepStrictEqual(JSON.parse(calls[0].opts.body), { baz: ['0.0.1'], foo: ['2.0.0'] }, 'workspace top-pkg must not be sent')
+    t.assert.deepStrictEqual(report.rows.map(({ severity, installed }) => [severity, installed]), [['critical', '2.0.0']])
+    const tampered = await writeTgz(tmp, 'tampered.stasis.tgz', { 'node_modules/foo/index.js': 'export const f = 2\n' })
+    await t.assert.rejects(audit([tampered]), { message: new RegExp(`^${RegExp.escape(tampered)}: stasis: node_modules/foo/index\\.js does not match the lockfile`, 'u') })
+    const misnamed = await writeTgz(tmp, 'app.tgz')
+    await t.assert.rejects(audit([misnamed]), { message: `${misnamed} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone` })
   }
 ))
 

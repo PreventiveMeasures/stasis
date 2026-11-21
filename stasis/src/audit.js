@@ -1,10 +1,10 @@
 import { packageRepo } from '@exodus/stasis-core/bundle-util'
-import { dependencyEcosystem, moduleFileKey, NPM_DIRECTORY, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, isTgzName, moduleFileKey, NPM_DIRECTORY, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
 import { DIM, formatTable, painter, takesColors } from './table.js'
-import { parseFile, parseFileWithKind } from './parse.js'
+import { parseArtifactFile, parseFile, parseFileWithKind } from './parse.js'
 import { logos } from './sixel.js'
 import { collectWhy, invertReason, packageRecords } from './why.js'
 
@@ -211,9 +211,11 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
   return rows.toSorted((a, b) => severityRank(a) - severityRank(b) || byText(a.package, b.package) || byText(a.ecosystem, b.ecosystem) || (a.title < b.title ? -1 : 1))
 }
 
-// The advisories of `files`' packages (paths, or artifacts in memory); `reason` audits only what that consumer
+// The advisories of `files`' packages (paths, a .stasis.tgz's among them, or artifacts in memory); `reason` audits only what that consumer
 // recorded. `npmMalware`: npm's malware advisories of every npm dependency, whatever `reason`, and `lockfile`'s too.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false, lockfile = null } = {}) {
+  // A .stasis.tgz read once, held to its stasis.lock.json: its bundle in its place, as collectPackages and why read the rest.
+  files = await Promise.all(files.map(async (file) => (typeof file === 'string' && isTgzName(file) ? (await parseArtifactFile(file)).artifact : file)))
   // --why-deep (keep every chain, see dropSuffixed) and --why-full (no `...` collapse) imply --why.
   why = why || whyDeep || whyFull
   let index

@@ -10,6 +10,8 @@ import { brotliCompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
+import { compress } from '@preventive/archive/compression.js'
+import { pack } from '@preventive/archive/tar.js'
 import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -123,6 +125,33 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     const out = readFileSync(join(build, 'out.js'), 'utf-8')
     t.assert.match(out, /hello, /, 'output must use the bundle\'s recorded source')
     t.assert.doesNotMatch(out, /DISK-VERSION/, 'output must not pick up the disk source')
+  }))
+
+  test('build from a .stasis.tgz builds the bundle of its files, held to its stasis.lock.json, none of disk; a tgz otherwise refused', withTmp(async (t, tmp) => {
+    const read = (path) => readFileSync(join(fullFixture, path))
+    const tgz = async (name, files = {}) => {
+      const entries = { 'stasis.lock.json': read('stasis.lock.json'), 'src/entry.js': read('src/entry.js'), 'src/hello.js': read('src/hello.js'), ...files }
+      writeFileSync(join(tmp, name), await compress(pack(Object.entries(entries).map(([entry, data]) => ({ name: entry, data }))), 'gzip'))
+    }
+    writeFileSync(join(tmp, 'package.json'), '{ "name": "x", "version": "0.0.0", "private": true, "type": "module" }')
+    // No source on disk: the tgz's alone.
+    await tgz('app.stasis.tgz')
+    const built = await runCli(['build', '--output=out.js', 'app.stasis.tgz'], { cwd: tmp })
+    t.assert.equal(built.status, 0, built.stderr)
+    t.assert.match(built.stderr, /Built src\/entry\.js from bundle app\.stasis\.tgz to out\.js/u)
+    t.assert.equal(runNode(t, join(tmp, 'out.js')).trim(), 'hello, world')
+
+    await tgz('tampered.stasis.tgz', { 'src/hello.js': Buffer.from('export const greet = (n) => `pwned, ${n}`\n') })
+    const tampered = await runCli(['build', '--output=pwned.js', 'tampered.stasis.tgz'], { cwd: tmp })
+    t.assert.notEqual(tampered.status, 0)
+    t.assert.match(tampered.stderr, /tampered\.stasis\.tgz: stasis: src\/hello\.js does not match the lockfile/u)
+    await tgz('extra.stasis.tgz', { 'src/extra.js': Buffer.from('extra\n') })
+    const extra = await runCli(['build', '--output=pwned.js', 'extra.stasis.tgz'], { cwd: tmp })
+    t.assert.match(extra.stderr, /extra\.stasis\.tgz: src\/extra\.js is in it, but not in its stasis\.lock\.json/u)
+    await tgz('app.tgz')
+    const misnamed = await runCli(['build', '--output=pwned.js', 'app.tgz'], { cwd: tmp })
+    t.assert.match(misnamed.stderr, /app\.tgz is a tgz, which is read as stasis\.tgz or <name>\.stasis\.tgz alone/u)
+    t.assert.ok(!existsSync(join(tmp, 'pwned.js')), 'no output on a refused tgz')
   }))
 
   test('build from a lockfile fails closed when a source was changed on disk', withTmp(async (t, tmp) => {
