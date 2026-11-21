@@ -1272,6 +1272,8 @@ test('validate: an npm:directory package held to the directory it records, of th
   writeBundle(file, { modules: new Map([[dir, { name: 'lib', version: '2.0.0', files: { 'index.js': 'lib\n' }, ...fromLib }]]) })
   const bare = await validate(file, { own: false, lockfile: false })
   t.assert.deepStrictEqual([bare.status, bare.packages.map((pkg) => [pkg.reason, pkg.at])], ['incomplete', [['local', '../lib']]])
+  const unlockedBare = await validate(file, { own: false })
+  t.assert.deepStrictEqual([unlockedBare.status, unlockedBare.packages.map((pkg) => [pkg.reason, pkg.at])], ['incomplete', [['local', '../lib']]], 'no repository to look its lockfile up in')
   t.assert.ok(hasRow(printed(bare).rows, ['unverified', 'npm:directory', 'lib@2.0.0', 'installed from a directory of the repository, which isn\'t read: ../lib']), printed(bare).out)
 }))
 

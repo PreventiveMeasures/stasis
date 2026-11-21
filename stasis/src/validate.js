@@ -1249,7 +1249,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
   })
   try {
     // A package installed from a directory is held to the npm lockfile installing it where one is there, none required.
-    const directoriesAlone = lockfile === true && !ecosystems.has('npm') && fromDirectories
+    const directoriesAlone = lockfile === true && repository !== null && commit !== undefined && !ecosystems.has('npm') && fromDirectories
     const needed = lockfile === true ? fromRepository || readsBeside || directoriesAlone : ecosystems.size > 0 || beside.length > 0 || fromDirectories
     const configured = lockfile === true && needed ? await configuredLockfiles({ directory, list, read: readRepository }) : undefined
     const readOf = (path) => readLockfileText(readRepository, path)
