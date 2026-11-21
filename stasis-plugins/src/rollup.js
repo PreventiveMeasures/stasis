@@ -2,15 +2,14 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { isBuiltin } from 'node:module'
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { assertCodeUtf8, assertPersistableAttributes, attestedImport, classifyOrThrow, ownOrResolvedState, rebuildRefused } from './plugins.js'
-import { State } from '@exodus/stasis-core/state'
+import { PluginState, assertPersistableAttributes, fileURL, ownOrResolvedState } from './plugins.js'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route rollup's reads through the capture hook.
-import { inScope, realReadFile } from '@exodus/stasis-core/state-util'
-import { classifyExtension, isPathWithin } from '@exodus/stasis-core/util'
+import { inScope, realReadFile, servedByBundle } from '@exodus/stasis-core/state-util'
+import { isPathWithin } from '@exodus/stasis-core/util'
 
 // An on-disk file by its absolute path, not a sibling plugin's virtual module (\0-prefixed or relative) or no importer.
 const isDiskId = (id) => Boolean(id) && isAbsolute(id) && !id.startsWith('\0')
@@ -18,10 +17,7 @@ const isDiskId = (id) => Boolean(id) && isAbsolute(id) && !id.startsWith('\0')
 // Rollup chains resolveId/load hooks first-non-null-wins, so this plugin goes FIRST in `plugins`: listed later, a
 // sibling resolver answers before stasis sees the edge (file BYTES still fail closed at the load hook).
 export class StasisRollup {
-  #seen = new Set()
-  #state
-  #resources
-  #captureBuildCount = 0
+  #stasis
 
   name = 'stasis'
 
@@ -29,19 +25,17 @@ export class StasisRollup {
     // Transforms run as ordinary rollup plugins after this one: refuse a port's esbuild-style bag, not drop it.
     assert.equal(unsupported, undefined,
       'StasisRollup takes a single options argument -- there is no esbuild-style { loaders, transform } bag (run transforms as rollup plugins after this one)')
-    const state = ownOrResolvedState('StasisRollup', options)
-    this.#state = state
-    this.#resources = state?.config.resources ?? new Set()
+    this.#stasis = new PluginState('StasisRollup', 'rollup', ownOrResolvedState('StasisRollup', options))
+    const { state } = this.#stasis
     if (!state) return // inert: rollup sees only `name`
 
-    // Rollup binds `this` to its PluginContext, so the instance arrives via the closure.
+    // Rollup binds `this` to its PluginContext, so a hook gets it as `ctx` and the instance via the closure.
     const plugin = this
-    this.resolveId = function (source, importer, opts) {
-      return plugin.#resolveId(this, source, importer, opts)
+    const hook = (method) => function (...args) {
+      return method.call(plugin, this, ...args)
     }
-    this.load = function (id) {
-      return plugin.#load(this, id)
-    }
+    this.resolveId = hook(this.#resolveId)
+    this.load = hook(this.#load)
 
     // A warm `cache:` object reuses modules and resolutions WITHOUT calling resolveId/load, so they'd go unattested
     // at capture and unverified at load. Rollup still builds a fresh cache for this run.
@@ -58,12 +52,10 @@ export class StasisRollup {
     if (!state.config.loadBundle) {
       // Watch rebuilds, and a second rollup() call reusing this instance, re-fire buildStart.
       this.buildStart = () => {
-        plugin.#captureBuildCount += 1
-        if (plugin.#captureBuildCount > 1) throw new Error(rebuildRefused('StasisRollup'))
+        const refusal = this.#stasis.startBuild()
+        if (refusal) throw new Error(refusal)
       }
-      this.buildEnd = function (error) {
-        return plugin.#buildEnd(this, error)
-      }
+      this.buildEnd = hook(this.#buildEnd)
     }
   }
 
@@ -89,8 +81,9 @@ export class StasisRollup {
     }
   }
 
-  #inRoot(path) {
-    return isPathWithin(this.#state.root, path)
+  // An on-disk id under the project root.
+  #inRoot(id) {
+    return isDiskId(id) && isPathWithin(this.#stasis.state.root, id)
   }
 
   async #resolveId(ctx, source, importer, opts) {
@@ -98,9 +91,10 @@ export class StasisRollup {
     // can't redirect `fs`.
     if (isBuiltin(source)) return null
     const { isEntry, attributes: attrs = {} } = opts
+    const stasis = this.#stasis
 
     // Load mode resolves through the bundle's import map: the file may not be on disk.
-    if (this.#state.config.loadBundle) {
+    if (stasis.state.config.loadBundle) {
       if (isEntry) {
         // Rollup defaults isEntry to !importer, so this covers bare sibling probes too: the load hook asserts entries
         // from the graph instead. Anchored as rollup's resolver does, else to cwd as the run loader is.
@@ -108,14 +102,14 @@ export class StasisRollup {
         const base = isDiskId(importer) ? dirname(importer) : process.cwd()
         return { id: resolvePath(base, source) }
       }
-      if (!isDiskId(importer) || !this.#inRoot(importer)) return null
+      if (!this.#inRoot(importer)) return null
       assertPersistableAttributes(attrs)
-      const attested = attestedImport(this.#state, pathToFileURL(importer).toString(), source, { importAttributes: attrs })
+      const attested = stasis.attestedImport(importer, source, { importAttributes: attrs })
       if (attested === undefined) return null
       const { url, format } = attested
       const path = fileURLToPath(url)
       // An out-of-scope resource comes from disk through the user's asset plugin, as at capture.
-      if (Bundle.isResourceFormat(format) && inScope(this.#state, url)) this.#refuseResourceLoad(path)
+      if (Bundle.isResourceFormat(format) && inScope(stasis.state, url)) this.#refuseResourceLoad(path)
       // KNOWN GAP: a sibling's resolution metadata (moduleSideEffects, syntheticNamedExports, meta) isn't in the
       // bundle, so tree-shaking may differ from the capture build's.
       return { id: path }
@@ -130,32 +124,33 @@ export class StasisRollup {
       this.#refuseSuffixedOnDisk(id)
       return resolution
     }
-    classifyOrThrow('StasisRollup', id, this.#resources)
+    stasis.classify(id)
 
     // Code and resource targets alike, but never for an entry, flagged from the graph in buildEnd (opts.isEntry is
     // a sibling's probe too), nor an out-of-root importer, which load mode defers too.
-    if (!isEntry && isDiskId(importer) && this.#inRoot(importer)) {
+    if (!isEntry && this.#inRoot(importer)) {
       assertPersistableAttributes(attrs)
       if (!this.#inRoot(id)) {
         throw new Error(
           `StasisRollup: '${source}' imported from ${importer} resolves outside the project root and can't be attested: ${id}`
         )
       }
-      this.#state.addImport(pathToFileURL(importer).toString(), source, pathToFileURL(id).toString(), { importAttributes: attrs })
+      stasis.addImport(importer, source, id, attrs)
     }
     return resolution
   }
 
   async #load(ctx, id) {
+    const stasis = this.#stasis
+    const { state } = stasis
     // getFile verifies the hash and throws on a file the bundle doesn't carry: no disk fallback. Ids other plugins
     // resolved land here too.
-    if (this.#state.config.loadBundle) {
-      if (!isDiskId(id) || !this.#inRoot(id)) return null
-      const url = pathToFileURL(id).toString()
+    if (state.config.loadBundle) {
+      if (!isDiskId(id) || !servedByBundle(state, id)) return null
+      const url = fileURL(id)
       // The graph's isEntry: a sibling's resolve() probe carries isEntry too but never loads.
-      if (this.#state.config.full && ctx.getModuleInfo(id)?.isEntry) this.#state.assertEntry(url)
-      if (!inScope(this.#state, url)) return null
-      const { source, format } = this.#state.getFile(url)
+      if (state.config.full && ctx.getModuleInfo(id)?.isEntry) state.assertEntry(url)
+      const { source, format } = state.getFile(url)
       if (Bundle.isResourceFormat(format)) this.#refuseResourceLoad(id)
       return source
     }
@@ -170,34 +165,29 @@ export class StasisRollup {
       this.#refuseSuffixedOnDisk(id)
       return null
     }
-    const resource = classifyOrThrow('StasisRollup', id, this.#resources) === 'resource'
+    const kind = stasis.classify(id)
     if (!this.#inRoot(id)) {
       throw new Error(`StasisRollup: module is outside the project root and can't be attested: ${id}`)
     }
-    if (!resource) assertCodeUtf8('StasisRollup', id, source)
-    if (!this.#seen.has(id)) {
-      this.#seen.add(id)
-      this.#state.addFile(pathToFileURL(id).toString(), { source, resource, reason: 'rollup' })
-    }
+    // Rollup loads an id once per build.
+    if (stasis.claim(id)) stasis.addFile(id, source, kind)
     // A resource is the user's asset plugin's to load; code is served as recorded (transform hooks still run after).
-    return resource ? null : source.toString('utf8')
+    return kind === 'resource' ? null : source.toString('utf8')
   }
 
   // Flags the graph's real entries (resolveId's opts.isEntry would take a sibling's bare probe for one), then writes
   // a standalone or sidecar State on a clean build. buildEnd, not closeBundle, which only bundle.close() fires.
   async #buildEnd(ctx, error) {
     if (error) return
+    const stasis = this.#stasis
     const entryIds = [...ctx.getModuleIds()].filter((id) => {
-      if (!this.#seen.has(id)) return false
+      if (!stasis.seen.has(id)) return false
       const info = ctx.getModuleInfo(id)
       return Boolean(info?.isEntry) && !info.isExternal
     })
     // addFile re-verifies the bytes, and refuses a RESOURCE entry, as StasisEsbuild does.
     const sources = await Promise.all(entryIds.map((id) => realReadFile(id)))
-    for (const [i, id] of entryIds.entries()) {
-      const resource = classifyExtension(id, this.#resources) === 'resource'
-      this.#state.addFile(pathToFileURL(id).toString(), { source: sources[i], isEntry: true, resource, reason: 'rollup' })
-    }
-    if (this.#state !== State.preload) this.#state.write()
+    for (const [i, id] of entryIds.entries()) stasis.addFile(id, sources[i], stasis.classify(id), true)
+    if (stasis.ownsWrite) stasis.state.write()
   }
 }

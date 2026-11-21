@@ -1,11 +1,11 @@
-import { existsSync } from 'node:fs'
+import { Stats, existsSync } from 'node:fs'
 import { createRequire, isBuiltin } from 'node:module'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
-import { assertCodeUtf8, attestedImport, classifyOrThrow, resolvePluginState } from './plugins.js'
-import { State } from '@exodus/stasis-core/state'
+import { PluginState, fileURL, resolvePluginState } from './plugins.js'
 import { realReadFileSync, servedByBundle } from '@exodus/stasis-core/state-util'
+import { upsert } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -17,36 +17,31 @@ const edgeKey = (importerAbsolute, request) => `${importerAbsolute}\u0000${reque
 const PATCHED = Symbol('stasis.modresolver.patched')
 
 // For a bundle-served file under load: webpack's resolver needs only existence and size, the hash attests content.
+// An fs.Stats answers its is*() from the mode, and its dates from the *Ms fields.
 function bundleStat(size, isDir = false) {
-  return {
-    isFile: () => !isDir,
-    isDirectory: () => isDir,
-    ...Object.fromEntries(['isSymbolicLink', 'isBlockDevice', 'isCharacterDevice', 'isFIFO', 'isSocket'].map((name) => [name, () => false])),
-    size,
-    ...Object.fromEntries(['mtime', 'atime', 'ctime', 'birthtime'].flatMap((name) => [[name, new Date(0)], [`${name}Ms`, 0]])),
+  return Object.assign(Object.create(Stats.prototype), {
     mode: isDir ? 0o040755 : 0o100644,
+    size,
+    atimeMs: 0, mtimeMs: 0, ctimeMs: 0, birthtimeMs: 0,
     uid: 0, gid: 0, ino: 0, nlink: 1, rdev: 0, blksize: 4096, blocks: 0, dev: 0,
-  }
+  })
 }
 
 export class StasisWebpack {
-  #seen = new Set()
-  #state
-  #resources
+  #stasis
   // The compilers this instance drives, final by the first `done`: N for a MultiCompiler, whose write is deferred.
   #captureApplyCount = 0
   #deferredWriteArmed = false
   #deferredWriteDirty = false
 
   constructor(options = {}) {
-    const { state } = resolvePluginState('StasisWebpack', options, process.cwd())
-    this.#state = state
-    this.#resources = state?.config.resources ?? new Set()
+    this.#stasis = new PluginState('StasisWebpack', 'webpack', resolvePluginState('StasisWebpack', options, process.cwd()).state)
   }
 
   apply(compiler) {
-    if (!this.#state) return
-    if (this.#state.config.loadBundle) this.#applyLoadMode(compiler)
+    const { state } = this.#stasis
+    if (!state) return
+    if (state.config.loadBundle) this.#applyLoadMode(compiler)
     else this.#applyCaptureMode(compiler)
   }
 
@@ -54,43 +49,33 @@ export class StasisWebpack {
   // disk. The bundle is the FAMILY: this State, then its parent where it is a sidecar (one shared lockfile). KNOWN
   // LIMITATION: a package.json the resolver reads that no family bundle carries fails closed (tests/webpack.test.js).
   #applyLoadMode(compiler) {
-    const state = this.#state
+    const { state } = this.#stasis
     const orig = compiler.inputFileSystem
     const served = (p) => typeof p === 'string' && p !== '' && servedByBundle(state, p)
     const family = state.parent ? [state, state.parent] : [state]
     const ownerOf = (url) => family.find((s) => s.getFsStat(url) !== undefined)
-    // Throws on a miss: the fail-closed gate.
-    const serveFromBundle = (p) => {
-      const url = pathToFileURL(p).toString()
-      return (ownerOf(url) ?? state).getFile(url).source
+    // `answer(bytes)` to the callback, or getFile's throw on a miss: the fail-closed gate.
+    const fromBundle = (p, callback, answer) => {
+      const url = fileURL(p)
+      try {
+        return callback(null, answer((ownerOf(url) ?? state).getFile(url).source))
+      } catch (err) {
+        return callback(err)
+      }
     }
 
     const wrappedReadFile = (p, options, callback) => {
       if (typeof options === 'function') { callback = options; options = undefined }
-      if (served(p)) {
-        try {
-          const src = serveFromBundle(p)
-          return callback(null, Buffer.isBuffer(src) ? src : Buffer.from(src))
-        } catch (err) {
-          return callback(err)
-        }
-      }
+      if (served(p)) return fromBundle(p, callback, (src) => (Buffer.isBuffer(src) ? src : Buffer.from(src)))
       // CachedInputFileSystem.readFile is (path, callback): an undefined middle arg would land in the callback slot.
       return options === undefined ? orig.readFile(p, callback) : orig.readFile(p, options, callback)
     }
     const wrappedStat = (p, callback) => {
-      if (served(p)) {
-        // The resolver stat()s the dirs it walks, which have no bundle content but an existence record.
-        const url = pathToFileURL(p).toString()
-        if (ownerOf(url)?.getFsStat(url) === 'directory') return callback(null, bundleStat(0, true))
-        try {
-          const src = serveFromBundle(p)
-          return callback(null, bundleStat(Buffer.byteLength(src)))
-        } catch (err) {
-          return callback(err)
-        }
-      }
-      return orig.stat(p, callback)
+      if (!served(p)) return orig.stat(p, callback)
+      // The resolver stat()s the dirs it walks, which have no bundle content but an existence record.
+      const url = fileURL(p)
+      if (ownerOf(url)?.getFsStat(url) === 'directory') return callback(null, bundleStat(0, true))
+      return fromBundle(p, callback, (src) => bundleStat(Buffer.byteLength(src)))
     }
     // A Proxy, not Object.assign: CachedInputFileSystem keeps its state on `this`, so forwarded calls keep orig.
     compiler.inputFileSystem = new Proxy(orig, {
@@ -109,7 +94,7 @@ export class StasisWebpack {
         if (!issuer || !served(issuer)) return
         // SECURITY: never consult getImport for a builtin, so a tampered bundle can't redirect `fs`.
         if (isBuiltin(data.request)) return
-        const resolved = attestedImport(state, pathToFileURL(issuer).toString(), data.request)
+        const resolved = this.#stasis.attestedImport(issuer, data.request)
         if (resolved === undefined) return
         // The stat wrapper then reports it exists.
         data.request = fileURLToPath(resolved.url)
@@ -121,7 +106,7 @@ export class StasisWebpack {
   // the parser and afterResolve sees only the rewrite. Wrapping its rewrite chokepoint (v5's lib/mapPath default, or
   // v3/v4's lib/utils.mapPathString) records the original, so the edge is keyed by the portable specifier.
   #patchModuleResolver() {
-    const paths = [this.#state.root, process.cwd()]
+    const paths = [this.#stasis.state.root, process.cwd()]
     for (const [sub, prop] of [['babel-plugin-module-resolver/lib/mapPath', 'default'], ['babel-plugin-module-resolver/lib/utils', 'mapPathString']]) {
       let mod
       try {
@@ -139,9 +124,7 @@ export class StasisWebpack {
           const importer = state?.file?.opts?.filename
           if (typeof before === 'string' && before.startsWith('#') &&
               typeof after === 'string' && after !== before && typeof importer === 'string') {
-            const key = edgeKey(path.resolve(importer), after)
-            const originals = subpathOriginals.get(key) ?? []
-            if (!originals.includes(before)) subpathOriginals.set(key, [...originals, before])
+            upsert(subpathOriginals, edgeKey(path.resolve(importer), after), () => new Set()).add(before)
           }
         } catch {
           // A recorder fault must never break the build: the rewrite already ran.
@@ -154,6 +137,7 @@ export class StasisWebpack {
   }
 
   #applyCaptureMode(compiler) {
+    const stasis = this.#stasis
     this.#captureApplyCount += 1
     // apply() runs at webpack() construction, before compiler.run(), so before any afterResolve.
     this.#patchModuleResolver()
@@ -173,26 +157,19 @@ export class StasisWebpack {
         // No on-disk file to hash: data: URIs, null-loader stubs.
         const filePath = cd.resourceResolveData?.path
         if (!filePath || !path.isAbsolute(filePath) || !existsSync(filePath)) return
-        const kind = classifyOrThrow('StasisWebpack', filePath, this.#resources)
-        const url = pathToFileURL(filePath).toString()
+        const kind = stasis.classify(filePath)
         // rrd.context.issuer is webpack 4's alone, removed in enhanced-resolve 5.
-        const dep = data?.dependencies?.[0]
+        const dep = data.dependencies?.[0]
         const issuer = (dep && issuerByDep.get(dep)) ?? data.contextInfo?.issuer ?? cd.resourceResolveData?.context?.issuer
         const isEntry = !issuer
         const rawRequest = cd.rawRequest ?? data.rawRequest
         if (kind === 'code' && !isEntry) {
-          const issuerAbsolute = path.resolve(issuer)
-          const parentURL = pathToFileURL(issuerAbsolute).toString()
-          for (const specifier of subpathOriginals.get(edgeKey(issuerAbsolute, rawRequest)) ?? [rawRequest]) {
-            this.#state.addImport(parentURL, specifier, url)
+          const importer = path.resolve(issuer)
+          for (const specifier of subpathOriginals.get(edgeKey(importer, rawRequest)) ?? [rawRequest]) {
+            stasis.addImport(importer, specifier, filePath)
           }
         }
-        if (!this.#seen.has(filePath)) {
-          this.#seen.add(filePath)
-          const source = realReadFileSync(filePath)
-          if (kind === 'code') assertCodeUtf8('StasisWebpack', filePath, source)
-          this.#state.addFile(url, { source, isEntry, resource: kind === 'resource', reason: 'webpack' })
-        }
+        if (stasis.claim(filePath)) stasis.addFile(filePath, realReadFileSync(filePath), kind, isEntry)
       })
     })
 
@@ -204,12 +181,12 @@ export class StasisWebpack {
       )
     })
 
-    // The preload writes itself; a failed build mustn't overwrite a good lockfile.
-    if (this.#state !== State.preload) {
+    // A failed build mustn't overwrite a good lockfile.
+    if (stasis.ownsWrite) {
       compiler.hooks.done.tap('Stasis', (stats) => {
         if (stats.hasErrors()) return
         // `done` fires per child of a MultiCompiler: one write, not N brotli passes over a growing bundle.
-        if (this.#captureApplyCount === 1) this.#state.write()
+        if (this.#captureApplyCount === 1) stasis.state.write()
         else this.#deferWrite()
       })
     }
@@ -223,7 +200,7 @@ export class StasisWebpack {
     this.#deferredWriteArmed = true
     const flush = () => {
       if (!this.#deferredWriteDirty) return
-      this.#state.write() // on a throw, dirty stays set so exit retries
+      this.#stasis.state.write() // on a throw, dirty stays set so exit retries
       this.#deferredWriteDirty = false
     }
     process.on('beforeExit', flush)
