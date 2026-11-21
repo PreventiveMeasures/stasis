@@ -289,7 +289,7 @@ function dependencyOwner(root, windowStart) {
   if (rest === null) return null
   const parts = normalComps(rest)
   const barrier = parts.findLastIndex(isLibName)
-  return barrier > 0 ? parts.slice(0, barrier).reduce((p, c) => rustJoin(p, c), root) : null
+  return barrier > 0 ? rustJoin(root, parts.slice(0, barrier).join('/')) : null
 }
 
 const byContextDepth = (a, b) => {
@@ -422,11 +422,12 @@ export function foundryTomlRemappings(text, profile = 'default') {
   return profileRemappings(parseFoundryToml(text), profile)
 }
 
-// What `--mapping=foundry.toml` takes; `profiled`: whether the selected `profile` is one of the file's.
+// What `--mapping=foundry.toml` takes, as solc's; `profiled`: whether the selected `profile` is one of the file's.
 export function readFoundryTomlRemappings(file, profile, { show, host = diskHost }) {
   const abs = toPosix(resolve(file))
   const read = readFoundryProfiles(abs, profile, { show, host })
-  return { remappings: profileRemappings(read, profile, show(abs)), files: read.files, profiled: hasProfile(read.profiles, profile) }
+  const remappings = profileRemappings(read, profile, show(abs)).map(toSolcRemapping)
+  return { remappings, files: read.files, profiled: hasProfile(read.profiles, profile) }
 }
 
 const hasProfile = (profiles, profile) => profile !== 'default' && profiles.has(profile)
@@ -494,17 +495,8 @@ function rebaseNested(r, canonical, lexical) {
   }
   const out = { ...r, path: rebase(r.path) }
   if (r.context === null) return out
-  let context
-  if (isAbs(r.context)) {
-    context = rebase(r.context)
-  } else {
-    const parts = []
-    for (const c of normalComps(rustJoin(lexical, r.context))) {
-      if (c === '..') parts.pop()
-      else parts.push(c)
-    }
-    context = `/${parts.join('/')}`
-  }
+  // A relative one joined to the lexical root, its `..`s resolved (none past `/`).
+  const context = isAbs(r.context) ? rebase(r.context) : pathKey(posix.normalize(`/${rustJoin(lexical, r.context)}`))
   out.context = r.context.endsWith('/') ? withTrailing(context) : context
   return out
 }
@@ -726,17 +718,15 @@ export function foundryProject(baseDir, { env = process.env, host = diskHost } =
   if (txt !== null) files.add(txtFile)
   const userRemappings = [...envRemappings, ...(txt === null ? [] : parseRemappingLines(txt, { label: REMAPPINGS_TXT })), ...config.remappings]
 
-  const provided = providerRemappings(root, { userRemappings, libs: config.libs, autoDetect: config.autoDetect, profile, files, ownership, host })
-    .map((r) => displayRelative(relativePreservingBoundary(r, root)))
+  // Each as forge writes it relative to the root and reads it back.
+  const reread = (rs) => rs.map((r) => parseRemapping(displayRelative(relativePreservingBoundary(r, root)))).filter(Boolean)
+  const provided = reread(providerRemappings(root, { userRemappings, libs: config.libs, autoDetect: config.autoDetect, profile, files, ownership, host }))
 
   // `forge build` re-reads them as config remappings, dropping aliases of its own input dirs...
   const build = new Remappings([], [config.src, config.test, config.script].map((p) => `${p}/`))
-  for (const r of provided.map((s) => parseRemapping(s)).filter(Boolean)) build.push(r)
+  for (const r of provided) build.push(r)
   // ...and hands them to solc as the config's `RelativeRemapping`s: slash-terminated.
-  const remappings = build.intoInner()
-    .map((r) => parseRemapping(displayRelative(relativePreservingBoundary(r, root))))
-    .filter(Boolean)
-    .map(toSolcRemapping)
+  const remappings = reread(build.intoInner()).map(toSolcRemapping)
 
   // One read from outside the root (`extends = "../base.toml"`) stays `../`, for --manifests to refuse.
   const relFiles = [...files].map((f) => projectRelative(root, f, host))
