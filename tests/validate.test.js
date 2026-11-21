@@ -1813,7 +1813,7 @@ test('validate: a bundle is held to the stasis.lock.json its repository commits 
   t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }]])
 }))
 
-test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the files it attests, each its bytes and execute bit, validates as their bundle does; anything else in it, or a tgz of another name, refused', withTmp(async (t, tmp) => {
+test('validate: a .stasis.tgz validates as the bundle of its files does; one holding anything else, a byte past its gzip stream or tar but zeros, or a tgz of another name, refused', withTmp(async (t, tmp) => {
   const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
   const repo = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
   const built = (main = 'main\n') => new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, entries: new Set(['src/main.js']), executable: new Set(['src/main.js']), modules: new Map([
@@ -1854,26 +1854,8 @@ test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the f
   const at = join(tmp, 'refused.stasis.tgz')
   const refused = async (message, entries, { tar = pack(entries), after = [] } = {}) => t.assert.rejects(
     validated('refused.stasis.tgz', Buffer.concat([gzipSync(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
-  const [lockAtTop, , main, ms] = entriesOf(bundle)
+  // What it holds is Bundle.fromTar's to hold to its lockfile (bundle-tar.test.js), told of the file.
   await refused(/src\/extra\.js is in it, but not in its stasis\.lock\.json/u, [...entriesOf(bundle), { name: 'src/extra.js', data: bytes('extra\n') }])
-  await refused(/node_modules\/ms\/index\.js, which its stasis\.lock\.json attests, is not in it/u, [lockAtTop, main])
-  await refused(/stasis: src\/main\.js does not match the lockfile \(expected sha512-\S+, got sha512-\S+\)/u, [lockAtTop, { ...main, data: bytes('MAIN\n') }, ms])
-  await refused(/src\/main\.js's execute bit is not the one its stasis\.lock\.json attests/u, [lockAtTop, { ...main, mode: 0o644 }, ms])
-  await refused(/node_modules\/ms\/index\.js's execute bit is not the one its stasis\.lock\.json attests/u, [lockAtTop, main, { ...ms, mode: 0o744 }])
-  await refused(/src\/link\.js is a symlink, which no stasis\.lock\.json attests/u, [...entriesOf(bundle), { name: 'src/link.js', type: 'symlink', linkname: 'main.js' }])
-  await refused(/src\/copy\.js is a hardlink, which no stasis\.lock\.json attests/u, [...entriesOf(bundle), { name: 'src/copy.js', type: 'hardlink', linkname: 'src/main.js' }])
-  await refused(/holds no stasis\.lock\.json at its top/u, entriesOf(bundle).map((entry) => ({ ...entry, name: `package/${entry.name}` })))
-  await refused(/its stasis\.lock\.json is no stasis lockfile \(lockfile must attest imports and formats\)/u, [{ ...lockAtTop, data: bytes('{"version":0,"config":{"scope":"full"},"entries":[],"sources":{},"modules":{}}') }])
-  // Held to Bundle.parse's rules, as a stasis.code.br of its files is: none of content for a payload-free stat record,
-  // nor of a file no bundle carries, though a stasis.lock.json may attest one.
-  const attesting = (dir, rel, format) => {
-    const odd = Lockfile.parse(lockOf(bundle))
-    odd.modules.get(dir).files[rel] = sha512integrity('odd\n')
-    if (format) odd.formats.set(rel, format)
-    return { ...lockAtTop, data: bytes(odd.serialize()) }
-  }
-  await refused(/bundle: 'src\/evil\.js' is a payload-free 'stat:file' record, yet carries content/u, [attesting('.', 'src/evil.js', 'stat:file'), main, ms, { name: 'src/evil.js', data: bytes('odd\n') }])
-  await refused(/bundle: node_modules\/ms\/\.npmrc is a file no bundle may carry/u, [attesting('node_modules/ms', '.npmrc'), main, ms, { name: 'node_modules/ms/.npmrc', data: bytes('odd\n') }])
   // No byte past either stream but zeros: none after the gzip member, nor past a zero after it (where zlib stops), nor in
   // another member gzip(1) reads on into, nor after the tar's end marker.
   const tar = pack(entriesOf(bundle))

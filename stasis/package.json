@@ -39,7 +39,6 @@
     "src/babel.js",
     "src/babel-worker.cjs",
     "src/bundle.js",
-    "src/bundle-from-lockfile.js",
     "src/bundle-reader.js",
     "src/cmd/bundle.js",
     "src/cmd/bundle-options.js",

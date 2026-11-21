@@ -21,7 +21,7 @@ import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-uti
 
 import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
-import { MAX_TAR_BYTES, asText, parseFileWithKind } from './parse.js'
+import { MAX_TAR_BYTES, parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
 import { FILE_REASONS, LOCKFILE_ERRORS, OWN_REASONS, generatedBy, noteText } from './validate-notes.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
@@ -36,6 +36,8 @@ const CARGO_CHECKSUM = '.cargo-checksum.json'
 const EMPTY_INTEGRITY = sha512integrity(new Uint8Array())
 
 const utf8 = new TextEncoder()
+// A BOM kept, as patch-package keeps it: a patch applied changes no byte but those its hunks change.
+const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 export class PatchError extends Error {
   constructor(code) {
@@ -1264,11 +1266,10 @@ async function heldToCommitted(attested, directory, list, read) {
 }
 
 export async function validate(file, { client, github, sha, directory, own = true, lockfile = true, fetch, deadline } = {}) {
-  // A lockfile's, or a .stasis.tgz's, is what it attests and records where it was built.
-  const { kind, artifact, lockfile: carried } = parseFileWithKind(file)
+  const { kind, artifact } = parseFileWithKind(file)
   const plan = validationPlan(artifact, { lockfile: kind === 'lockfile' })
-  const attested = () => carried ?? Lockfile.fromBundle(artifact, (path, content) => bundledIntegrity(content, artifact.formats?.get(path)))
-  const repo = (carried ?? artifact).repo ?? {}
+  const attested = () => (kind === 'lockfile' ? artifact : Lockfile.fromBundle(artifact, (path, content) => bundledIntegrity(content, artifact.formats?.get(path))))
+  const repo = artifact.repo ?? {}
   const where = { github: github ?? repo.github, commit: sha ?? repo.commit, directory: directory ?? repo.directory ?? '' }
   const readLocal = (path) => ofLockfile(path, () => readFileSync(path, 'utf8'))
   // Each read as it is held to, once the commit is: none where no package needs one.

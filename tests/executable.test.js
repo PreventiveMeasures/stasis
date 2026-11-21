@@ -11,7 +11,7 @@ import { State } from '@exodus/stasis-core/state'
 import { addCommand } from '@exodus/stasis-core/add'
 import { extractCommand, lockfileFromBundle } from '@exodus/stasis-core/extract'
 import { buildBashBundle, bundleCommand } from '../stasis/src/cmd/bundle.js'
-import { bundleFromLockfile } from '../stasis/src/bundle-from-lockfile.js'
+import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
 import { diffArtifacts, formatDiffStat, hasDifferences } from '../stasis/src/diff.js'
 
 // The `executable` array records which of an artifact's files carried a POSIX execute bit when they

@@ -36,9 +36,11 @@ const importSpecifiers = (file) => {
 
 test('the artifact data model imports no Node builtins', (t) => {
   t.assert.deepStrictEqual(importSpecifiers('artifact-util.js'), [])
-  for (const file of ['bundle.js', 'lockfile.js', 'shard.js']) {
+  for (const file of ['lockfile.js', 'shard.js']) {
     t.assert.deepStrictEqual(importSpecifiers(file), ['./artifact-util.js'], file)
   }
+  // Bundle.fromLockfile and fromTar read a lockfile, itself of artifact-util alone.
+  t.assert.deepStrictEqual(importSpecifiers('bundle.js'), ['./artifact-util.js', './lockfile.js'], 'bundle.js')
 })
 
 test('util.js still serves the full helper set (re-export compatibility)', async (t) => {

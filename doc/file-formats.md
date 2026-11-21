@@ -1801,6 +1801,16 @@ A `directory` capture is a listing's hash in a lockfile, so a tgz holds no
 listing: its path is a directory of it or absent, never a file, and a run
 serves no `readdir` of it.
 
+`@exodus/stasis-core/bundle` reads one as these rules say, given its tar
+unpacked, as `Bundle.parse` is given a bundle's text with its brotli undone:
+`Bundle.fromTar(entries, { integrityOf })` takes the entries as
+`@preventive/archive`'s `unpack` gives them (`{ name, type, mode, data }`), and
+`integrityOf(bytes)`, the SRI sha512 each file is held to (`state-util`'s
+`sha512integrity`), so it imports neither a gzip or tar reader nor a Node
+builtin. It builds the bundle with `Bundle.fromLockfile(lockfile, { read,
+integrityOf })`, the bundle of a lockfile's files as `read(file)` reads them,
+of the repository it records, as `stasis build` reads a lockfile's from disk.
+
 ## Resources in the bundle
 
 Resources (images, fonts, any non-code file a build references) live in the same

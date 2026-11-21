@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { ARCHIVE_ALGORITHM, CONFIG_FILE, NODE_FORMATS, isLockfileName } from './artifact-util.js'
+import { ARCHIVE_ALGORITHM, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 export * from './artifact-util.js'
@@ -317,8 +317,6 @@ export function classifyFormat(name, { content } = {}) {
 }
 
 export const extSetsEqual = (a, b) => a.size === b.size && a.isSubsetOf(b)
-
-export const EXECUTE_BITS = 0o111
 
 export const isExecutableMode = (stats) => stats.isFile() && (stats.mode & EXECUTE_BITS) !== 0
 

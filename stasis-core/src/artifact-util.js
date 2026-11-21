@@ -354,6 +354,8 @@ export function assert(condition, msg) {
 }
 
 export const LOCK_FILE = 'stasis.lock.json'
+// A mode's execute bits: any of them makes a file executable, as stasis reads one from disk or a tar.
+export const EXECUTE_BITS = 0o111
 export const CONFIG_FILE = 'stasis.config.json'
 export const BUNDLE_FILE = 'stasis.code.br'
 
