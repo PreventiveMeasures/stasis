@@ -3,6 +3,7 @@ import {
   assertArtifactPath,
   assertScope,
   canonicalFileKey,
+  checkedFileKeys,
   fromEntries,
   isForbiddenFile,
   isPlainObject,
@@ -161,6 +162,13 @@ export class Bundle {
   get hasCode() {
     return this.modules.entries().some(([dir, { files }]) =>
       Object.keys(files).some((rel) => !Bundle.isResourceFormat(this.formats.get(moduleFileKey(dir, rel)))))
+  }
+
+  // What parse holds a bundle's files to, for one built in memory (as `stasis build` builds one of a lockfile): no file
+  // key twice, no file no bundle may carry, and no content for a payload-free stat record. Throws; returns `bundle`.
+  static checkFiles(bundle) {
+    checkedFileKeys(bundle.modules, bundle.formats, BUNDLE)
+    return bundle
   }
 
   static parse(text) {
