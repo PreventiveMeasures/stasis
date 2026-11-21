@@ -30,7 +30,7 @@ function readAddConfig(baseDir) {
   if (cfg.brotliQuality !== undefined && !isBrotliQuality(cfg.brotliQuality)) {
     throw new Error(`${CONFIG_FILE}: brotliQuality must be an integer 0..11 (got ${JSON.stringify(cfg.brotliQuality)})`)
   }
-  const bundleFile = cfg.bundleFile ?? BUNDLE_FILE
+  const bundleFile = cfg.bundleFile || BUNDLE_FILE
   const resourcesBundleFile = cfg.resourcesBundleFile
   // Distinct, else they clobber on write; canonicalized so symlink and relative aliases are caught too.
   if (resourcesBundleFile &&
