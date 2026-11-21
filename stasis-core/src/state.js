@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
+import { ARCHIVED, ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isGzip, isTgzName, misnamedTgz, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, manifestIdentity, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { classifiedFiles, expandExtra, fileKind } from './add.js'
 import { linksOn, moduleExcluder } from './policy.js'
@@ -23,6 +23,16 @@ const { mkdirSync, rmSync, writeFileSync } = fs
 const VERSION = corePackage.version
 const CAN_OBSERVE_EXECUTE_BITS = canObserveExecuteBits()
 const REBUNDLE = 'Re-bundle with the current stasis or `bundle=replace` against a v0-free starting point to upgrade.'
+
+// A .stasis.tgz as stasis's run-archived.js reads it; a tgz under another name, none.
+function servedBundleOf(bytes, path) {
+  if (isTgzName(path)) {
+    assert.ok(globalThis[ARCHIVED], `stasis: ${path} is a .stasis.tgz, which \`stasis run\` reads (stasis-core runs a stasis.code.br)`)
+    return globalThis[ARCHIVED](bytes, path)
+  }
+  assert.ok(!isGzip(bytes), `stasis: ${misnamedTgz(path)}`)
+  return parseBundleBytes(bytes)
+}
 
 function readPackageJSON(host, pkgAbsolute) {
   const buf = host.readFile(pkgAbsolute)
@@ -331,7 +341,7 @@ export class State {
 
   // v0 has no per-file formats or import map: serving one widens the trust boundary.
   #parseServedBundle(bytes, path, runner = 'stasis run', remedy = REBUNDLE) {
-    const bundle = parseBundleBytes(bytes)
+    const bundle = servedBundleOf(bytes, path)
     assert.equal(bundle.version, Bundle.VERSION, `${runner} requires a v1 bundle; ${path} is v${bundle.version}. ${remedy}`)
     assert.equal(bundle.config.scope, this.config.scope)
     this.#assertLoaded(bundle, path)

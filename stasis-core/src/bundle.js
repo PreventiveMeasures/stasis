@@ -4,12 +4,16 @@ import {
   assertScope,
   canonicalFileKey,
   checkedFileKeys,
+  EXECUTE_BITS,
   fromEntries,
   isForbiddenFile,
   isPlainObject,
   isStatFormat,
+  LOCK_FILE,
   mergedParts,
   moduleFileKey,
+  moduleInfo,
+  narrowExecutable,
   normalizeBlock,
   normalizeRepo,
   PACKAGE_BLOCK,
@@ -23,6 +27,7 @@ import {
   splitNodeModulesPath,
   upsert,
 } from './artifact-util.js'
+import { Lockfile } from './lockfile.js'
 
 const VERSION = 1
 const LEGACY_VERSION = 0
@@ -105,6 +110,15 @@ const parsedRepo = (repo) => {
 
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
+// fromLockfile's and fromTar's alone, with the web's globals, so the rest loads in a runtime without them: UTF-8 as it is,
+// a byte order mark kept as text; and base64, in chunks a call's arguments hold.
+const utf8 = () => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+function base64(bytes) {
+  let binary = ''
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000))
+  return btoa(binary)
+}
+
 const mergePackage = (a, b) =>
   fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => [ecosystem, agreed(a?.[ecosystem], b?.[ecosystem], 'name', Object.is)]))
 
@@ -173,6 +187,85 @@ export class Bundle {
 
   static parse(text) {
     return Bundle.fromJSON(JSON.parse(text))
+  }
+
+  // The bundle of a lockfile's files, each `read(file)`'s bytes (a Uint8Array; it throws where there is none) held to the
+  // digest it records, `integrityOf(bytes)` (an SRI sha512, as state-util's sha512integrity), as a `stasis run
+  // --lock=frozen` replay holds them; of the repository it records. A directory capture (format 'directory') is no file
+  // to load. Held to checkFiles, which Lockfile.parse does not hold a lockfile to.
+  static fromLockfile(lockfile, { read, integrityOf }) {
+    assert(lockfile.imports, 'stasis: lockfile has no recorded import graph')
+    const formats = lockfile.formats ?? new Map()
+    const text = utf8()
+    const modules = new Map()
+    for (const [dir, { files, ...info }] of lockfile.modules) {
+      const out = Object.create(null)
+      for (const [rel, integrity] of Object.entries(files)) {
+        const file = moduleFileKey(dir, rel)
+        const format = formats.get(file)
+        if (format === 'directory') continue
+        const bytes = read(file)
+        const actual = integrityOf(bytes)
+        if (actual !== integrity) throw new Error(`stasis: ${file} does not match the lockfile (expected ${integrity}, got ${actual})`)
+        if (format === 'resource:base64') {
+          out[rel] = base64(bytes)
+          continue
+        }
+        // Else UTF-8: a lossy transcode (U+FFFD) would serve other bytes than those verified.
+        try {
+          out[rel] = text.decode(bytes)
+        } catch (cause) {
+          throw new Error(`stasis: ${file} is recorded as '${format ?? 'code'}' but is not valid UTF-8`, { cause })
+        }
+      }
+      modules.set(dir, moduleInfo({ ...info, files: out }))
+    }
+    return Bundle.checkFiles(new Bundle({
+      config: lockfile.config,
+      entries: lockfile.entries,
+      modules,
+      imports: lockfile.imports,
+      formats,
+      // To the files carried (a skipped `directory` drops out), keeping parse's rules true for a hand-built lockfile.
+      executable: narrowExecutable(lockfile.executable, { modules, formats, scope: lockfile.config.scope }),
+      repo: lockfile.repo,
+    }))
+  }
+
+  // The bundle of a .stasis.tgz's tar, unpacked (its entries `{ name, type, mode, data }`, as @preventive/archive's unpack
+  // gives them; the caller gunzips and unpacks it, as it unbrotlis a stasis.code.br): fromLockfile's of the
+  // stasis.lock.json at its top, which must attest exactly its files, each of the bytes and execute bit it attests,
+  // nothing else in it but directories. Throws naming what isn't.
+  static fromTar(entries, { integrityOf }) {
+    const files = new Map()
+    for (const entry of entries) {
+      if (entry.type === 'directory') continue
+      assert(entry.type === 'file' || entry.type === 'contiguous-file', `${entry.name} is a ${entry.type}, which no ${LOCK_FILE} attests`)
+      files.set(entry.name, entry)
+    }
+    assert(files.has(LOCK_FILE), `holds no ${LOCK_FILE} at its top`)
+    let lockfile
+    try {
+      lockfile = Lockfile.parse(utf8().decode(files.get(LOCK_FILE).data))
+    } catch (cause) {
+      throw new Error(`its ${LOCK_FILE} is no stasis lockfile${cause.message ? ` (${cause.message})` : ''}`, { cause })
+    }
+    const read = new Set()
+    const bundle = Bundle.fromLockfile(lockfile, {
+      integrityOf,
+      read: (path) => {
+        const data = files.get(path)?.data
+        assert(data !== undefined, `${path}, which its ${LOCK_FILE} attests, is not in it`)
+        read.add(path)
+        return data
+      },
+    })
+    for (const [path, { mode }] of files) {
+      if (path === LOCK_FILE) continue
+      assert(read.has(path), `${path} is in it, but not in its ${LOCK_FILE}`)
+      assert(((mode & EXECUTE_BITS) !== 0) === lockfile.executable.has(path), `${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
+    }
+    return bundle
   }
 
   // The `sources` key of the file whose contents sit at JSON key path `path`, else undefined; throws if non-canonical.

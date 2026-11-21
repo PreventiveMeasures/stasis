@@ -15,7 +15,7 @@ the lockfile's and bundle's `integrity` and `patch` to, and records of the
 packages it captures anew (see [`integrity`](file-formats.md#stasiscodebr)).
 
 ```sh
-stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
+stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/(bundle.br|name.stasis.tgz)] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
 ```
 
 Files the run never loads, but which are to be attested anyway, are named in
@@ -44,7 +44,7 @@ killed it. The effective configuration is printed to stderr first.
 | - | - |
 | `--lock=mode` | What the run does with `stasis.lock.json`: `add`, `replace`, `frozen` or `ignore`, see [modes](#modes). |
 | `--bundle=mode` | Likewise for `stasis.code.br`: `add`, `replace`, `frozen`, `load` or `ignore`. `load` serves the recorded bytes instead of reading disk. |
-| `--bundle-file=path` | The bundle to read or write, instead of `stasis.code.br` in the project root. Needs `--bundle`. |
+| `--bundle-file=path` | The bundle to read or write, instead of `stasis.code.br` in the project root. Needs `--bundle`. A `.stasis.tgz` is read alone, see [A .stasis.tgz](#a-stasistgz). |
 | `--resources-bundle-file=path` | A split layout: the run's non-code files are read from and written to this sidecar bundle, the code bundle holding code alone. Needs `--bundle=add\|replace\|load\|frozen`. |
 | `--dependencies` | `node_modules` scope: attest the dependencies only, not the project's own files (the `scope` key). |
 | `--child-process` | Also attest the modules forked child processes load, see [Child processes](#child-processes---child-process). |
@@ -82,6 +82,25 @@ bundle alone with no `--lock`, or verified against the lockfile with
 `replace`. `--bundle=frozen` composes with any lock mode, and makes the bundle
 its own attestation, so a frozen bundle needs no sibling lockfile. Both files
 are looked up in the project root, see [discovery](file-formats.md#discovery).
+
+## A .stasis.tgz
+
+`--bundle-file` may name a [`.stasis.tgz`](file-formats.md#stasistgz): the run
+serves the bundle of its files, as it would the `stasis.code.br` of them, with
+`--bundle=load` or `frozen`. It is never written: `add` and `replace` are
+refused.
+
+```sh
+stasis run --bundle=load --bundle-file=app.stasis.tgz app.js                 # run from the tgz alone
+stasis run --lock=frozen --bundle=load --bundle-file=app.stasis.tgz app.js   # verified against the project's lockfile too
+stasis run --lock=ignore --bundle=frozen --bundle-file=app.stasis.tgz app.js # verify disk against the tgz
+```
+
+It is read and held to its `stasis.lock.json` as the run starts, as a bundle
+is read: one that isn't exactly its lockfile's files fails the run before any
+of it runs. `--lock` is the project's lockfile, as with any bundle.
+`stasis.config.json`'s `bundleFile` may name one too; `stasis-core run`, which
+reads no tar, refuses it.
 
 ## Native addons
 

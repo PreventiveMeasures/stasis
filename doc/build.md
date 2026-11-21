@@ -7,7 +7,7 @@ own resolution: every import resolves to the edge stasis attested and every
 module's bytes come from the artifact, not disk.
 
 ```sh
-stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
+stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json|name.stasis.tgz) [entry]
 ```
 
 - First positional (**required**): the `stasis.code.br` bundle or `stasis.lock.json` lockfile to build from.
@@ -254,6 +254,10 @@ stasis build app.stasis.code.br src/worker.js   # build the src/worker.js entry
 A specifier the artifact doesn't record is handed back to esbuild, which
 externalizes it. Where disk bytes differ from the artifact, a bundle uses its own
 bytes and a lockfile fails the build closed.
+
+A [`.stasis.tgz`](file-formats.md#stasistgz) is built as the bundle of its
+files: like a bundle it needs nothing on disk, and like a lockfile each file is
+held to its `sha512`, as the tgz is read, before the build starts.
 
 ## Scope and language
 

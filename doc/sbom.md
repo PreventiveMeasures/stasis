@@ -2,10 +2,11 @@
 
 `stasis sbom` exports a Software Bill of Materials (SBOM) from one or more
 stasis lockfiles (`stasis.lock.json`) and/or bundles (`stasis.code.br`), emitting
-the package inventory they record in a standard, tool-agnostic format.
+the package inventory they record in a standard, tool-agnostic format. A
+[`.stasis.tgz`](file-formats.md#stasistgz) is read as the bundle of its files.
 
 ```sh
-stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
+stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle|name.stasis.tgz) ...
 ```
 
 | Argument | Meaning |

@@ -21,7 +21,7 @@ import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-uti
 
 import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
-import { parseFileWithKind } from './parse.js'
+import { MAX_TAR_BYTES, parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
 import { FILE_REASONS, LOCKFILE_ERRORS, OWN_REASONS, generatedBy, noteText } from './validate-notes.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
@@ -31,8 +31,6 @@ export const MAX_TOLD = 500
 const AT_ONCE = 6
 // As patch-package looks for a hunk, this many lines either side of where its header says.
 const FUZZ = 20
-// As upstream's tree verification bounds a tarball.
-const MAX_TAR_BYTES = 2 ** 30
 // What `cargo vendor` writes beside a vendored crate, which no crate holds: held to the crate (checksumOf).
 const CARGO_CHECKSUM = '.cargo-checksum.json'
 const EMPTY_INTEGRITY = sha512integrity(new Uint8Array())

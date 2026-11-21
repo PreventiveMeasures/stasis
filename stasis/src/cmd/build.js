@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -6,13 +6,13 @@ import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
+import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
 import { assetData, assetModule } from '@preventive/rn/metro-assets.js'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
-import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { METRO_RELEASE_DEFINE } from '../define.js'
 import { FLOW_EXTS, hasFlowPragma, stripFlow } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
@@ -20,7 +20,17 @@ import { parseFileWithKind } from '../parse.js'
 import { getParser, syntaxErrors } from '../scan.js'
 import { writeFile } from './output.js'
 
-export { bundleFromLockfile }
+// Bundle.fromLockfile's, each attested file read from disk under `root`.
+export function bundleFromLockfile(lockfile, { root }) {
+  const read = (file) => {
+    try {
+      return readFileSync(resolve(root, file))
+    } catch (cause) {
+      throw new Error(`stasis: file attested by the lockfile is missing on disk: ${file}`, { cause })
+    }
+  }
+  return Bundle.fromLockfile(lockfile, { read, integrityOf: sha512integrity })
+}
 
 // An allowlist, so that a bundle format added later fails closed here rather than in a cryptic esbuild error.
 const BUILDABLE_FORMATS = new Set([

@@ -11,6 +11,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { diffArtifacts, formatDiffStat, hasDifferences, normalizeArtifact } from '../stasis/src/diff.js'
 import { diffCommand } from '../stasis/src/cmd/diff.js'
+import { tgzOfBundle } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -467,6 +468,14 @@ test('diffCommand compares a lockfile against a brotli code bundle on disk', wit
   const sink = { write() {} }
   const { differences } = diffCommand({ left: lock, right: bundle, stat: true, out: sink })
   t.assert.equal(differences, false, 'a lockfile and a matching code bundle have no differences')
+}))
+
+test('diffCommand reads a .stasis.tgz as the bundle of its files', withTmp((t, tmp) => {
+  const json = { version: 1, config: { scope: 'full' }, entries: ['src/index.js'], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/index.js': 'export const x = 1\n' } } }, modules: {}, formats: { 'src/index.js': 'module' }, imports: {} }
+  const bundle = writeBundle(tmp, json, 'stasis.code.br')
+  const tgz = join(tmp, 'app.stasis.tgz')
+  writeFileSync(tgz, tgzOfBundle(Bundle.parse(JSON.stringify(json))))
+  t.assert.equal(diffCommand({ left: tgz, right: bundle, stat: true, out: { write() {} } }).differences, false)
 }))
 
 test('diffCommand requires --stat and two files', withTmp((t, tmp) => {

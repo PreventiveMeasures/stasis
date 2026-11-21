@@ -11,6 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { buildPurl, collectComponents, generateSbom, sbom, toCyclonedx, toSpdx } from '../stasis/src/sbom.js'
 import { sbomCommand } from '../stasis/src/cmd/sbom.js'
+import { tgzOfBundle } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 import pkg from '../stasis/package.json' with { type: 'json' }
 
@@ -458,6 +459,21 @@ test('sbomCommand writes a pretty-printed document to --output', withTmp((t, tmp
   const text = readFileSync(out, 'utf8')
   t.assert.ok(text.endsWith('\n'))
   t.assert.equal(JSON.parse(text).spdxVersion, 'SPDX-2.3')
+}))
+
+test('sbomCommand reads a .stasis.tgz as the bundle of its files, and writes none', withTmp((t, tmp) => {
+  const bundle = new Bundle({ entries: new Set(['src/entry.js']), modules: new Map([
+    ['.', { name: 'top-pkg', version: '1.0.0', files: { 'src/entry.js': 'export const x = 1\n' } }],
+    ['node_modules/foo', { name: 'foo', version: '1.2.3', ecosystem: 'npm', files: { 'index.js': 'module.exports = 1\n' } }],
+  ]) })
+  const br = join(tmp, 'app.stasis.code.br')
+  writeFileSync(br, brotliCompressSync(bundle.serialize()))
+  const tgz = join(tmp, 'app.stasis.tgz')
+  writeFileSync(tgz, tgzOfBundle(bundle))
+  const of = (file) => sbomCommand({ files: [file], format: 'cyclonedx', output: join(tmp, 'sbom.json'), ...fixed }).doc
+  t.assert.deepStrictEqual(of(tgz).components.map(({ name, version }) => `${name}@${version}`), ['foo@1.2.3'])
+  t.assert.deepStrictEqual(of(tgz), of(br))
+  t.assert.throws(() => sbomCommand({ files: [br], format: 'spdx', output: join(tmp, 'sbom.stasis.tgz') }), /sbom\.stasis\.tgz is a \.stasis\.tgz, which stasis reads and never writes/u)
 }))
 
 test('sbomCommand requires at least one input file', (t) => {

@@ -214,6 +214,8 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // The advisories of `files`' packages (paths, or artifacts in memory); `reason` audits only what that consumer
 // recorded. `npmMalware`: npm's malware advisories of every npm dependency, whatever `reason`, and `lockfile`'s too.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false, lockfile = null } = {}) {
+  // Each parsed once, for collectPackages, the reasons and why to read.
+  files = files.map((file) => parseFile(file))
   // --why-deep (keep every chain, see dropSuffixed) and --why-full (no `...` collapse) imply --why.
   why = why || whyDeep || whyFull
   let index

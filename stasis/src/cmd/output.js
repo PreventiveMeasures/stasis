@@ -1,13 +1,16 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
+import { isTgzName } from '@exodus/stasis-core/util'
+
 export function writeFile(abs, data) {
   mkdirSync(dirname(abs), { recursive: true })
   writeFileSync(abs, data)
 }
 
-// `target` from `cwd`, or `-` for stdout. -> where it went, for the summary
+// `target` from `cwd`, or `-` for stdout; never a .stasis.tgz, which is read alone. -> where it went, for the summary
 export function writeOutput(cwd, target, data) {
+  if (isTgzName(target)) throw new Error(`${target} is a .stasis.tgz, which stasis reads and never writes`)
   if (target === '-') {
     process.stdout.write(data)
     return '<stdout>'

@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { stripVTControlCharacters, styleText } from 'node:util'
-import { brotliCompressSync } from 'node:zlib'
+import { brotliCompressSync, gzipSync } from 'node:zlib'
 
 import { toBase32 } from '@exodus/bytes/base32.js'
 import { Bundle } from '@exodus/stasis-core/bundle'
@@ -24,6 +24,7 @@ import { DIM, takesColors } from '../stasis/src/table.js'
 import { NPM_TOKEN_VARS } from '../stasis/src/cmd/tokens.js'
 import { NOT_UTF8_NPMRC, NPM_TOKEN, tokenHome } from './tokens.helper.js'
 import { fakeClient, json, lockfile as pnpmLockfile } from './vfs-bundle-github.helper.js'
+import { tgzOf } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -1810,6 +1811,65 @@ test('validate: a bundle is held to the stasis.lock.json its repository commits 
   writeFileSync(lockPath, JSON.stringify(edited))
   const differs = await validate(lockPath, { client: repoClient(files), github: 'org/repo', sha: commit, directory: 'web', fetch: upstream() })
   t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }]])
+}))
+
+test('validate: a .stasis.tgz validates as the bundle of its files does; one holding anything else, a byte past its gzip stream or tar but zeros, or a tgz of another name, refused', withTmp(async (t, tmp) => {
+  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
+  const repo = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
+  const built = (main = 'main\n') => new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, entries: new Set(['src/main.js']), executable: new Set(['src/main.js']), modules: new Map([
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': main } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', ecosystem: 'npm', integrity: SRI, files: { 'index.js': MS['index.js'] } }],
+  ]) })
+  const lockOf = (bundle) => Object.assign(Lockfile.fromBundle(bundle, (path, content) => sha512integrity(content)), { repo: bundle.repo }).serialize()
+  // As `tar -czf` packs what `stasis extract --lock=add` writes: the lockfile, a directory, and each file, src/main.js
+  // executable as the lockfile attests.
+  const entriesOf = (bundle, lockText = lockOf(bundle)) => [
+    { name: 'stasis.lock.json', data: bytes(lockText) },
+    { name: 'src/', type: 'directory' },
+    { name: 'src/main.js', data: bytes(bundle.modules.get('.').files['src/main.js']), mode: 0o755 },
+    { name: 'node_modules/ms/index.js', data: bytes(MS['index.js']) },
+  ]
+  const validated = async (name, data) => {
+    const path = join(tmp, name)
+    writeFileSync(path, data)
+    return validate(path, { client: repoClient(repo), fetch: upstream() })
+  }
+  const bundle = built()
+  const br = join(tmp, 'app.stasis.code.br')
+  writeBundle(br, bundle)
+  const tgz = tgzOf(entriesOf(bundle))
+  const valid = await validated('app.stasis.tgz', tgz)
+  t.assert.deepStrictEqual([valid.status, valid.counts.matched, valid.own.checked], ['valid', 2, true])
+  const untimed = ({ validatedAt: _, ...report }) => report
+  t.assert.deepStrictEqual(untimed(valid), untimed(await validate(br, { client: repoClient(repo), fetch: upstream() })), 'as the bundle of its files is')
+  t.assert.deepStrictEqual(untimed(await validated('stasis.tgz', tgz)), untimed(valid), 'stasis.tgz, as <name>.stasis.tgz')
+  // A tgz under any other name, and anything else under its name, refused.
+  await Promise.all(['app.tgz', 'app.tar.gz', 'tgz.stasis.code.br', 'stasis.tgz.br', 'app.stasis-tgz'].map((name) =>
+    t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone` })))
+  await t.assert.rejects(validated('br.stasis.tgz', readFileSync(br)), { message: `${join(tmp, 'br.stasis.tgz')}: incorrect header check` })
+  // Its files held to the repository and packages by their bytes, as a bundle's are.
+  const differs = await validated('edited.stasis.tgz', tgzOf(entriesOf(built('MAIN\n'))))
+  t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'src/main.js', kind: 'differs', of: 'own' }]])
+
+  const at = join(tmp, 'refused.stasis.tgz')
+  const refused = async (message, entries, { tar = pack(entries), after = [] } = {}) => t.assert.rejects(
+    validated('refused.stasis.tgz', Buffer.concat([gzipSync(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
+  // What it holds is Bundle.fromTar's to hold to its lockfile (bundle-tar.test.js), told of the file.
+  await refused(/src\/extra\.js is in it, but not in its stasis\.lock\.json/u, [...entriesOf(bundle), { name: 'src/extra.js', data: bytes('extra\n') }])
+  // No byte past either stream but zeros: none after the gzip member, nor past a zero after it (where zlib stops), nor in
+  // another member gzip(1) reads on into, nor after the tar's end marker.
+  const tar = pack(entriesOf(bundle))
+  await refused(/unexpected end of file/u, [], { tar, after: [0x41] })
+  await refused(/bytes past its gzip stream/u, [], { tar, after: [0, 0, 0x41] })
+  t.assert.equal((await validated('padded.stasis.tgz', Buffer.concat([gzipSync(tar), Buffer.alloc(10)]))).status, 'valid', 'zeros, as padding')
+  await refused(/data after the end of the archive at byte \d+/u, [], { tar, after: gzipSync(bytes('hidden')) })
+  await refused(/data after the end of the archive at byte \d+/u, [], { tar: Buffer.concat([tar, Buffer.alloc(512, 0x41)]) })
+
+  // The CLI refuses one (3), the error alone on stderr.
+  const env = { ...process.env, STASIS_CACHE_DIR: '', XDG_CACHE_HOME: tmp }
+  const cliRun = spawnSync(process.execPath, [cli, 'validate', '--only-deps', '--no-lockfile', at], { encoding: 'utf8', env })
+  t.assert.deepStrictEqual([cliRun.status, cliRun.stdout], [3, ''])
+  t.assert.match(cliRun.stderr, new RegExp(`^Error: ${RegExp.escape(at)}: data after the end of the archive at byte \\d+\\n$`, 'u'))
 }))
 
 test('validate: a bundle of the lockfiles stasis.config.json names holds each package to the one whose tree installs it', withTmp(async (t, tmp) => {

@@ -11,8 +11,10 @@ import { sha512integrity } from '@exodus/stasis-core/state-util'
 
 import { AuditError, EMOJI, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
+import { parseFile } from '../stasis/src/parse.js'
 import { DIM } from '../stasis/src/table.js'
 import { GITHUB, NPM, OSV, logos } from '../stasis/src/sixel.js'
+import { tgzOfBundle } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -1132,6 +1134,20 @@ test('audit() collects from a brotli bundle and POSTs its node_modules versions'
       rmSync(tmp, { recursive: true, force: true })
     }
   }
+))
+
+test('audit() reads a .stasis.tgz as the bundle of its files', withFetch(
+  () => new Response(JSON.stringify({
+    foo: [{ id: 1, severity: 'critical', title: 'bug', url: 'https://x', vulnerable_versions: '<3' }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  withTmp(async (t, tmp) => {
+    const bundle = writeBundle(tmp)
+    const tgz = join(tmp, 'app.stasis.tgz')
+    writeFileSync(tgz, tgzOfBundle(parseFile(bundle)))
+    const report = await audit([tgz])
+    t.assert.deepStrictEqual(report.rows.map(({ severity, installed }) => [severity, installed]), [['critical', '2.0.0']])
+    t.assert.deepStrictEqual(report, await audit([bundle]), 'as the bundle of its files')
+  })
 ))
 
 test('audit() attaches bundle reasons to advisory rows', withFetch(

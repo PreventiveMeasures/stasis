@@ -11,6 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
+import { tgzOfDir } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -123,6 +124,22 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     const out = readFileSync(join(build, 'out.js'), 'utf-8')
     t.assert.match(out, /hello, /, 'output must use the bundle\'s recorded source')
     t.assert.doesNotMatch(out, /DISK-VERSION/, 'output must not pick up the disk source')
+  }))
+
+  test('build from a .stasis.tgz builds the bundle of its files, held to its stasis.lock.json, none of disk', withTmp(async (t, tmp) => {
+    writeFileSync(join(tmp, 'package.json'), '{ "name": "x", "version": "0.0.0", "private": true, "type": "module" }')
+    // No source on disk: the tgz's alone.
+    writeFileSync(join(tmp, 'app.stasis.tgz'), tgzOfDir(fullFixture))
+    const built = await runCli(['build', '--output=out.js', 'app.stasis.tgz'], { cwd: tmp })
+    t.assert.equal(built.status, 0, built.stderr)
+    t.assert.match(built.stderr, /Built src\/entry\.js from bundle app\.stasis\.tgz to out\.js/u)
+    t.assert.equal(runNode(t, join(tmp, 'out.js')).trim(), 'hello, world')
+
+    writeFileSync(join(tmp, 'tampered.stasis.tgz'), tgzOfDir(fullFixture, { 'src/hello.js': 'export const greet = (n) => `pwned, ${n}`\n' }))
+    const tampered = await runCli(['build', '--output=pwned.js', 'tampered.stasis.tgz'], { cwd: tmp })
+    t.assert.notEqual(tampered.status, 0)
+    t.assert.match(tampered.stderr, /tampered\.stasis\.tgz: stasis: src\/hello\.js does not match the lockfile/u)
+    t.assert.ok(!existsSync(join(tmp, 'pwned.js')), 'no output on a refused tgz')
   }))
 
   test('build from a lockfile fails closed when a source was changed on disk', withTmp(async (t, tmp) => {
