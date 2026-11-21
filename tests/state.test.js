@@ -602,6 +602,24 @@ test('mergeShard carries child-only resource + directory captures, not just code
   }
 })
 
+test('mergeShard records the project root listing without stasis artifacts, as the child captured it', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-mergeshard-rootdir-'))
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+    mkdirSync(join(dir, 'sub'))
+    writeFileSync(join(dir, 'app.stasis.lock.json'), '{}')
+    writeFileSync(join(dir, 'resources.stasis.br'), '')
+
+    const child = new State(dir, { scope: 'full', lock: 'add', childProcess: true })
+    child.addFsDir(pathToFileURL(dir).toString(), ['package.json', 'sub'])
+    const rootState = new State(dir, { scope: 'full', lock: 'add' })
+    rootState.mergeShard(child.shardSnapshot())
+    t.assert.equal(rootState.hashes.get('.'), child.hashes.get('.'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('mergeShard does NOT impose commonjs on a child fs-read .js (no recorded format)', (t) => {
   // A forked child that only fs-READ a `.js` (e.g. Babel reading a worker's source to transform
   // it) records the bytes but NO format -- module-vs-commonjs is the loader's call, so addFsFile
