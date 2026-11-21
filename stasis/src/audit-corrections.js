@@ -40,28 +40,19 @@ export const CORRECTIONS = Object.freeze([
   },
 ].map((correction) => Object.freeze({ ...correction, integrity: Object.freeze(correction.integrity) })))
 
-// An unknown or unparsable version is never corrected: fail closed, the package stays audited.
-const isCorrectedFile = (name, version, rel, ecosystem) => CORRECTIONS.some((correction) => correction.ecosystem === ecosystem && correction.name === name
-  && correction.file === rel && valid(version) && satisfies(version, correction.range))
-
 // A manifest is never code, though the graph records resolver reads of `package.json` (react-native scans its siblings'
-// for Haste), nor are those other ecosystems' bundles carry (--cargo-manifests, --manifests).
-const CARGO_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json'])
-const FOUNDRY_MANIFESTS = new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml'])
-const NPM_MANIFESTS = new Set(['package.json'])
-const MANIFESTS = {
-  npm: NPM_MANIFESTS,
-  'npm:directory': NPM_MANIFESTS,
-  cargo: CARGO_MANIFESTS,
-  'cargo-git': CARGO_MANIFESTS,
-  'cargo-unknown': CARGO_MANIFESTS,
-  composer: new Set(['composer.json', 'composer.lock']),
-  soldeer: FOUNDRY_MANIFESTS,
-  github: FOUNDRY_MANIFESTS,
-}
-const isManifest = (rel, ecosystem) => MANIFESTS[ecosystem]?.has(rel.slice(rel.lastIndexOf('/') + 1)) ?? false
+// for Haste), nor are those other ecosystems' bundles carry (--cargo-manifests, --manifests): their names, by ecosystem.
+const MANIFESTS = Object.fromEntries([
+  [['npm', 'npm:directory'], ['package.json']],
+  [['cargo', 'cargo-git', 'cargo-unknown'], ['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json']],
+  [['composer'], ['composer.json', 'composer.lock']],
+  [['soldeer', 'github'], ['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']],
+].flatMap(([ecosystems, names]) => ecosystems.map((ecosystem) => [ecosystem, new Set(names)])))
 
 // The one rule package presence, the reason column and the --why graph share.
 export function isEvidenceFile(name, version, rel, ecosystem = 'npm') {
-  return !isManifest(rel, ecosystem) && !isCorrectedFile(name, version, rel, ecosystem)
+  if (MANIFESTS[ecosystem]?.has(rel.slice(rel.lastIndexOf('/') + 1))) return false
+  // An unknown or unparsable version is never corrected: fail closed, the package stays audited.
+  return !CORRECTIONS.some((correction) => correction.ecosystem === ecosystem && correction.name === name
+    && correction.file === rel && valid(version) && satisfies(version, correction.range))
 }

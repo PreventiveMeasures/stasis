@@ -34,36 +34,32 @@ const TERMINAL_PACKAGES = new Set(['@babel/core', 'react-native', 'metro'])
 
 const EMPTY_GRAPH = { adjRev: new Map(), srcImporters: new Map() }
 
-// Each dir's evidence files (`dirFiles`) as collectReasons counts them. A copy a dependency ships is a module of its
+// Each dir's evidence files (`evidence`) as collectReasons counts them. A copy a dependency ships is a module of its
 // own, so a chain can end at it, its files its host's evidence too.
 function moduleIndex(artifact) {
   const fileToDir = new Map()
   const dirInfo = new Map()
-  const dirFiles = new Map()
   for (const [dir, { name, version, files }] of packageRecords(artifact.modules)) {
-    dirInfo.set(dir, { name: name ?? null, version: version ?? null, dep: hasNodeModulesSegment(dir) })
-    const list = []
+    const evidence = new Set()
     for (const rel of Object.keys(files)) {
       const f = moduleFileKey(dir, rel)
       fileToDir.set(f, dir)
-      if (isEvidenceFile(name ?? null, version ?? null, rel)) list.push(f)
+      if (isEvidenceFile(name ?? null, version ?? null, rel)) evidence.add(f)
     }
-    dirFiles.set(dir, list)
+    dirInfo.set(dir, { name: name ?? null, version: version ?? null, dep: hasNodeModulesSegment(dir), evidence })
   }
-  return { fileToDir, dirInfo, dirFiles }
+  return { fileToDir, dirInfo }
 }
 
-// Deduped [parentFile, targetFile] edges; a `--metro` target may be a { platform: file } map.
-function fileEdges(imports) {
-  const edges = new Map()
+// [parentFile, targetFile] edges, repeats and all (bucketGraphs' sets keep one); a `--metro` target may be a { platform: file } map.
+function* fileEdges(imports) {
   for (const [, byParent] of imports) {
     for (const [parent, specifiers] of byParent) {
       for (const [, target] of specifiers) {
-        for (const t of target instanceof Map ? target.values() : [target]) edges.set(`${parent}\0${t}`, [parent, t])
+        for (const t of target instanceof Map ? target.values() : [target]) yield [parent, t]
       }
     }
   }
-  return edges.values()
 }
 
 // Per-consumer subgraphs ('' the whole graph where there is no reason map), an edge a consumer's where it recorded
@@ -100,24 +96,13 @@ export function invertReason(reason, name = (consumer) => consumer) {
   return byFile
 }
 
-// dir -> the consumers that recorded any of its evidence files: whether a target belongs to one never importing it.
-function dirReasonsIndex(dirFiles, fileReasons) {
-  if (fileReasons === null) return null
-  const byDir = new Map()
-  for (const [dir, files] of dirFiles) {
-    let set
-    for (const f of files) for (const c of fileReasons.get(f) ?? []) (set ??= new Set()).add(c)
-    if (set !== undefined) byDir.set(dir, set)
-  }
-  return byDir
-}
-
 // Every simple path of `adjRev` ending at `targetDir`, head first, where its head is a HEAD or a terminal package,
 // which the walk never climbs past.
 function pathsTo(adjRev, isHead, isTerminal, targetDir) {
   const results = []
   let truncated = false
-  const walk = (node, suffix, inPath) => {
+  const inPath = new Set([targetDir])
+  const walk = (node, suffix) => {
     if (results.length >= PATH_CAP) {
       truncated = true
       return
@@ -128,11 +113,11 @@ function pathsTo(adjRev, isHead, isTerminal, targetDir) {
     for (const pred of adjRev.get(node) ?? []) {
       if (inPath.has(pred)) continue // no repeated module -> break cycles
       inPath.add(pred)
-      walk(pred, [pred, ...suffix], inPath)
+      walk(pred, [pred, ...suffix])
       inPath.delete(pred)
     }
   }
-  walk(targetDir, [targetDir], new Set([targetDir]))
+  walk(targetDir, [targetDir])
   return { results, truncated }
 }
 
@@ -157,18 +142,11 @@ function orderChains(chains) {
 
   const byHead = Map.groupBy(chains, (c) => c[0])
 
-  // A chain's full suffix's head group renders before the chain's.
+  // A chain's full suffix's head group renders before the chain's: the heads each head waits on.
   const keys = new Set(chains.map((c) => chainKey(c)))
-  const succ = new Map([...byHead.keys()].map((h) => [h, new Set()]))
-  const indeg = new Map([...byHead.keys()].map((h) => [h, 0]))
+  const after = new Map([...byHead.keys()].map((h) => [h, new Set()]))
   for (const c of chains) {
-    for (let i = 1; i < c.length; i++) {
-      if (!keys.has(chainKey(c, i))) continue
-      const suffixHead = c[i]
-      if (suffixHead === c[0] || succ.get(suffixHead).has(c[0])) continue
-      succ.get(suffixHead).add(c[0])
-      indeg.set(c[0], indeg.get(c[0]) + 1)
-    }
+    for (let i = 1; i < c.length; i++) if (c[i] !== c[0] && keys.has(chainKey(c, i))) after.get(c[0]).add(c[i])
   }
 
   const maxLen = new Map([...byHead].map(([h, g]) => [h, Math.max(...g.map((c) => c.length))]))
@@ -176,11 +154,10 @@ function orderChains(chains) {
   const remaining = new Set(byHead.keys())
   const out = []
   while (remaining.size > 0) {
-    const free = [...remaining].filter((h) => indeg.get(h) === 0)
+    const free = [...remaining].filter((h) => after.get(h).isDisjointFrom(remaining))
     // No free head means a constraint cycle -- break it by preference.
     const head = (free.length > 0 ? free : [...remaining]).toSorted(prefer)[0]
     remaining.delete(head)
-    for (const s of succ.get(head)) indeg.set(s, indeg.get(s) - 1)
     out.push(...arrange(byHead.get(head), 1))
   }
   return out
@@ -199,17 +176,10 @@ function compressChains(chains) {
   const out = new Set()
   for (const c of sorted) {
     // Collapse at the longest proper tail (>= 3 nodes, so one is hidden) an earlier line made recoverable.
-    let at = -1
-    for (let i = 1; c.length - i >= 3; i++) {
-      if (revealed.has(chainKey(c, i))) {
-        at = i
-        break
-      }
-    }
-    out.add(at === -1 ? renderChain(c) : `${renderChain(c.slice(0, at + 1))} -> ... -> ${target}`)
+    const at = c.keys().drop(1).find((i) => c.length - i >= 3 && revealed.has(chainKey(c, i)))
+    out.add(at === undefined ? renderChain(c) : `${renderChain(c.slice(0, at + 1))} -> ... -> ${target}`)
     // Every sub-path headed by a node this line shows is now recoverable.
-    const visible = at === -1 ? c.length - 1 : at
-    for (let i = 0; i <= visible; i++) revealed.add(chainKey(c, i))
+    for (let i = 0; i <= (at ?? c.length - 1); i++) revealed.add(chainKey(c, i))
   }
   return [...out]
 }
@@ -233,10 +203,9 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
     const artifact = parseFile(file)
     if (!artifact.imports || artifact.imports.size === 0) continue
 
-    const { fileToDir, dirInfo, dirFiles } = moduleIndex(artifact)
+    const { fileToDir, dirInfo } = moduleIndex(artifact)
     const fileReasons = invertReason(artifact.reason, consumerName)
     const graphs = bucketGraphs(fileEdges(artifact.imports), fileToDir, dirInfo, fileReasons)
-    const dirReasons = dirReasonsIndex(dirFiles, fileReasons)
     const isTerminal = (node) => TERMINAL_PACKAGES.has(dirInfo.get(node)?.name)
 
     // A package can be at several dirs (nested node_modules): their paths are unioned.
@@ -250,8 +219,9 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
 
     for (const [key, dirs] of dirsByKey) {
       for (const targetDir of dirs) {
-        // The consumers that recorded the package itself, as collectReasons': one importing it unrecorded is none.
-        const own = fileReasons === null ? [''] : (dirReasons.get(targetDir) ?? [])
+        // The consumers that recorded any of the package's own evidence files, as collectReasons': one importing it
+        // unrecorded is none.
+        const own = fileReasons === null ? [''] : new Set(dirInfo.get(targetDir).evidence.values().flatMap((f) => fileReasons.get(f) ?? []))
         for (const bucket of own) {
           if (reasonFilter !== null && bucket !== reasonFilter) continue
           const { adjRev, srcImporters } = graphs.get(bucket) ?? EMPTY_GRAPH
@@ -267,16 +237,12 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
   // Buckets sorted, so bare '' first.
   const byPkg = new Map()
   for (const [key, buckets] of acc) {
-    const lines = []
-    for (const bucket of [...buckets.keys()].toSorted((a, b) => a.localeCompare(b))) {
-      let chains = [...buckets.get(bucket).values()]
-      if (!deep) chains = dropSuffixed(chains)
-      for (const rendered of (full ? orderChains(chains).map(renderChain) : compressChains(chains))) {
-        lines.push(bucket ? `${bucket}: ${rendered}` : rendered)
-      }
-    }
-    if (truncatedKeys.has(key)) lines.push(`… (${PATH_CAP}+ paths, truncated)`)
-    byPkg.set(key, lines)
+    const lines = [...buckets].toSorted(([a], [b]) => a.localeCompare(b)).flatMap(([bucket, found]) => {
+      const chains = deep ? [...found.values()] : dropSuffixed([...found.values()])
+      const rendered = full ? orderChains(chains).map(renderChain) : compressChains(chains)
+      return bucket ? rendered.map((line) => `${bucket}: ${line}`) : rendered
+    })
+    byPkg.set(key, truncatedKeys.has(key) ? [...lines, `… (${PATH_CAP}+ paths, truncated)`] : lines)
   }
   return byPkg
 }
