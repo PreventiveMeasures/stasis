@@ -67,7 +67,6 @@ function matchEnd(re, source, i) {
 }
 function newStatementAfterBreak(source, pos) {
   const afterBreak = matchEnd(WS_COMMENTS, source, pos)
-  if (afterBreak >= source.length) return true
   if (EXPR_CONTINUATION.has(source[afterBreak])) return false
   return matchEnd(KEYWORD_CONTINUATION, source, afterBreak) === -1
 }
@@ -149,7 +148,6 @@ function loadCounted(nextLoad, url, context) {
   }
 }
 
-const toBuffer = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(source))
 // Node's CJS loader may return source=null and read the file from disk itself.
 const sourceOrDisk = (source, url) => source ?? readFileSync(fileURLToPath(url))
 
@@ -342,7 +340,7 @@ function load(url, context, nextLoad) {
 }
 
 // The app reached a module a preload executed, whose load hook can't re-fire: else a dangling edge ships.
-function promoteInfraUrl(url, { isEntry = false } = {}) {
+function promoteInfraUrl(url, isEntry = false) {
   if (!infraUrls.delete(url)) return
   const stashed = infraSources.get(url)
   if (stashed === undefined) return
@@ -362,8 +360,8 @@ function assertInfraMatchesBundle(url) {
   if (!infraUrls.has(url)) return
   const stashed = infraSources.get(url)
   if (stashed === undefined) { infraUrls.delete(url); return } // resolved but never loaded: the hooks will serve it
-  const executed = toBuffer(sourceOrDisk(stashed.source, url))
-  if (!executed.equals(toBuffer(state.getFile(url).source))) {
+  const executed = Buffer.from(sourceOrDisk(stashed.source, url))
+  if (!executed.equals(Buffer.from(state.getFile(url).source))) {
     throw new Error(`[stasis] cannot serve '${url}' from the bundle: a preload already executed it from disk ` +
       'before the entry, and those bytes differ from the attested ones -- refusing the divergent cached instance')
   }
@@ -455,7 +453,7 @@ function resolve(specifier, context, nextResolve) {
       if (!state) initStateFromPackage(url)
       const isEntry = !parentURL && entryUnseen
       if (isEntry) entryUnseen = false
-      promoteInfraUrl(url, { isEntry })
+      promoteInfraUrl(url, isEntry)
     } else {
       // Never loaded: the app's own load will capture it.
       infraUrls.delete(url)
