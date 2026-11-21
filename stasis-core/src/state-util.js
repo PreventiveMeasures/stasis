@@ -11,8 +11,8 @@ import { isPathWithin } from './util.js'
 // won't do: --fs patches fs, then syncBuiltinESMExports() rebinds named imports to the patched fns.
 export const realReadFileSync = fs.readFileSync
 export const realReadFile = fs.promises.readFile
-const realRealpathSync = fs.realpathSync
-const realpathOr = (path, fallback) => { try { return realRealpathSync(path) } catch { return fallback } }
+// diskHost's realpath is a snapshot too.
+const realpathOr = (path, fallback, host = diskHost) => { try { return host.realpath(path) } catch { return fallback } }
 
 let realRootCache
 // Capture-side containment: an in-tree symlink pointing OUT of `root`'s real path would pull external content in.
@@ -47,11 +47,7 @@ export function noupsert(map, key, value) {
 // The host's realpath catches symlink aliases resolve() would miss; lexical fallback for not-yet-written targets.
 export function canonicalizePath(p, host = diskHost) {
   const abs = resolve(p)
-  try {
-    return host.realpath(abs)
-  } catch {
-    return abs
-  }
+  return realpathOr(abs, abs, host)
 }
 
 // Over State's public members alone, so a plugin may ask it of a State another stasis-core copy made (State.preload).

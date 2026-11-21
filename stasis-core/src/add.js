@@ -8,7 +8,7 @@ import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
 import { excludedText, linksOn, moduleExcluder, parsePolicy, recordedIn } from './policy.js'
-import { canonicalizePath, sha512integrity } from './state-util.js'
+import { bundledIntegrity, canonicalizePath } from './state-util.js'
 import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withFilledOf, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: outputMatcher must read the real disk, not be captured.
@@ -52,7 +52,7 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
     if (splitNodeModulesPath(rel) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
       throw new Error(`add: no package.json with name+version found for ${rel}`)
     }
-    const dir = meta ? meta.pkgDir : '.'
+    const dir = meta?.pkgDir ?? '.'
     const identity = buckets.get(dir) ?? meta ?? { name: workspaceName, version: workspaceVersion }
     const bucket = modules.get(dir)
     const info = bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity)
@@ -90,24 +90,6 @@ function existingOf(what, parse) {
   }
 }
 
-// A thunk, so every target's conflicts surface before a byte lands; serializing in it keeps peak memory at one target's.
-function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, existing) {
-  check?.(bundle)
-  const abs = resolve(baseDir, targetPath)
-  let before = 0
-  if (existing) {
-    check?.(existing, recordedIn(targetPath))
-    before = fileCount(existing)
-    bundle = existing.merge(bundle)
-  }
-  const total = fileCount(bundle)
-  const write = () => {
-    mkdirSync(dirname(abs), { recursive: true })
-    writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
-  }
-  return { write, total, added: total - before }
-}
-
 // By name, or dev+inode (a link to one, which a write rewrites in place), confirmed in bigint: a number rounds big inodes.
 function outputMatcher(baseDir, outputs) {
   const exact = new Set()
@@ -127,22 +109,17 @@ function outputMatcher(baseDir, outputs) {
 }
 
 // Node leaves out a path `exclude` takes only where its `**` meets it, so it is asked of each '/'-joined project path.
-function globPaths(host, pattern, cwd, baseDir, exclude) {
-  const projectPath = (path) => {
-    const rel = relative(baseDir, path)
-    return sep === '\\' ? rel.replaceAll('\\', '/') : rel
-  }
-  return host.glob(pattern, { cwd, exclude: exclude && ((path) => exclude(projectPath(path))) })
-}
+const globPaths = (host, pattern, cwd, baseDir, exclude) =>
+  host.glob(pattern, { cwd, exclude: exclude && ((path) => exclude(relative(baseDir, path).replaceAll(sep, '/'))) })
 
 // A sweep drops what it FINDS auto-excluded: dir rules below the named root (`add src/examples` sweeps it, `add src`
 // skips it), file rules by name and to `outputs`. A path `exclude` takes goes, named or swept, with all under it.
-// `excluder`: policy.js's moduleExcluder, whose dependencies are absent: named, missing (keyed with why); swept, never found.
-function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude, excluder = null, host = diskHost } = {}) {
+// `absentOf`: excludedFrom's, of policy.js's moduleExcluder, whose dependencies are absent: named, missing (keyed with
+// why); swept, never found.
+function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude, absentOf, host = diskHost }) {
   const files = new Map() // rel -> stats, the walk's own, reused by validation
   const excluded = new Set()
   const isOutput = outputMatcher(baseDir, outputs)
-  const absentOf = excludedFrom(baseDir, excluder)
   for (const rel of rels) {
     // A walk meets a directory before what's under it, so it checks each path alone; a named one, its directories too.
     if (exclude !== undefined && rel.split('/').some((_, i, segments) => exclude(segments.slice(0, i + 1).join('/')))) continue
@@ -158,19 +135,16 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
       if (keepNamedOutputs || !isOutput(rel, stats)) files.set(rel, stats)
       continue
     }
-    const found = []
-    // Gotcha: `**/*` skips dotfiles (.env, .git/...); they must be named explicitly.
-    for (const match of globPaths(host, '**/*', dirAbs, baseDir, exclude)) {
+    // Gotcha: `**/*` skips dotfiles (.env, .git/...); they must be named explicitly. Sorted, whatever the readdir
+    // order, so multi-file diagnostics keep a stable order.
+    for (const match of sortedByPath(globPaths(host, '**/*', dirAbs, baseDir, exclude), (path) => path.replaceAll(sep, '/'))) {
       const fileAbs = join(dirAbs, match)
       const fileRel = relative(baseDir, fileAbs)
       // A dangling symlink stats as undefined -- skipped, not a hard ENOENT out of the walk.
       const fileStats = statStrict(host, fileAbs, fileRel) ?? undefined
-      if (fileStats?.isFile() && absentOf(toPosix(fileRel)) === undefined) found.push([toPosix(fileRel), match, fileStats])
-    }
-    // Sorted, whatever the readdir order, so multi-file diagnostics keep a stable order.
-    for (const [file, match, fileStats] of sortedByPath(found, ([path]) => path)) {
+      const file = fileStats?.isFile() ? toPosix(fileRel) : undefined
       // Node's glob holds `exclude` to its `**` alone: a file below the directory swept still matches the `*` after it.
-      if (exclude?.(file)) continue
+      if (file === undefined || absentOf(file) !== undefined || exclude?.(file)) continue
       if (toPosix(match).split('/').slice(0, -1).some(isAutoExcludedDir)
         || isOutput(file, fileStats) || isAutoExcludedFile(file)) excluded.add(file)
       else files.set(file, fileStats)
@@ -186,7 +160,7 @@ const excludedFrom = (baseDir, excluder) => (excluder === null ? () => undefined
 const listPaths = (rels) => sortedByPath(rels).join(', ')
 
 // One error for every file validation rejected, so a sweep names all of them at once; a lone offender keeps its own message.
-export function validationError({ missing, undeclared, nonUtf8 }, label) {
+function validationError({ missing, undeclared, nonUtf8 }, label) {
   const phrase = (items, one, many) => (items.length === 1 ? [one(items[0])] : items.length > 1 ? [many(items)] : [])
   const withFormat = (format) => (format == null ? '' : ` (format '${format}')`)
   const named = ({ rel, format }) => `${rel}${withFormat(format)}`
@@ -217,44 +191,52 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost, exclude
     const matches = globPaths(host, pattern, baseDir, baseDir, exclude).filter((match) => absentOf(toPosix(match)) === undefined)
     return matches.length === 0 ? [pattern] : sortedByPath(matches)
   })
-  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude, excluder, host })
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude, absentOf, host })
 }
 
-// The WHOLE set is classified before any target is touched; only a symlink escaping the root fails on the spot.
-export function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add', host = diskHost }) {
-  const codeFiles = new Map()
-  const resourceFiles = new Map()
-  const integrities = new Map()
-  const missing = []
-  const undeclared = []
-  const nonUtf8 = []
-  const types = new Map()
-  const kept = (path, read) => upsert(types, path, read)
+// A file by its bytes: code of `format` (null: its loader decides), else a resource IFF `resources` declare it, else
+// neither (undefined). A binary plist can't be stored as the UTF-8 string its 'xml' format implies: a resource (base64).
+export function fileKind(path, buf, resources, format) {
+  if (format !== undefined && !isBinaryPlist(path, buf)) return { format }
+  return inResources(path, resources) ? { resource: true } : undefined
+}
+
+// Each of `files` (rel -> stats, undefined where missing) that `keeps` read, `kindOf` (fileKind's) classifying it: the
+// WHOLE set before any target is touched, one error naming every offender; only a symlink escaping the root fails on
+// the spot.
+export function* classifiedFiles({ baseDir, realBase, files, label, host, kindOf, keeps = () => true }) {
+  const rejected = { missing: [], undeclared: [], nonUtf8: [] }
   for (const [rel, stats] of files) {
     if (stats === undefined) {
-      missing.push(rel)
+      rejected.missing.push(rel)
       continue
     }
-    const executable = isExecutableMode(stats)
     assertRealPathWithinBase(realBase, baseDir, rel, host)
+    if (!keeps(rel)) continue
     const abs = join(baseDir, rel)
     const buf = host.readFile(abs)
-    if (withIntegrity) integrities.set(rel, sha512integrity(buf))
-    const format = sourceFormat(abs, buf, host, kept)
-    // A binary plist can't be stored as the UTF-8 string its 'xml' format implies: a resource (opaque base64).
-    if (format !== undefined && !isBinaryPlist(rel, buf)) {
-      // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
-      if (isUtf8(buf)) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
-      else nonUtf8.push({ rel, format })
-    } else if (inResources(rel, resources)) {
-      const utf8 = isUtf8(buf)
-      resourceFiles.set(rel, { content: utf8 ? buf.toString('utf8') : buf.toString('base64'), format: utf8 ? 'resource' : 'resource:base64', executable })
-    } else {
-      undeclared.push(rel)
-    }
+    const kind = kindOf(rel, abs, buf)
+    // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
+    if (kind === undefined) rejected.undeclared.push(rel)
+    else if (!kind.resource && !isUtf8(buf)) rejected.nonUtf8.push({ rel, format: kind.format })
+    else yield { rel, stats, buf, kind }
   }
-  if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, label)
-  return { codeFiles, resourceFiles, integrities }
+  if (Object.values(rejected).some((rels) => rels.length > 0)) throw validationError(rejected, label)
+}
+
+export function validateFiles({ baseDir, realBase, files, resources, label = 'add', host = diskHost }) {
+  const codeFiles = new Map()
+  const resourceFiles = new Map()
+  const types = new Map()
+  const kept = (path, read) => upsert(types, path, read)
+  const kindOf = (rel, abs, buf) => fileKind(rel, buf, resources, sourceFormat(abs, buf, host, kept))
+  for (const { rel, stats, buf, kind: { format, resource } } of classifiedFiles({ baseDir, realBase, files, label, host, kindOf })) {
+    const executable = isExecutableMode(stats)
+    if (!resource) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
+    else if (isUtf8(buf)) resourceFiles.set(rel, { content: buf.toString('utf8'), format: 'resource', executable })
+    else resourceFiles.set(rel, { content: buf.toString('base64'), format: 'resource:base64', executable })
+  }
+  return { codeFiles, resourceFiles }
 }
 
 export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-core' } = {}) {
@@ -266,8 +248,7 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const check = policy && ((artifact, hint) => policy.assertArtifact(artifact, { hint, links }))
 
   const rootPkg = readJson(join(baseDir, 'package.json')) ?? {}
-  const workspaceName = rootPkg.name ?? 'workspace'
-  const workspaceVersion = rootPkg.version ?? '0.0.0'
+  const assemble = (files, repo) => assembleBundle(baseDir, files, rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', repo)
 
   const lockPath = join(baseDir, LOCK_FILE)
   const hasLock = existsSync(lockPath)
@@ -278,31 +259,49 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     .filter((file) => file !== undefined)
     .map((file) => toPosix(relative(baseDir, resolve(baseDir, file)))))
 
-  const { files, excluded } = expandDirectories(baseDir, normalizeEntries(entries, cwd), outputs, { excluder: moduleExcluder([policy], baseDir) })
+  const absentOf = excludedFrom(baseDir, moduleExcluder([policy], baseDir))
+  const { files, excluded } = expandDirectories(baseDir, normalizeEntries(entries, cwd), outputs, { absentOf })
   if (files.size === 0) {
     throw new Error(`add: no files to add (directory entries matched ${excluded.size === 0
       ? 'nothing' : `only auto-excluded files: ${listPaths(excluded)}`})`)
   }
 
-  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase, files, resources, withIntegrity: hasLock })
+  const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase, files, resources })
 
-  // Every target's merge is computed first, then the writes run -- see prepareBundleFile.
-  const summary = []
-  const writes = []
   const repo = detectRepo(baseDir)
   // Each artifact is read before a file is added to any: what one attests of a package is held of the others too.
   const bundleAt = (file, abs = resolve(baseDir, file)) => (existsSync(abs) ? existingOf(`bundle at ${file}`, () => parseBundleBytes(readFileSync(abs))) : undefined)
   const bundles = new Map([bundleFile, resourcesBundleFile].filter(Boolean).map((file) => [file, bundleAt(file)]))
   const lock = hasLock ? existingOf(LOCK_FILE, () => Lockfile.parse(readFileSync(lockPath, 'utf8'))) : undefined
   const attest = heldToInstall(baseDir, [...bundles, [LOCK_FILE, lock]].filter(([, artifact]) => artifact))
+
+  // Every target's merge is computed first, so every conflict surfaces before a byte lands; serializing in its write
+  // keeps peak memory at one target's.
+  const summary = []
+  const writes = []
+  const plan = (target, existing, added, kind, write) => {
+    let merged = added
+    let before = 0
+    if (existing) {
+      check?.(existing, recordedIn(target))
+      before = fileCount(existing)
+      merged = existing.merge(added)
+    }
+    const total = fileCount(merged)
+    writes.push(() => write(merged))
+    summary.push(`+${total - before} ${kind ? `${kind} ` : ''}(${total} total) -> ${target}`)
+  }
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
     const existing = bundles.get(target)
     const companion = bundles.get(target === bundleFile ? resourcesBundleFile : bundleFile)
-    const added = attest(existing, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), companion)
-    const { write, total, added: count } = prepareBundleFile(baseDir, target, added, brotliQuality, check, existing)
-    writes.push(write)
-    summary.push(`+${count} ${kind} (${total} total) -> ${target}`)
+    const added = attest(existing, assemble(entriesForTarget, repo), companion)
+    check?.(added)
+    const abs = resolve(baseDir, target)
+    plan(target, existing, added, kind, (bundle) => {
+      mkdirSync(dirname(abs), { recursive: true })
+      writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
+    })
   }
   const allFiles = new Map([...codeFiles, ...resourceFiles])
   if (resourcesBundleFile) {
@@ -313,15 +312,11 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     planTarget(bundleFile, allFiles, kind)
   }
 
-  // One lockfile attests both split targets, so it takes every packed file's integrity (code + resources).
+  // One lockfile attests both split targets, so it takes every packed file's integrity (code + resources). `check`
+  // sees only what it already records: the files added were checked as the bundles'.
   if (hasLock) {
-    const lockAdd = attest(lock, Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion),
-      (file) => integrities.get(file)))
-    // `check` sees only what it already records: the files added were checked as the bundles'.
-    check?.(lock, recordedIn(LOCK_FILE))
-    const merged = lock.merge(lockAdd)
-    writes.push(() => writeFileSync(lockPath, merged.serialize()))
-    summary.push(`+${fileCount(merged) - fileCount(lock)} (${fileCount(merged)} total) -> ${LOCK_FILE}`)
+    const added = Lockfile.fromBundle(assemble(allFiles), (file, content) => bundledIntegrity(content, allFiles.get(file).format))
+    plan(LOCK_FILE, lock, attest(lock, added), '', (merged) => writeFileSync(lockPath, merged.serialize()))
   }
   if (excluded.size > 0) summary.push(`skipped ${excluded.size} auto-excluded`)
 

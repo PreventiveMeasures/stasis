@@ -6,31 +6,25 @@ import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js' // also runs the posix-sep assertion
 import { hasNodeModulesSegment, isPathWithin, isPlainObject, LOCK_FILE, moduleFileKey, posixPathEscapes, splitNodeModulesPath } from './util.js'
 
-// Fields copied (sanitised) from a dep's on-disk package.json; everything else is dropped as attack surface.
-const ROOT_FIELD_ORDER = ['license', 'type', 'main', 'module', 'jsnext:main', 'jsnext', 'source', 'browser', 'react-native', 'bin', 'sideEffects', 'exports', 'imports']
-
 // Under node_modules alone: workspace sources aren't pnpm-managed.
 function buildExpected(lockfile) {
   const expected = new Map()
-  const knownDirs = new Set()
   for (const [dir, { files }] of lockfile.modules) {
     if (!hasNodeModulesSegment(dir)) continue
-    knownDirs.add(dir)
     for (const [rel, hash] of Object.entries(files)) {
       // A root capture's rel === '' would demand a file at `<pkg>/`.
       const file = moduleFileKey(dir, rel)
       // An attested listing, not a file on disk.
-      if (lockfile.formats?.get(file) === 'directory') continue
-      expected.set(file, hash)
+      if (lockfile.formats?.get(file) !== 'directory') expected.set(file, hash)
     }
   }
-  return { expected, knownDirs }
+  return expected
 }
 
 // A rewritten manifest must never point resolution at a path prune is about to delete.
 const EXTENSIONS = ['.js', '.cjs', '.mjs', '.json', '.node']
 
-function referencesPresentFile(ref, present, { exact = false } = {}) {
+function referencesPresentFile(ref, present, exact = false) {
   if (typeof ref !== 'string' || ref === '' || posixPathEscapes(ref)) return false
   const base = posix.normalize(ref).replace(/^\.\//u, '')
   if (base.includes('*')) return true // subpath pattern: unverifiable, kept
@@ -38,6 +32,8 @@ function referencesPresentFile(ref, present, { exact = false } = {}) {
   if (exact) return false // exports/imports targets resolve verbatim -- no extension/index fallback
   return EXTENSIONS.some((ext) => present.has(base + ext) || present.has(`${base}/index${ext}`))
 }
+
+const fileRef = (value, present) => (referencesPresentFile(value, present) ? value : undefined)
 
 function filterEntries(obj, map) {
   const out = {}
@@ -62,7 +58,7 @@ function filterTargets(value, present, opts, depth = 0) {
   if (value === null) return null
   if (value === false) return allowFalse ? false : undefined
   if (typeof value === 'string') {
-    const keep = value.startsWith('.') ? referencesPresentFile(value, present, { exact }) : allowBare
+    const keep = value.startsWith('.') ? referencesPresentFile(value, present, exact) : allowBare
     return keep ? value : undefined
   }
   if (Array.isArray(value)) {
@@ -73,58 +69,40 @@ function filterTargets(value, present, opts, depth = 0) {
   return undefined
 }
 
-// Printable ASCII only, so a copied `license` can't smuggle control or escape characters.
-const isAscii = (s) => /^[\x20-\x7e]*$/u.test(s)
-
-function browserField(value, present) {
-  if (typeof value === 'string') return referencesPresentFile(value, present) ? value : undefined
-  if (!isPlainObject(value)) return undefined
-  return filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false })
+// A file, or an object of them as `keepObject` keeps it (bin's commands, browser's replacements).
+const fileOrObject = (keepObject) => (value, present) => {
+  if (typeof value === 'string') return fileRef(value, present)
+  return isPlainObject(value) ? keepObject(value, present) : undefined
 }
+const browserField = fileOrObject((value, present) => filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false }))
 
-function resolutionFields(pkg, present) {
-  const out = { __proto__: null }
+// Fields copied (sanitised) from a dep's on-disk package.json, in this order; everything else is dropped as attack
+// surface. On-disk `pkg` is untrusted: every copied field has its own guard, answering what it keeps or undefined.
+const FIELDS = {
+  // Printable ASCII only, so a copied `license` can't smuggle control or escape characters.
+  license: (value) => (typeof value === 'string' && /^[\x20-\x7e]*$/u.test(value) && Buffer.byteLength(value) < 64 ? value : undefined),
   // Only the values Node honours; a garbage `type` is dropped rather than recategorising the package's .js files.
-  if (pkg.type === 'module' || pkg.type === 'commonjs') out.type = pkg.type
+  type: (value) => (value === 'module' || value === 'commonjs' ? value : undefined),
   // Bundler `mainFields` entries too: dropping jsnext/jsnext:main downgrades an older dep ESM->CJS under Vite.
-  for (const field of ['main', 'module', 'jsnext:main', 'jsnext', 'source']) {
-    if (referencesPresentFile(pkg[field], present)) out[field] = pkg[field]
-  }
-  for (const field of ['browser', 'react-native']) {
-    const v = browserField(pkg[field], present)
-    if (v !== undefined) out[field] = v
-  }
-  const exp = filterTargets(pkg.exports, present, { allowBare: false, allowFalse: false, exact: true })
-  if (exp !== undefined) out.exports = exp
-  const imp = filterTargets(pkg.imports, present, { allowBare: true, allowFalse: false, exact: true })
-  if (imp !== undefined) out.imports = imp
-  return out
+  main: fileRef,
+  module: fileRef,
+  'jsnext:main': fileRef,
+  jsnext: fileRef,
+  source: fileRef,
+  browser: browserField,
+  'react-native': browserField,
+  bin: fileOrObject((value, present) => filterEntries(value, (target) => fileRef(target, present))),
+  // A list filtering to empty is dropped: `[]` would assert "no side effects" and over-tree-shake.
+  sideEffects: (value, present) => {
+    if (typeof value === 'boolean') return value
+    const kept = Array.isArray(value) ? value.filter((entry) => referencesPresentFile(entry, present)) : []
+    return kept.length > 0 ? kept : undefined
+  },
+  exports: (value, present) => filterTargets(value, present, { allowBare: false, allowFalse: false, exact: true }),
+  imports: (value, present) => filterTargets(value, present, { allowBare: true, allowFalse: false, exact: true }),
 }
-
-// On-disk `pkg` is untrusted: every copied field needs its own guard. name/version come from the lockfile.
-function minimalRootFields(pkg, { name, version, present }) {
-  const fields = resolutionFields(pkg, present)
-  if (typeof pkg.license === 'string' && isAscii(pkg.license) && Buffer.byteLength(pkg.license) < 64) fields.license = pkg.license
-
-  if (typeof pkg.bin === 'string') {
-    if (referencesPresentFile(pkg.bin, present)) fields.bin = pkg.bin
-  } else if (isPlainObject(pkg.bin)) {
-    const bin = filterEntries(pkg.bin, (target) => (referencesPresentFile(target, present) ? target : undefined))
-    if (bin !== undefined) fields.bin = bin
-  }
-
-  // A sideEffects list filtering to empty is dropped: `[]` would assert "no side effects" and over-tree-shake.
-  if (typeof pkg.sideEffects === 'boolean') {
-    fields.sideEffects = pkg.sideEffects
-  } else if (Array.isArray(pkg.sideEffects)) {
-    const se = pkg.sideEffects.filter((e) => referencesPresentFile(e, present))
-    if (se.length > 0) fields.sideEffects = se
-  }
-
-  const out = { name, version }
-  for (const key of ROOT_FIELD_ORDER) if (key in fields) out[key] = fields[key]
-  return out
-}
+// A nested package.json keeps only what resolution reads.
+const ROOT_ONLY = new Set(['license', 'bin', 'sideEffects'])
 
 // A nested one's refs are relative to its own dir, so the recorded files are re-based first; it survives because
 // it flips its subtree's module system (dropping it would revert those .js files to the root's).
@@ -133,15 +111,19 @@ function minimalManifest(lockfile, owner, rel, raw) {
   try { parsed = JSON.parse(raw) } catch { parsed = null }
   const pkg = isPlainObject(parsed) ? parsed : {}
   const { name, version, files } = lockfile.modules.get(owner.dir)
+  const root = dirname(rel) === owner.dir
+  const prefix = root ? '' : `${relative(owner.dir, dirname(rel))}/`
+  const present = new Set(Object.keys(files).filter((f) => f.startsWith(prefix)).map((f) => f.slice(prefix.length)))
   // The package.json itself survives prune, so it's always a legal self-reference target.
-  const present = new Set(['package.json'])
-  if (dirname(rel) === owner.dir) {
-    for (const f of Object.keys(files)) present.add(f)
-    return minimalRootFields(pkg, { name, version, present })
+  present.add('package.json')
+  // name/version come from the lockfile.
+  const out = root ? { name, version } : {}
+  for (const [field, keep] of Object.entries(FIELDS)) {
+    if (!root && ROOT_ONLY.has(field)) continue
+    const value = keep(pkg[field], present)
+    if (value !== undefined) out[field] = value
   }
-  const prefix = `${relative(owner.dir, dirname(rel))}/`
-  for (const f of Object.keys(files)) if (f.startsWith(prefix)) present.add(f.slice(prefix.length))
-  return resolutionFields(pkg, present)
+  return out
 }
 
 function discoverNodeModulesDirs(root) {
@@ -227,34 +209,33 @@ export function prune({ root = process.cwd() } = {}) {
   const lockPath = join(root, LOCK_FILE)
   assert.ok(existsSync(lockPath), `stasis prune: ${LOCK_FILE} not found at ${lockPath}`)
   const lockfile = Lockfile.parse(readFileSync(lockPath, 'utf8'))
-  const { expected, knownDirs } = buildExpected(lockfile)
+  const expected = buildExpected(lockfile)
 
   // Plan first, mutate later: any failure throws before anything on disk is touched.
   const toRemove = []
   const toMinimize = []
   const validated = []
   const kept = []
-  const seen = new Set()
   const mismatches = []
 
   for (const { full, nmRoot } of walkFiles(nmRoots, ctx)) {
     const rel = relative(root, full)
     const expectedHash = expected.get(rel)
     if (expectedHash !== undefined) {
-      seen.add(rel)
+      expected.delete(rel) // what is left was never found
       const actual = sha512integrity(readFileSync(full))
       if (actual === expectedHash) {
         validated.push(rel)
         kept.push(rel)
       } else {
-        mismatches.push({ rel, expected: expectedHash, actual })
+        mismatches.push(`  ${rel}: expected ${expectedHash}, got ${actual}`)
       }
       continue
     }
 
     // package.json isn't lockfile-enumerated but drives resolution, so rewrite (not delete) it for a known module.
     const owner = basename(rel) === 'package.json' ? splitNodeModulesPath(rel) : null
-    if (owner && knownDirs.has(owner.dir)) {
+    if (owner && lockfile.modules.has(owner.dir)) {
       const raw = readFileSync(full, 'utf8')
       const text = `${JSON.stringify(minimalManifest(lockfile, owner, rel, raw), undefined, 2)}\n`
       kept.push(rel)
@@ -267,11 +248,8 @@ export function prune({ root = process.cwd() } = {}) {
     toRemove.push({ full, nmRoot })
   }
 
-  const missing = [...expected.keys()].filter((rel) => !seen.has(rel))
-  if (mismatches.length > 0) {
-    const lines = mismatches.map(({ rel, expected: exp, actual }) => `  ${rel}: expected ${exp}, got ${actual}`).join('\n')
-    throw new Error(`stasis prune: hash mismatch for ${mismatches.length} file(s):\n${lines}`)
-  }
+  if (mismatches.length > 0) throw new Error(`stasis prune: hash mismatch for ${mismatches.length} file(s):\n${mismatches.join('\n')}`)
+  const missing = [...expected.keys()]
   if (missing.length > 0) {
     const sample = missing.slice(0, 5).join(', ')
     const suffix = missing.length > 5 ? `, ... (${missing.length} total)` : ''

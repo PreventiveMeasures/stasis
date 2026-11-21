@@ -193,7 +193,7 @@ test('addImport renormalizes an absolute-path specifier relative to the importin
 
 test('absolute-path specifier is renormalized in both the lockfile and the bundle', (t) => {
   const lockImports = JSON.parse(state.lockData).imports['require, node']['src/bar.js']
-  const bundleImports = JSON.parse(state.sourceData).imports['require, node']['src/bar.js']
+  const bundleImports = JSON.parse(state.sourceBundle.serialize()).imports['require, node']['src/bar.js']
   t.assert.deepStrictEqual(Object.keys(lockImports), ['./foo.js'], 'lockfile key is parent-relative')
   t.assert.deepStrictEqual(Object.keys(bundleImports), ['./foo.js'], 'bundle key is parent-relative')
 })
@@ -303,7 +303,7 @@ test('a frozen bundle attests an absolute-specifier edge: match passes, redirect
   cap.addFile(parentURL, { format: 'commonjs', isEntry: true })
   cap.addFile(childURL, { format: 'commonjs' })
   cap.addImport(parentURL, childAbs, childURL, { conditions: ['require', 'node'] })
-  writeFileSync(join(tmp, 'stasis.code.br'), brotliCompressSync(cap.sourceData))
+  writeFileSync(join(tmp, 'stasis.code.br'), brotliCompressSync(cap.sourceBundle.serialize()))
 
   // Frozen reload: the same absolute specifier attests and resolves...
   const frozen = new State(tmp, { scope: 'full', bundle: 'frozen' })
@@ -337,7 +337,7 @@ test('bundle=load settles a divergent edge by the lookup\'s context', (t) => {
   // As a capture records a require() that its replay can look up under import conditions.
   cap.addImport(parentURL, './captured', cjs, { conditions: ['require', 'node'] })
   const bundleFile = join(tmp, 'stasis.code.br')
-  writeFileSync(bundleFile, brotliCompressSync(cap.sourceData))
+  writeFileSync(bundleFile, brotliCompressSync(cap.sourceBundle.serialize()))
 
   const load = new State(fixture, { scope: 'full', lock: 'none', bundle: 'load', bundleFile })
   t.assert.equal(load.getImport(parentURL, 'dual', { conditions: ['require', 'node'] }).url, cjs)
@@ -367,7 +367,7 @@ test('bundle=load serves no lookup the other context\'s key where conditions dec
   cap.addFile(cjs)
   for (const specifier of ['reqonly', '#internal', './relative']) cap.addImport(parentURL, specifier, cjs, { conditions: requireSet })
   const bundleFile = join(tmp, 'stasis.code.br')
-  writeFileSync(bundleFile, brotliCompressSync(cap.sourceData))
+  writeFileSync(bundleFile, brotliCompressSync(cap.sourceBundle.serialize()))
 
   const load = new State(fixture, { scope: 'full', lock: 'none', bundle: 'load', bundleFile })
   const missing = { code: 'ERR_MODULE_NOT_FOUND' }
@@ -488,7 +488,7 @@ test('lockData is well-formed JSON with the expected shape', (t) => {
 })
 
 test('sourceData is JSON text in v1 format', (t) => {
-  const text = state.sourceData
+  const text = state.sourceBundle.serialize()
   t.assert.equal(typeof text, 'string')
   const parsed = JSON.parse(text)
   t.assert.equal(parsed.version, 1)
@@ -541,7 +541,7 @@ test('node_modules-scope bundle excludes a workspace source symlinked into node_
   st.addFile(pathToFileURL(join(tmp, 'node_modules', 'dep', 'index.js')).toString(), { format: 'module' })
   st.addFile(pathToFileURL(join(tmp, 'node_modules', 'lib', 'index.js')).toString(), { format: 'module' })
 
-  const parsed = JSON.parse(st.sourceData)
+  const parsed = JSON.parse(st.sourceBundle.serialize())
   t.assert.ok(parsed.modules['node_modules/dep'], 'the real dependency is bundled')
   t.assert.ok(!parsed.modules['node_modules/lib'], 'symlink path is not bundled as a dependency')
   t.assert.ok(!parsed.modules['packages/lib'], 'the workspace source is not bundled in node_modules scope')
@@ -928,7 +928,7 @@ test('bundle records a `reason` map only when more than one consumer contributes
     // Single consumer (the loader, default reason 'run') -> NO reason field.
     const solo = new State(dir, { scope: 'full', lock: 'none', bundle: 'add' })
     solo.addFile(url('a.js'), { source: src('a.js'), format: 'module', isEntry: true })
-    t.assert.equal(JSON.parse(solo.sourceData).reason, undefined, 'a single-consumer bundle omits reason')
+    t.assert.equal(JSON.parse(solo.sourceBundle.serialize()).reason, undefined, 'a single-consumer bundle omits reason')
 
     // Two consumers sharing one bundle: the loader ('run') + a plugin ('metro').
     const shared = new State(dir, { scope: 'full', lock: 'none', bundle: 'add' })
@@ -936,13 +936,13 @@ test('bundle records a `reason` map only when more than one consumer contributes
     shared.addFile(url('b.js'), { source: src('b.js'), format: 'module', reason: 'metro' })
     shared.addFile(url('c.js'), { source: src('c.js'), format: 'module', reason: 'metro' })
     const expected = { run: ['a.js'], metro: ['b.js', 'c.js'] }
-    t.assert.deepStrictEqual(JSON.parse(shared.sourceData).reason, expected,
+    t.assert.deepStrictEqual(JSON.parse(shared.sourceBundle.serialize()).reason, expected,
       'reason maps each consumer to the files it recorded (whichever are used)')
     // Consumer keys are SORTED for reproducible output, not in record order (here 'run' is recorded
     // first but sorts after 'metro') -- every other bundle map is sorted, so this must be too.
-    t.assert.deepStrictEqual(Object.keys(JSON.parse(shared.sourceData).reason), ['metro', 'run'])
+    t.assert.deepStrictEqual(Object.keys(JSON.parse(shared.sourceBundle.serialize()).reason), ['metro', 'run'])
     // Informational, preserved across a Bundle.parse round-trip.
-    t.assert.deepStrictEqual(Bundle.parse(shared.sourceData).reason, expected)
+    t.assert.deepStrictEqual(Bundle.parse(shared.sourceBundle.serialize()).reason, expected)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1045,7 +1045,7 @@ test('bundle `reason`: run does not claim a file it only fs-reads AFTER a plugin
     s.addFsFile(url('app.js'), src('app.js'))                                                          // run fs-reads AFTER (babel transform)
     s.addFile(url('app.js'), { source: src('app.js'), format: 'module', reason: 'webpack' })     // ...and the plugin bundles it
 
-    const reason = JSON.parse(s.sourceData).reason
+    const reason = JSON.parse(s.sourceBundle.serialize()).reason
     // app.js is dropped from run (fs-only, post-plugin, bundled); early.js stays (fs-read BEFORE the
     // plugin); entry.js stays (a genuine run import). The plugin keeps everything it bundled.
     t.assert.deepStrictEqual(reason.run, ['early.js', 'entry.js'])
@@ -1072,7 +1072,7 @@ test('bundle `reason`: `extra` naming a file run fs-read after a plugin attached
     s.addFsFile(url('app.js'), src('app.js'))
     s.includeExtra()
 
-    const reason = JSON.parse(s.sourceData).reason
+    const reason = JSON.parse(s.sourceBundle.serialize()).reason
     t.assert.deepStrictEqual(reason.run, ['app.js', 'entry.js'])
     t.assert.deepStrictEqual(reason.extra, ['app.js', 'stasis.config.json'])
   } finally {
@@ -1112,7 +1112,7 @@ test('bundle `reason`: a package.json run only fs-reads AFTER a plugin attaches 
     s.addFile(url('again.js'), { format: 'module', reason: 'metro' })
     s.includeExtra() // `extra` names tool's code: no plugin, so it neither takes nor moves tool's manifest
 
-    const reason = JSON.parse(s.sourceData).reason
+    const reason = JSON.parse(s.sourceBundle.serialize()).reason
     // mdep's manifest is metro's alone (run claims no other file of mdep); shared's is both
     // consumers' (run imports shared too); early's stays run's (read before the plugin); again's
     // is both (run read it before the plugin too, as it did again.js, which so stays run's as well);
@@ -1187,8 +1187,8 @@ test('bundle=add carries a loaded multi-consumer `reason` forward instead of dro
     const seed = new State(dir, { scope: 'full', lock: 'none', bundle: 'add' })
     seed.addFile(url('a.js'), { source: src('a.js'), format: 'module', isEntry: true }) // run (default)
     seed.addFile(url('b.js'), { source: src('b.js'), format: 'module', reason: 'webpack' })
-    t.assert.deepStrictEqual(JSON.parse(seed.sourceData).reason, { webpack: ['b.js'], run: ['a.js'] })
-    writeFileSync(join(dir, 'stasis.code.br'), brotliCompressSync(seed.sourceData))
+    t.assert.deepStrictEqual(JSON.parse(seed.sourceBundle.serialize()).reason, { webpack: ['b.js'], run: ['a.js'] })
+    writeFileSync(join(dir, 'stasis.code.br'), brotliCompressSync(seed.sourceBundle.serialize()))
 
     // Re-run under bundle=add: absorb the bundle, then observe files the way a real run does --
     // this process only ever records 'run', with no plugin attached.
@@ -1198,7 +1198,7 @@ test('bundle=add carries a loaded multi-consumer `reason` forward instead of dro
 
     // webpack's attribution survives even though this run never recorded it, and the new
     // 'run' file is unioned onto the loaded 'run' entry -- no consumer is lost.
-    t.assert.deepStrictEqual(JSON.parse(rerun.sourceData).reason,
+    t.assert.deepStrictEqual(JSON.parse(rerun.sourceBundle.serialize()).reason,
       { webpack: ['b.js'], run: ['a.js', 'c.js'] })
   } finally {
     rmSync(dir, { recursive: true, force: true })

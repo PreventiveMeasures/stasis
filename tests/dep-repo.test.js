@@ -134,7 +134,7 @@ test('merging takes a dependency repo one side lacks, and holds two that differ 
 test('State records a dependency repo, from its own package.json, in the bundle alone', withTmp((t, tmp) => {
   writeProject(tmp, { repository: { type: 'git', url: 'git+https://github.com/o/dep.git', directory: 'packages/dep' } })
   const state = capture(tmp, { bundle: 'replace', lock: 'replace' })
-  t.assert.deepStrictEqual(JSON.parse(state.sourceData).modules['node_modules/dep'].repo, DEP_REPO)
+  t.assert.deepStrictEqual(JSON.parse(state.sourceBundle.serialize()).modules['node_modules/dep'].repo, DEP_REPO)
   t.assert.equal(JSON.parse(state.lockData).modules['node_modules/dep'].repo, undefined, 'metadata: never in the lockfile')
   t.assert.equal(JSON.parse(state.lockData).sources['.'].repo, undefined, 'first-party code records none')
   t.assert.equal(JSON.parse(state.lockData).repo, undefined, "the build's own repo never reaches the lockfile")
@@ -143,7 +143,7 @@ test('State records a dependency repo, from its own package.json, in the bundle 
 test("State records a dependency at its package.json's gitHead, never the project at its own", withTmp((t, tmp) => {
   writeProject(tmp, { repository: 'github:o/dep', gitHead: COMMIT })
   writeJson(join(tmp, 'package.json'), { name: 'app', version: '1.0.0', repository: 'github:o/app', gitHead: 'b'.repeat(40) })
-  const bundle = JSON.parse(capture(tmp, { bundle: 'replace', lock: 'none' }).sourceData)
+  const bundle = JSON.parse(capture(tmp, { bundle: 'replace', lock: 'none' }).sourceBundle.serialize())
   t.assert.deepStrictEqual(bundle.modules['node_modules/dep'].repo, { github: 'o/dep', commit: COMMIT })
   t.assert.deepStrictEqual(bundle.repo, { github: 'o/app' }, "the project's commit is git's alone")
 }))
@@ -165,7 +165,7 @@ test('State fills in a dependency repo a bundle from an older stasis lacks', wit
   delete old.modules['node_modules/dep'].repo
   writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(old)))
   const state = capture(tmp, { bundle: 'add', lock: 'none' })
-  t.assert.deepStrictEqual(JSON.parse(state.sourceData).modules['node_modules/dep'].repo, { github: 'o/dep' })
+  t.assert.deepStrictEqual(JSON.parse(state.sourceBundle.serialize()).modules['node_modules/dep'].repo, { github: 'o/dep' })
 }))
 
 test('State loads a bundle beside its lockfile whatever dependency repo the bundle records', withTmp((t, tmp) => {

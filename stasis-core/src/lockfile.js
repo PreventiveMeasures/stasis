@@ -1,12 +1,10 @@
-import { assert, assertScope, duplicateKeyError, flatFileKeys, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeRepo, parseBuckets, parseEntries, parseExecutable, parseFormats, parseImports, serializedParts } from './artifact-util.js'
+import { assert, assertScope, isPlainObject, mergedParts, moduleFileKey, moduleFileKeys, moduleInfo, normalizeRepo, parseParts, serializedParts } from './artifact-util.js'
 
 const VERSION = 0
 
-const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
-
-// What the directory, or tarball and patch, a package was installed from are, and the copies it ships, so a lockfile can
-// be audited alone.
-const LOCK_METADATA = ['directory', 'integrity', 'patch', 'vendored']
+// A lockfile, to the parts it shares with a bundle: it records what the directory, or tarball and patch, a package was
+// installed from are, and the copies it ships, so it can be audited alone.
+const LOCKFILE = { what: 'lockfile', regenerate: 'lockfile (lock=replace)', metadata: ['directory', 'integrity', 'patch', 'vendored'] }
 
 export class Lockfile {
   static VERSION = VERSION
@@ -56,36 +54,18 @@ export class Lockfile {
     assert(!!json.entries === full)
     assert(!!json.sources === full)
     assert(isPlainObject(json.modules), 'lockfile: modules must be an object')
-    const entries = full ? parseEntries(json.entries, 'lockfile') : new Set()
-    const modules = parseBuckets(json, 'lockfile', LOCK_METADATA)
-    // Unique across buckets, as in Bundle.parse: hashes and attestation lookups key on the flat path.
-    const flatKeys = flatFileKeys(modules, 'lockfile', duplicateKey)
-    const imports = parseImports(json.imports)
-    const formats = parseFormats(json.formats)
-    const executable = parseExecutable(json.executable, { what: 'lockfile', files: flatKeys, formats, scope: json.config.scope })
-    return new Lockfile({ config: json.config, entries, modules, imports, formats, executable, repo: json.repo })
+    return new Lockfile({ ...parseParts(json, LOCKFILE), repo: json.repo })
   }
 
   serialize() {
-    flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const { entries, sources, modules, imports, formats, executable } = serializedParts(this, 'lockfile', { metadata: LOCK_METADATA })
+    const { entries, sources, modules, imports, formats, executable } = serializedParts(this, LOCKFILE)
     const store = { version: this.version, config: this.config, repo: this.repo, entries, sources, modules, imports, formats, executable }
     return JSON.stringify(store, undefined, 2) + '\n'
   }
 
   // A strict union: buckets must agree, and a file in both must carry the identical hash (fail closed).
   merge(other, label = 'lockfile merge', options) {
-    assert(this.config.scope === other.config.scope,
-      `${label}: scope mismatch ('${this.config.scope}' vs '${other.config.scope}')`)
-    return new Lockfile({
-      config: { scope: this.config.scope },
-      entries: new Set([...this.entries, ...other.entries]),
-      modules: mergeModuleMaps(this.modules, other.modules, label, options),
-      imports: mergeNullable(this.imports, other.imports, mergeImportMaps, 'imports', label),
-      formats: mergeNullable(this.formats, other.formats, mergeFormatMaps, 'formats', label),
-      // `other` (the incoming, newer lockfile) wins for the files it records -- see mergeExecutableSets.
-      executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
-    })
+    return new Lockfile(mergedParts(this, other, label, options))
   }
 
   // merge, refusing a file both record whose execute bit `other` gives otherwise (merge lets `other`'s win).
@@ -97,11 +77,4 @@ export class Lockfile {
     }
     return merged
   }
-}
-
-const mergeNullable = (a, b, merge, what, label) => {
-  if (a === null && b === null) return null
-  assert(a !== null && b !== null,
-    `${label}: cannot merge ${what} (one lockfile attests ${what}, the other does not)`)
-  return merge(a, b, label)
 }

@@ -181,7 +181,7 @@ test('stasis bundle never sets package, and --add to a stamped bundle clears it'
 
 test('State never sets package, and bundle=add clears a stamped one', withTmp((t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'pkg', version: '0.0.1' }))
-  const written = (bundle) => JSON.parse(new State(tmp, { bundle, lock: 'replace', scope: 'full' }).sourceData).package
+  const written = (bundle) => JSON.parse(new State(tmp, { bundle, lock: 'replace', scope: 'full' }).sourceBundle.serialize()).package
   t.assert.equal(written('replace'), undefined, 'a fresh bundle: not set from package.json')
   writeBundle(join(tmp, 'stasis.code.br'), new Bundle({ config: { scope: 'full' }, package: PKG }))
   t.assert.equal(written('add'), undefined, 'added to: cleared')

@@ -25,9 +25,6 @@ const VENDOR_DIRS = {
   __proto__: null,
   next: ['dist/compiled'], // the dependencies Next.js compiles in, ~140, each with a trimmed package.json
 }
-const VENDOR_DIR_LIST = Object.values(VENDOR_DIRS).flat()
-
-const inAnyVendorDir = (rel) => VENDOR_DIR_LIST.some((dir) => rel.startsWith(`${dir}/`))
 
 export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
 
@@ -79,23 +76,29 @@ export function scopeManifestOf(rel, pkgDir, exists) {
   return undefined
 }
 
+// `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
+function packageMetadata(pkgDir, pkg, inNodeModules, more) {
+  const repo = inNodeModules ? packageRepo(pkg) : undefined
+  return { pkgDir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }), ...more }
+}
+
 // In node_modules a bucket's package.json needs name and version; outside, a name alone, as State#locateModule.
 // A malformed one is walked past, or with `strict` throws (its files would otherwise land in the parent's).
-export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
-  const options = { strict, check, host }
+export function findPackageMetadata(baseDir, fileRelPath, options) {
   const read = memoized((rel) => readPackageJson(baseDir, rel, options))
   const nm = splitNodeModulesPath(toPosix(fileRelPath))
+  // The package a file in node_modules is in, which holds what is below it only with a name and version.
+  const hostPkg = nm === null ? undefined : read(`${nm.dir}/package.json`)
+  const holds = hostPkg?.name && hostPkg.version
   // A file in a vendored package is its host's, as State#locateModule has it.
-  if (nm !== null && inAnyVendorDir(nm.rel)) {
-    const pkg = read(`${nm.dir}/package.json`)
-    const vendorDir = pkg?.name && pkg.version ? vendorDirOf(pkg.name, nm.rel) : undefined
-    const { below, vendored } = vendorDir === undefined ? {} : vendoredPackageOf(nm.rel, vendorDir, (sub) => read(`${nm.dir}/${sub}/package.json`))
-    if (below) {
-      const repo = packageRepo(pkg)
-      const { dir: sub, ...identity } = vendored ?? {}
-      return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
-    }
+  const vendorDir = holds ? vendorDirOf(hostPkg.name, nm.rel) : undefined
+  const { below, vendored } = vendorDir === undefined ? {} : vendoredPackageOf(nm.rel, vendorDir, (sub) => read(`${nm.dir}/${sub}/package.json`))
+  if (below) {
+    const { dir: sub, ...identity } = vendored ?? {}
+    return packageMetadata(nm.dir, hostPkg, true, vendored && { vendored: { [sub]: identity } })
   }
+  // Only below a package with a name and version, where the walk past it stops.
+  const isHostsNested = (sub, pkg) => sub !== undefined && holds && (pkg.private === true || isPackagesManifest(`${nm.dir}/${sub}/package.json`, pkg, hostPkg))
   // A file in a subpackage is its host's too: the nearest package.json with a name is walked past, as is a nested one
   // that is the package's, or `private` (npm publishes none), as State#locateModule has it.
   let subpackages
@@ -104,14 +107,12 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     const pkg = read(toPosix(join(dir, 'package.json')))
     const posixDir = toPosix(dir)
     const inNodeModules = hasNodeModulesSegment(posixDir)
-    const sub = pkg?.name && nm !== null ? hostSubpackageDir(read, nm.dir, posixDir, pkg.name) : undefined
-    if (sub !== undefined) {
+    const sub = nm !== null && posixDir.startsWith(`${nm.dir}/`) ? posixDir.slice(nm.dir.length + 1) : undefined
+    if (isSubpackage(pkg?.name, hostPkg?.name, sub)) {
       if (nearest) subpackages = { [sub]: manifestIdentity(pkg) }
-    } else if (pkg?.name && (pkg.version || !inNodeModules) && !isHostsNested(read, nm, posixDir, pkg)) {
-      const repo = inNodeModules ? packageRepo(pkg) : undefined
+    } else if (pkg?.name && (pkg.version || !inNodeModules) && !isHostsNested(sub, pkg)) {
       const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
-      // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
-      return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }), ...(own === undefined ? {} : { subpackages: own }) }
+      return packageMetadata(dir, pkg, inNodeModules, own && { subpackages: own })
     }
     if (pkg?.name) nearest = false
     if (dirname(dir) === dir) return null // '.' and a filesystem root are their own dirname
@@ -120,20 +121,6 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
 
 // Once per directory, the only thing findPackageMetadata's answer depends on.
 export const packageLookup = (baseDir, options) => memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
-
-// Only below a package with a name and version, where the walk past it stops.
-function isHostsNested(read, nm, dir, pkg) {
-  if (nm === null || !dir.startsWith(`${nm.dir}/`)) return false
-  const host = read(`${nm.dir}/package.json`)
-  return host?.name && host.version && (pkg.private === true || isPackagesManifest(`${dir}/package.json`, pkg, host))
-}
-
-function hostSubpackageDir(read, pkgDir, dir, manifestName) {
-  if (!dir.startsWith(`${pkgDir}/`)) return undefined
-  const sub = dir.slice(pkgDir.length + 1)
-  if (typeof manifestName !== 'string' || !manifestName.endsWith(`/${sub}`)) return undefined
-  return isSubpackage(manifestName, read(`${pkgDir}/package.json`)?.name, sub) ? sub : undefined
-}
 
 export const NO_ENTRY = new Set(['ENOENT', 'ENOTDIR'])
 
@@ -186,23 +173,15 @@ export function readPackageJson(baseDir, rel, { strict = false, check, host = di
   const stat = strict ? statStrict(host, file, rel) : host.stat(file)
   if (stat === null || stat.isDirectory()) return null
   check?.(rel)
+  // Lenient lookups decode it as they always have (a stray byte as U+FFFD).
+  if (!strict) return stat.isFile() ? readJson(file, host) : null
+  if (!stat.isFile()) throw new Error(`${rel}: not a regular file`)
+  const bytes = host.readFile(file)
+  if (!isUtf8(bytes)) throw new Error(`${rel}: not valid UTF-8`)
   try {
-    if (!stat.isFile()) throw new Error(`${rel}: not a regular file`)
-    const bytes = host.readFile(file)
-    // Lenient lookups decode it as they always have (a stray byte as U+FFFD).
-    if (strict && !isUtf8(bytes)) throw new Error(`${rel}: not valid UTF-8`)
-    return parseJson(packageJSONText(bytes), rel)
+    return JSON.parse(packageJSONText(bytes))
   } catch (err) {
-    if (strict) throw err
-    return null
-  }
-}
-
-// Never the parser's message, which quotes the text (a file that isn't JSON may be anything, a secret included).
-function parseJson(text, rel) {
-  try {
-    return JSON.parse(text)
-  } catch (err) {
+    // Never the parser's message, which quotes the text (a file that isn't JSON may be anything, a secret included).
     const at = /\(line \d+ column \d+\)/u.exec(err.message)?.[0]
     // eslint-disable-next-line preserve-caught-error -- the parser's error quotes the file
     throw new Error(`${rel} is not valid JSON${at ? ` ${at}` : ''}`)
@@ -277,18 +256,6 @@ export function githubHomepageDirectory(homepage, github) {
 
 const repoLocation = (directory) => (isValidRepoField('directory', directory) ? { directory } : {})
 
-const isRootPath = (path) => path.replaceAll('\\', '/').split('/').every((part) => part === '' || part === '.')
-
-// `{}` where none is declared (unknown, not the root) or `base` has a `..` part (`a/..` is no claim on the root).
-// Its `\` is a separator: Windows users write it so, and it is metadata, not a name on disk.
-const declaredLocation = (base, rel) => {
-  if (typeof base !== 'string') return {}
-  const path = base.replaceAll('\\', '/')
-  if (path.split('/').includes('..')) return {}
-  const directory = posix.join(path, rel).replace(/^\/+|\/+$/gu, '')
-  return repoLocation(directory === '.' ? '' : directory)
-}
-
 function gitDirs(dotGit, host) {
   const pointer = readText(host, dotGit) // null for a `.git` directory (EISDIR)
   const gitDir = pointer?.startsWith('gitdir: ') ? resolve(dirname(dotGit), pointer.slice('gitdir: '.length).trim()) : dotGit
@@ -324,13 +291,16 @@ function repositoryUrl(json) {
 function declaredRepo(json, rel) {
   const github = parseGithubRepository(repositoryUrl(json))
   if (!github) return undefined
-  let base = json.repository.directory
+  const declared = typeof json.repository.directory === 'string'
   // Often unset; a GitHub tree `homepage` places a package below the root, never at it (`/tree/main/.` declares nothing).
-  if (typeof base !== 'string') {
-    base = githubHomepageDirectory(json.homepage, github)
-    if (base !== undefined && isRootPath(base)) base = undefined
-  }
-  return { github, ...declaredLocation(base, rel) }
+  // Its `\` is a separator: Windows users write it so, and it is metadata, not a name on disk.
+  const path = (declared ? json.repository.directory : githubHomepageDirectory(json.homepage, github))?.replaceAll('\\', '/')
+  const parts = path?.split('/')
+  // No directory where none is declared (unknown, not the root) or it has a `..` part (`a/..` is no claim on the root).
+  if (parts === undefined || parts.includes('..')) return { github }
+  if (!declared && parts.every((part) => part === '' || part === '.')) return { github }
+  const directory = posix.join(path, rel).replace(/^\/+|\/+$/gu, '')
+  return { github, ...repoLocation(directory === '.' ? '' : directory) }
 }
 
 // lerna writes `gitHead` into package.json too (npm publish only into the registry's document), and npm keeps it.
