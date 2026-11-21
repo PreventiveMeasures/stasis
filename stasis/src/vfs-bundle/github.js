@@ -127,7 +127,7 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   } catch {
     return null // no plain directory in git (a symlink, or under one): the whole repo resolves it
   }
-  if (!lockfilesListed([listing]).includes(packageManager)) return null
+  if (!listsFile(listing, lockfileOf(packageManager))) return null
   const above = ancestorsOf(directory)
   const aboveNames = () => Promise.all(above.map(names))
   if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), aboveNames))) return null

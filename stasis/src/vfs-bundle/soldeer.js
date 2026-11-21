@@ -96,7 +96,7 @@ export function settleSoldeer(view, vfs, root) {
     return
   }
 
-  const lines = (settings.remappings_regenerate ? '' : remappingsTxt ?? '').split('\n')
+  const lines = (remappingsTxt ?? '').split('\n')
   if (lines.at(-1) === '') lines.pop()
   const existing = pairs(lines.map((line) => line.replace(/\r$/u, '')))
   const text = updatedRemappings(existing, deps, { regenerate: settings.remappings_regenerate, where: where('remappings.txt') }).map((line) => `${line}\n`).join('')
