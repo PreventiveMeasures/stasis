@@ -151,14 +151,14 @@ const toRelative = (r, root) => ({ context: r.context === null ? null : withRoot
 // `From<RelativeRemapping> for Remapping`.
 function fromRelative(rr) {
   const { parent, path } = rr.path
-  const joined = isAbs(path) || parent === null ? path : rustJoin(parent, path)
+  const joined = parent === null ? path : rustJoin(parent, path)
   return { context: rr.context, name: withSlash(rr.name), path: withSlash(joined) }
 }
 
 // `relative_remapping_preserving_context_boundary`: a context's trailing `/` bounds its directory.
 function relativePreservingBoundary(r, root) {
   const rr = toRelative(r, root)
-  if (r.context?.endsWith('/') && rr.context !== null) rr.context = withTrailing(rr.context)
+  if (r.context?.endsWith('/')) rr.context = withTrailing(rr.context)
   return rr
 }
 
@@ -353,7 +353,7 @@ function parseFoundryToml(text, file = null) {
       for (const [name, table] of Object.entries(value)) if (isTomlTable(table)) read(current, name, table)
     } else if (!STANDALONE_SECTIONS.has(key)) read(legacy, key, value)
   }
-  const profiles = new Map([...legacy].map(([name, dict]) => [name, new Map(dict)]))
+  const profiles = new Map(legacy)
   for (const [name, dict] of current) profiles.set(name, new Map([...(profiles.get(name) ?? []), ...dict]))
   return { profiles, topLevel }
 }
@@ -601,7 +601,7 @@ function configuredAutoRemapping(r, packageEntries) {
     if (r.context !== null && (pathEq(lib, r.context) || !pathStartsWith(lib, r.context))) continue
     let rank
     if (pathStartsWith(r.path, lib)) rank = [0, Number.MAX_SAFE_INTEGER - compCount(lib)]
-    else if (r.context !== null && pathStartsWith(lib, r.context) && pathStartsWith(lib, r.path)) rank = [1, compCount(lib)]
+    else if (r.context !== null && pathStartsWith(lib, r.path)) rank = [1, compCount(lib)]
     else continue
     // `min_by` rank, then lib path: the first minimum wins.
     const order = best === null ? -1 : (rank[0] - best.rank[0] || rank[1] - best.rank[1] || cmpPath(lib, best.lib))
