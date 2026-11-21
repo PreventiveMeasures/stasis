@@ -85,8 +85,11 @@ export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModu
 // package of its name: tagged apart, its record naming the directory. `npm:`, as other installs may be told apart too.
 export const NPM_DIRECTORY = 'npm:directory'
 
+// The package manager's ecosystem an install of it is of: npm's, whether from a registry or a directory.
+export const ecosystemFamily = (ecosystem) => (ecosystem === NPM_DIRECTORY ? 'npm' : ecosystem)
+
 // What a package manager of npm's installed into node_modules, from a registry or a directory: its install tells which.
-export const isNpmInstalled = (dir, ecosystem) => hasNodeModulesSegment(dir) && ['npm', NPM_DIRECTORY].includes(dependencyEcosystem(dir, ecosystem))
+export const isNpmInstalled = (dir, ecosystem) => hasNodeModulesSegment(dir) && ecosystemFamily(dependencyEcosystem(dir, ecosystem)) === 'npm'
 
 // The normalizer of a record's `field` block: only a bucket `carries` takes (a `kind` one) holds it, `required` set.
 const blockMetadata = (field, fields, required, carries, kind) => (dir, { ecosystem, [field]: block }, what) => {
@@ -106,7 +109,7 @@ const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{4
 const PATCH_FILE = /^(?:\.\.\/)*(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+(?:\/(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+)*$/u
 const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v), file: (v) => typeof v === 'string' && v.length <= 4096 && PATCH_FILE.test(v) }
 // As a patch's file, but `.` (the bundle root) and `..` (one above it) name a directory too.
-const DIRECTORY_PATH = /^(?:\.|\.\.(?:\/\.\.)*|(?:\.\.\/)*(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+(?:\/(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+)*)$/u
+const isDirectoryPath = (v) => typeof v === 'string' && (v === '.' || /^\.\.(?:\/\.\.)*$/u.test(v) || PATCH_FIELDS.file(v))
 
 // Required of an `npm:directory` record, and carried by no other.
 const normalizeModuleDirectory = (dir, { ecosystem, directory }, what) => {
@@ -116,7 +119,7 @@ const normalizeModuleDirectory = (dir, { ecosystem, directory }, what) => {
     return undefined
   }
   if (!tagged) assert(false, `${what}: '${dir}' is no ${NPM_DIRECTORY} dependency's bucket, and carries no directory`)
-  if (typeof directory !== 'string' || directory.length > 4096 || !DIRECTORY_PATH.test(directory)) assert(false, `invalid ${what} module '${dir}' directory: ${JSON.stringify(directory)}`)
+  if (!isDirectoryPath(directory)) assert(false, `invalid ${what} module '${dir}' directory: ${JSON.stringify(directory)}`)
   return directory
 }
 
@@ -225,9 +228,12 @@ export const sameAttested = (field, a, b) => AGREE[field](a, b)
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
 
-// A record of an integrity or a directory and no patch attests the patch null (installed unpatched); undefined: it
-// tells nothing.
-export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && (record.integrity !== undefined || record.directory !== undefined) ? null : undefined)
+// What a record attests there is none of, by what it records of its install: one of an archive's integrity or a patch
+// was installed from no directory (a patch to one is refused), one from a directory of no archive, and either,
+// recording no patch, unpatched.
+const ATTESTS_NONE = { directory: ['integrity', 'patch'], integrity: ['directory'], patch: ['integrity', 'directory'] }
+// null where it attests there is none; undefined: it tells nothing.
+export const attestedOf = (record, field) => record[field] ?? (ATTESTS_NONE[field].some((by) => record[by] !== undefined) ? null : undefined)
 
 const agree = (field, record, other, what) => {
   if (sameAttested(field, record[field], other[field])) return
@@ -667,11 +673,6 @@ export const duplicateKeyError = (what, regenerate) => (key) => assert(false,
   `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
   `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`)
 
-// An npm record attesting nothing of its install (an older stasis's of a package installed from a directory) is one of
-// npm:directory's too, which a merge takes (withMetadataOf): of the files it was recorded with alone, as any attested value.
-const sameEcosystem = (a, b) => a.ecosystem === b.ecosystem
-  || [[a, b], [b, a]].some(([npm, other]) => npm.ecosystem === 'npm' && other.ecosystem === NPM_DIRECTORY && !attestsAny(npm))
-
 // Result `files` objects are null-prototype, so a `__proto__` file name is a plain own key. With
 // `held`, `b` is held to `a`, not merged into it: what `b` alone attests stays a claim of its own files.
 export function mergeModuleMaps(a, b, label, { held = false } = {}) {
@@ -690,7 +691,9 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
         ((existing.version == null) === (info.version == null) ? '' :
           ` -- an artifact from an older stasis may record a placeholder version for a workspace ` +
           `package without one; regenerate it (bundle=replace / lock=replace)`))
-      assert(sameEcosystem(existing, info),
+      // An npm record and an npm:directory one are of one package manager: whether it installed the package from a
+      // directory is attested (withMetadataOf), an older stasis's record of one, attesting nothing, taken to it.
+      assert(ecosystemFamily(existing.ecosystem) === ecosystemFamily(info.ecosystem),
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
       // An attested value one side alone records is of its files alone: the other may add none.
       out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))

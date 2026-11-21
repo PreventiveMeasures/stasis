@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { archiveIntegrity, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, moduleInfo, posixPathEscapes, tarballIntegrityOf, upsert } from '@exodus/stasis-core/util'
+import { archiveIntegrity, ATTESTED_METADATA, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, moduleInfo, posixPathEscapes, tarballIntegrityOf, upsert } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -580,7 +580,7 @@ export function pinFromTree(bundle, root, tree) {
     // deptree read it at the path pnpm's settings name, from the lockfile's directory, and held it to its hash.
     if (pinned.patch) pinned.patch.file = fromRoot(pkg.patch.path)
     bundle.modules.set(dir, moduleInfo({ ...info, ...pinned }))
-    accounts.set(dir, { directory: pinned.directory, integrity: pinned.integrity, patch: pinned.patch })
+    accounts.set(dir, Object.fromEntries(ATTESTED_METADATA.map((field) => [field, pinned[field]])))
   }
   return accounts
 }

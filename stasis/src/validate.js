@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { CONFIG_FILE, EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, hasNodeModulesSegment, integrityHex, isStatFormat, LOCK_FILE, memoized, moduleFileKey, NPM_DIRECTORY, parseLockfilesOption, sha512Of, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, ecosystemFamily, hasNodeModulesSegment, integrityHex, isStatFormat, LOCK_FILE, memoized, moduleFileKey, NPM_DIRECTORY, parseLockfilesOption, posixPathEscapes, sha512Of, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -18,7 +18,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { isPatchOf, lfShebang, localDirectory, nameAt, patchHashes, STORE_HASH, resolutionCommit } from './installed.js'
+import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -450,8 +450,8 @@ const pathIn = (dir, name) => (dir ? `${dir}/${name}` : name)
 const repoDir = (dir) => (dir === '.' ? '' : dir)
 // A record's directory, from the bundle's root at `root` in the repository, by its path there; null above it.
 function inRepository(root, directory) {
-  const path = posix.join(root || '.', directory)
-  return path === '..' || path.startsWith('../') ? null : repoDir(path)
+  const path = posix.join(root, directory)
+  return posixPathEscapes(path) ? null : repoDir(path)
 }
 
 async function eachOf(items, parallel, run) {
@@ -492,7 +492,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     if (!pkg.name || !pkg.version) return unverified('unnamed')
     const dirs = [...new Set(pkg.files.map((file) => file.dir))]
     const fromDirectory = pkg.ecosystem === NPM_DIRECTORY
-    const places = new Map(pkg.ecosystem === 'npm' || fromDirectory ? dirs.map((dir) => [dir, placed(pkg, dir, locked)]) : [])
+    const places = new Map(ecosystemFamily(pkg.ecosystem) === 'npm' ? dirs.map((dir) => [dir, placed(pkg, dir, locked)]) : [])
     const misplaced = dirs.find((dir) => places.get(dir) === false)
     if (misplaced !== undefined) {
       counts.misplaced++
@@ -536,13 +536,13 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     // of its name from there, failed, as they hold no package of a directory to its version.
     let local
     if (fromDirectory) {
-      const recorded = dirs.map((dir) => pkg.directories.get(dir))
-      const unlocked = recorded.find((directory) => locked?.locksDirectory?.(pkg.name, directory) === false)
-      if (unlocked !== undefined) return fails('directory-not-locked', { at: unlocked })
-      if (directories === undefined) return unverified('local', 'unverified', { at: recorded[0] })
-      local = new Map(dirs.map((dir, i) => [dir, inRepository(directories.root, recorded[i])]))
-      const outside = dirs.findIndex((dir) => local.get(dir) === null)
-      if (outside !== -1) return unverified('directory-outside', 'unverified', { at: recorded[outside] })
+      const recorded = (dir) => pkg.directories.get(dir)
+      const unlocked = dirs.find((dir) => locked?.locksDirectory?.(pkg.name, recorded(dir)) === false)
+      if (unlocked !== undefined) return fails('directory-not-locked', { at: recorded(unlocked) })
+      if (directories === undefined) return unverified('local', 'unverified', { at: recorded(dirs[0]) })
+      local = new Map(dirs.map((dir) => [dir, inRepository(directories.root, recorded(dir))]))
+      const outside = dirs.find((dir) => local.get(dir) === null)
+      if (outside !== undefined) return unverified('directory-outside', 'unverified', { at: recorded(outside) })
       try {
         pinned = new Map(await Promise.all(dirs.map(async (dir) => [dir, await directories.tree(local.get(dir))])))
       } catch (error) {
@@ -580,7 +580,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     // A directory's bin with a CRLF `#!` line is copied with that CR dropped by pnpm before 12, as a build takes it.
     const isCopy = (file, bytes) => {
       if (isFile(file, bytes)) return true
-      const copied = fromDirectory ? lfShebang(bytes) : undefined
+      const copied = fromDirectory || lock?.from === 'local' ? lfShebang(bytes) : undefined
       return copied !== undefined && isFile(file, copied)
     }
     const matches = (file, bytes, candidate) => (checksum(file) ? checksumOf(bytes, candidate) : candidate.has(file.rel) && isCopy(file, candidate.get(file.rel)))
@@ -845,7 +845,7 @@ function readLockfile(name, read) {
       if (pattern.startsWith('npm:', split + 1)) aliases.add(`${pattern.slice(0, split)}\0${pkg}@${version}`)
     }
     // yarn locks a directory by its spec alone, as it last read the version there.
-    const dir = resolution === undefined ? patterns?.map((pattern) => localDirectory(pattern.slice(pattern.indexOf('@', 1) + 1))).find(Boolean) : undefined
+    const dir = yarnDirectory({ patterns, resolution })
     if (dir !== undefined) local(pkg, dir)
     else if (version !== undefined) add(pkg, version, lockedFrom(fromGit(resolution), resolution?.type === 'tarball' && registryTarball(resolution.tarball, pkg, version), sha512Of(resolution?.integrity), resolution))
   }
@@ -891,13 +891,15 @@ export function lockedBy(lockfiles) {
   const innermost = (of, dir) => of.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).reduce((inner, one) => (inner === undefined || depth(one.at) > depth(inner.at) ? one : inner), undefined)
   const aloneOf = memoized((one) => lockedBy([given.get(one)]))
   const locationIn = (one, dir) => (above(one.at) ? pathIn(one.root, dir) : dir.slice(one.at.length + 1))
+  // The directories `one` installs a package of `name` from, by their paths in its own terms.
+  const localsOf = (one, name) => [...(one.locals?.get(name) ?? [])].map((dir) => posix.join(posix.dirname(one.path), dir))
   return {
     lockfiles: all.map(({ path }) => path),
     locks: (ecosystem) => by.has(ecosystem),
     // Each copy held to the innermost lockfile holding it alone; those none holds, to them all.
     split(pkg) {
       // A package installed from a directory is held to the npm lockfile installing it, as any npm copy is.
-      const same = by.get(pkg.ecosystem === NPM_DIRECTORY ? 'npm' : pkg.ecosystem) ?? []
+      const same = by.get(ecosystemFamily(pkg.ecosystem)) ?? []
       if (same.length < 2) return undefined
       return [...Map.groupBy(pkg.files, (file) => innermost(same, file.dir))].map(([one, files]) => ({ pkg: { ...pkg, files }, locked: one === undefined ? this : aloneOf(one) }))
     },
@@ -906,7 +908,7 @@ export function lockedBy(lockfiles) {
       if (same === undefined) return undefined
       const locks = same.flatMap(({ entries }) => entries.get(`${name}@${version}`) ?? [])
       if (locks.length === 0) {
-        const dirs = same.flatMap(({ locals, path }) => [...(locals?.get(name) ?? [])].map((dir) => repoDir(posix.join(posix.dirname(path), dir))))
+        const dirs = same.flatMap((one) => localsOf(one, name).map(repoDir))
         return dirs.length > 0 ? { from: 'local', directories: [...new Set(dirs)] } : null
       }
       const integrities = new Set(locks.filter((entry) => entry.from === 'registry').map((entry) => entry.integrity))
@@ -955,8 +957,7 @@ export function lockedBy(lockfiles) {
       return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },
     // Whether they install a package of `name` from `directory` (from the bundle root); undefined for none read.
-    locksDirectory: (name, directory) => (npms.length === 0 ? undefined
-      : npms.some((npm) => [...(npm.locals?.get(name) ?? [])].some((dir) => posix.join(posix.dirname(npm.path), dir) === posix.join(npm.bundleDir, directory)))),
+    locksDirectory: (name, directory) => (npms.length === 0 ? undefined : npms.some((npm) => localsOf(npm, name).includes(posix.join(npm.bundleDir, directory)))),
     // A directory's package of that name, where no other of that version is locked, too; undefined for none read.
     aliased: (as, named) => (npms.length === 0 ? undefined : npms.some((npm) => npm.aliases.has(`${as}\0${named}`)
       || (!npm.entries.has(named) && Boolean(npm.directoryAliases?.has(`${as}\0${named.slice(0, named.lastIndexOf('@'))}`))))),
@@ -1255,14 +1256,14 @@ export async function validateRepository(plan, { repository = null, commit, dire
     const files = lockfile === false ? null : !needed ? [] : lockfile !== true ? lockfile.map((one) => ({ git, ...one }))
       : configured !== undefined
         ? await Promise.all(configured.filter((path) => LOCKFILES.has(posix.basename(path))).map(async (path) => ({ path, text: await readOf(path), git, ...ofRepository(path, [pathIn(repoDir(posix.dirname(path)), 'patches')]) })))
-        : [
-          ...ecosystems.size > 0 ? await repositoryLockfiles({ directory, ecosystems, list, read: readRepository }) : [],
-          ...directoriesAlone ? await repositoryLockfiles({ directory, ecosystems: new Set(['npm']), list, read: readRepository }).catch((error) => {
+        : (await Promise.all([
+          ecosystems.size > 0 ? repositoryLockfiles({ directory, ecosystems, list, read: readRepository }) : [],
+          directoriesAlone ? repositoryLockfiles({ directory, ecosystems: new Set(['npm']), list, read: readRepository }).catch((error) => {
             if (error instanceof ValidateError && error.code === 'no-lockfile') return []
             throw error
           }) : [],
-          ...readsBeside ? await besideLockfiles({ directory, names: beside, list, read: readRepository }) : [],
-        ].map((one) => ({ ...one, git, ...ofRepository(one.path) }))
+          readsBeside ? besideLockfiles({ directory, names: beside, list, read: readRepository }) : [],
+        ])).flat().map((one) => ({ ...one, git, ...ofRepository(one.path) }))
     const held = files && lockedBy(files)
     for (const ecosystem of held ? ecosystems : []) {
       if (held.locks(ecosystem)) continue

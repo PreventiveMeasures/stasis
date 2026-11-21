@@ -285,7 +285,9 @@ A dependency the bundle records as `npm:directory` (see
 directory that pnpm or yarn copied into `node_modules`, names the directory it
 was installed from. Each copy's files are held to the repository's in that
 directory at the commit, the bundle's directory's path added in front: a file
-there with other bytes differs, and one it hasn't is unexpected. It needs no
+there with other bytes differs, and one it hasn't is unexpected; a bin whose
+`#!` line ends in CRLF there may have that CR dropped, as pnpm before 12 copies
+it (an older `npm` record of it, below, likewise). It needs no
 lockfile and nothing is fetched for it, so `--no-lockfile` and `--only-deps`
 hold it all the same, the repository read for it. Where its npm lockfile is
 read (the repository's, read for it where one is there but required only for

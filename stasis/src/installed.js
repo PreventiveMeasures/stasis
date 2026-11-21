@@ -93,17 +93,22 @@ function npmLocks(file, host, strict) {
 const resolutionOf = (resolution) => (resolution?.type === 'git' ? `${resolution.repo}#${resolution.commit}` : resolution?.sha1 === undefined ? resolution?.tarball : `${resolution.tarball}#${resolution.sha1}`)
 
 // The directory a `file:` spec names, or with `linked` a `link:` one; none for a tarball's.
-export function localDirectory(spec, { linked = true } = {}) {
+function localDirectory(spec, linked) {
   const path = (linked ? /^(?:file|link):(.+)$/u : /^file:(.+)$/u).exec(spec)?.[1]
   return path === undefined || /\.(?:tgz|tar\.gz|tar)$/u.test(path) ? undefined : path
 }
 
-// yarn locks a directory by its spec alone, from yarn.lock's directory (a workspace's too), as .yarn-integrity has it
-// resolved at ''.
+// yarn locks a directory by its spec alone, from yarn.lock's directory (a workspace's too): the one of a yarn.lock
+// entry's patterns, or with `linked` its `link:`'s too.
+export const yarnDirectory = ({ patterns, resolution }, { linked = true } = {}) => (resolution === undefined
+  ? (patterns ?? []).map((pattern) => localDirectory(pattern.slice(pattern.indexOf('@', 1) + 1), linked)).find(Boolean)
+  : undefined)
+
+// A directory's entry as .yarn-integrity has it resolved, at ''.
 const yarnEntries = (file, host, strict) => parseLock(file, host, strict, (text) => {
   const entries = new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages))
   return [...entries].map(({ patterns, name, version, resolution }) => {
-    const local = resolution === undefined ? (patterns ?? []).map((pattern) => localDirectory(pattern.slice(pattern.indexOf('@', 1) + 1), { linked: false })).find(Boolean) : undefined
+    const local = yarnDirectory({ patterns, resolution }, { linked: false })
     return {
       id: `${name}@${version}`,
       patterns,
@@ -284,33 +289,40 @@ export function lfShebang(source) {
 
 const isCopyOf = (copy, source) => Buffer.compare(copy, source) === 0 || Buffer.compare(copy, lfShebang(source) ?? source) === 0
 
+// One file, its two names hardlinks pnpm makes: what a host tells no inode of is read.
+const sameFile = (a, b) => a.ino > 0 && a.dev === b.dev && a.ino === b.ino
+
 // Each of `files` the copy at `real` holds is the one at `source` it was copied from, else the copy is stale: it was
 // edited apart from its source, or its source since (a hardlink pnpm made broken as an editor saves anew). Where no
-// source is there (node_modules alone copied into an image), nothing tells.
-function heldToSource(dir, real, files, source, directory, host) {
+// source is there (node_modules alone copied into an image), nothing tells. Each copy once, of those `held` holds.
+function heldToSource(dir, real, files, source, directory, host, held) {
   if (!host.stat(source)?.isDirectory()) return
   for (const rel of files) {
-    let copy
-    try {
-      copy = host.readFile(join(real, rel))
-    } catch {
-      continue // none there, or a directory: the run reads none of it from here
-    }
-    let original
-    try {
-      original = host.readFile(join(source, rel))
-    } catch {
-      throw new Error(`${dir}/${rel} was installed from ${posix.join(directory, rel)}, which is gone: install from it again`)
-    }
-    if (!isCopyOf(copy, original)) throw new Error(`${dir}/${rel} is not ${posix.join(directory, rel)}, which it was installed from: install from it again`)
+    const [copy, from] = [join(real, rel), join(source, rel)]
+    const copied = held.has(copy) ? null : host.stat(copy)
+    if (!copied?.isFile()) continue // held already, none there, or a directory: the run reads none of it from here
+    const original = host.stat(from)
+    if (!original?.isFile()) throw new Error(`${dir}/${rel} was installed from ${posix.join(directory, rel)}, which is gone: install from it again`)
+    if (!sameFile(copied, original) && !isCopyOf(host.readFile(copy), host.readFile(from))) throw new Error(`${dir}/${rel} is not ${posix.join(directory, rel)}, which it was installed from: install from it again`)
+    held.add(copy)
   }
 }
 
-// With `locate`, a patch's record carries its file, from `root`: found and held to its hash, else refused.
-export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map(), locate = false } = {}) {
+// With `locate`, a patch's record carries its file, from `root`: found and held to its hash, else refused. `stores`,
+// `layouts` and `held` (the copies held to their directories) are what a caller reading them again keeps of them.
+export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map(), held = new Set(), locate = false } = {}) {
   const accounts = new Map()
   let top // the bundle root's real path, as each package's is compared with it
   const rootReal = () => (top ??= resolve(host.realpath(resolve(root))))
+  // A root that can't be resolved reaches none of them.
+  const rooted = () => {
+    try {
+      rootReal()
+      return true
+    } catch {
+      return false
+    }
+  }
   const layoutAt = (dir) => upsert(layouts, dir, () => layoutOf(dir, host))
   for (const [dir, info] of modules) {
     // An untagged bucket under node_modules is npm's too (an artifact from before the tag).
@@ -328,11 +340,7 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
       const [, store, name] = pnpm
       ;[layout, at] = [upsert(stores, store, () => storeOf(store, host)), [name]]
     } else {
-      try {
-        rootReal()
-      } catch {
-        return accounts
-      }
+      if (!rooted()) return accounts
       const rel = relative(top, real)
       const parts = toPosix(rel).split('/')
       const segment = parts.indexOf('node_modules')
@@ -350,13 +358,9 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
     if (told === undefined || told.ambiguous) continue
     let directory
     if (told.directory !== undefined) {
-      try {
-        rootReal()
-      } catch {
-        return accounts
-      }
+      if (!rooted()) return accounts
       directory = toPosix(relative(top, told.directory)) || '.'
-      heldToSource(dir, real, Object.keys(info.files), told.directory, directory, host)
+      heldToSource(dir, real, Object.keys(info.files), told.directory, directory, host, held)
     }
     const metadata = installedMetadata(dir, info.ecosystem, { ...told, directory })
     // A record of the lockfile alone is held to, never recorded: its patch is not looked for.
@@ -366,9 +370,9 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
   return accounts
 }
 
-// A record given a directory is tagged npm:directory (moduleInfo).
-export function pinInstalled(bundle, root, host = diskHost) {
-  const accounts = installedRecords(bundle.modules, root, host, { locate: true })
+// A record given a directory is tagged npm:directory (moduleInfo). `cache` as installedRecords keeps it.
+export function pinInstalled(bundle, root, host = diskHost, cache = {}) {
+  const accounts = installedRecords(bundle.modules, root, host, { ...cache, locate: true })
   for (const [dir, { locked, ...metadata }] of accounts) if (!locked) bundle.modules.set(dir, moduleInfo({ ...bundle.modules.get(dir), ...metadata }))
   return accounts
 }

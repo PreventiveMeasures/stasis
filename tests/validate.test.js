@@ -1256,9 +1256,11 @@ test('validate: an npm:directory package held to the directory it records, of th
   // A bin with a CRLF `#!` line, as pnpm before 12 copies it (that CR dropped), or as it is; a bundle's and a lockfile's.
   const crlf = { ...repo, 'lib/bin.js': '#!/usr/bin/env node\r\nbin()\r\n' }
   for (const bin of ['#!/usr/bin/env node\nbin()\r\n', '#!/usr/bin/env node\r\nbin()\r\n']) {
+    // eslint-disable-next-line no-await-in-loop -- run writes one bundle file at a time
     t.assert.deepStrictEqual((await run({ ...fromLib, files: { 'index.js': 'lib\n', 'bin.js': bin } }, {}, crlf))[0], 'valid', JSON.stringify(bin))
   }
   t.assert.deepStrictEqual((await run({ ...fromLib, files: { 'index.js': 'lib\n', 'bin.js': '#!/usr/bin/env node\nbin()\n' } }, {}, crlf))[0], 'invalid', 'its other line endings changed too')
+  t.assert.deepStrictEqual((await run({ files: { 'index.js': 'lib\n', 'bin.js': '#!/usr/bin/env node\nbin()\r\n' } }, {}, crlf))[0], 'valid', 'an older stasis\'s npm record of it, held to the directory its lockfile names')
   const locked = join(tmp, 'stasis.lock.json')
   writeFileSync(locked, new Lockfile({ config: { scope: 'node_modules' }, modules: new Map([[dir, { name: 'lib', version: '2.0.0', ...fromLib, files: { 'bin.js': sha512integrity(bytes('#!/usr/bin/env node\nbin()\r\n')) } }]]), imports: new Map(), formats: new Map() }).serialize())
   t.assert.equal((await validate(locked, { client: repoClient(crlf), github: 'org/repo', sha: commit, directory: 'web', own: false })).status, 'valid', 'a lockfile of its integrity')

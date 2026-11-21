@@ -625,7 +625,8 @@ bundle: node_modules/dep/.npmrc is a file no bundle may carry
   tells. A merge takes an `npm` record that attests nothing (no `integrity`,
   `patch` or `directory`), an older stasis's of such a package, as
   `npm:directory`'s, of the files it was recorded with alone as any attested
-  value is; one of an `integrity` disagrees with it (`ecosystem mismatch`).
+  value is; one of an `integrity`, installed from no directory, disagrees with
+  it (`directory mismatch (none vs …)`).
   [`stasis validate`](validate.md#packages-installed-from-a-directory) holds
   it to that directory of the repository at the commit.
 - A dependency record may carry `integrity`, after `ecosystem`: the SRI of the
