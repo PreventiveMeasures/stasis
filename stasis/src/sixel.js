@@ -163,15 +163,16 @@ const LOGOS = {
 
 const SIZES = Object.keys(LOGOS).map(Number)
 
-// Each pixel's register (0 for none): sixel data draws in bands of six rows, a character's bits a column, top first.
-function decode(image) {
+// Each pixel's register (0 for none), `top` blank rows above the image: sixel data draws in bands of six rows, a
+// character's bits a column, top first.
+function decode(image, top) {
   const header = image.slice(0, image.indexOf('#'))
   const [width, height] = header.split(';').slice(-2).map(Number)
   const colours = new Map()
-  const pixels = new Uint8Array(width * height)
+  const pixels = new Uint8Array(width * (height + top))
   let register = 0
   let x = 0
-  let y = 0
+  let y = top
   for (const [, at, rgb, count = '1', sixel, control] of image.slice(header.length, -2).matchAll(/#(\d+)(?:;2;([\d;]+))?|(?:!(\d+))?([?-~])|([$-])/gu)) {
     if (at !== undefined) {
       register = Number(at)
@@ -186,7 +187,7 @@ function decode(image) {
       }
     }
   }
-  return { width, height, colours, pixels }
+  return { width, height: height + top, colours, pixels }
 }
 
 // As the logos above are written: a band's registers each a line, runs of three or more counted.
@@ -210,14 +211,6 @@ function encode({ width, height, colours, pixels }) {
   return `\x1bP9;1q"1;1;${width};${height}${defined}${bands.join('-')}\x1b\\`
 }
 
-// `image` lowered by `top` pixels, the rows above it left as the terminal has them.
-function lowered(image, top) {
-  const { width, height, colours, pixels } = decode(image)
-  const below = new Uint8Array(width * (height + top))
-  below.set(pixels, width * top)
-  return encode({ width, height: height + top, colours, pixels: below })
-}
-
 // A register above the logos' own (8 at most), for the terminal's background: iTerm2 draws what a sixel image
 // leaves undrawn in the highest register drawn with (libsixel's index for none, 255, cut to the highest),
 // where other terminals leave it as it is; so it is drawn with, a blank character, which draws nothing.
@@ -234,7 +227,8 @@ export function logos(cell, background) {
     top = Math.floor((cell.height - size) / 2)
   }
   const fitted = (image) => {
-    const placed = top > 0 ? lowered(image, top) : image
+    // Lowered by `top` pixels, the rows above it left as the terminal has them.
+    const placed = top > 0 ? encode(decode(image, top)) : image
     return background ? `${placed.slice(0, -2)}$#${BACKGROUND};2;${background}?\x1b\\` : placed
   }
   return Object.fromEntries(Object.entries(LOGOS[size]).map(([name, image]) => [name, fitted(image)]))
