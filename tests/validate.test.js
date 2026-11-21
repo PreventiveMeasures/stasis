@@ -12,6 +12,7 @@ import { brotliCompressSync } from 'node:zlib'
 import { toBase32 } from '@exodus/bytes/base32.js'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
@@ -1224,6 +1225,73 @@ test('validate: a dependency from the repository\'s root (`file:.`) held to the 
   t.assert.deepStrictEqual([checked.status, checked.problems], ['valid', []], 'of the own code\'s tree')
   t.assert.deepStrictEqual([(await validate(file, { client, own: false })).status], ['valid'], 'of the root\'s own tree')
 }))
+
+test('validate: an npm:directory package held to the directory it records, of the repository at the commit, and to the npm lockfile installing it where one is there; an npm one of a directory as before', withTmp(async (t, tmp) => {
+  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      lib:\n        specifier: file:../lib\n        version: file:lib\n\npackages:\n\n  lib@file:lib:\n    resolution: {directory: lib, type: directory}\n\nsnapshots:\n\n  lib@file:lib: {}\n`
+  const repo = { 'pnpm-lock.yaml': lock, 'lib/index.js': 'lib\n', 'lib/package.json': '{"name":"lib","version":"2.0.0"}\n', 'web/package.json': '{"name":"web","version":"1.0.0"}\n', 'web/src/main.js': 'main\n' }
+  const dir = 'node_modules/.pnpm/lib@file+lib/node_modules/lib'
+  const run = async (record, options = {}, files = repo) => {
+    const file = join(tmp, 'web.stasis.code.br')
+    writeBundle(file, { repo: { github: 'org/repo', commit, directory: 'web' }, modules: new Map([
+      ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+      [dir, { name: 'lib', version: '2.0.0', files: { 'index.js': 'lib\n' }, ...record }],
+    ]) })
+    const report = await validate(file, { client: repoClient(files), fetch: upstream(), ...options })
+    return [report.status, report.lockfiles, report.packages.map((pkg) => [pkg.ecosystem, pkg.status, pkg.reason ?? null, pkg.at ?? pkg.directory ?? null]), report.problems.filter((problem) => problem.of !== 'own')]
+  }
+  const fromLib = { ecosystem: 'npm:directory', directory: '../lib' }
+  t.assert.deepStrictEqual(await run(fromLib), ['valid', ['pnpm-lock.yaml'], [], []], 'lib/ at the commit, as pnpm-lock.yaml installs it')
+  t.assert.deepStrictEqual(await run(fromLib, { lockfile: false }), ['valid', null, [], []], 'with no lockfile: the directory it records alone')
+  t.assert.deepStrictEqual(await run(fromLib, { own: false, lockfile: false }), ['valid', null, [], []], 'its own code skipped, the repository read for it all the same')
+  const { 'pnpm-lock.yaml': _lock, ...unlocked } = repo
+  t.assert.deepStrictEqual(await run(fromLib, {}, unlocked), ['valid', [], [], []], 'none there, none required')
+  t.assert.deepStrictEqual(await run({ ...fromLib, files: { 'index.js': 'edited\n' } }), ['invalid', ['pnpm-lock.yaml'], [['npm:directory', 'invalid', null, 'lib']], [{ path: `${dir}/index.js`, kind: 'differs', of: 'npm:directory:lib@2.0.0' }]], 'its files the directory\'s')
+  t.assert.deepStrictEqual(await run({ ecosystem: 'npm:directory', directory: '../other' }), ['invalid', ['pnpm-lock.yaml'], [['npm:directory', 'invalid', 'directory-not-locked', '../other']], []], 'one the lockfile installs it from elsewhere than')
+  t.assert.deepStrictEqual(await run({ ecosystem: 'npm:directory', directory: '../../lib' }, { lockfile: false }), ['incomplete', null, [['npm:directory', 'unverified', 'directory-outside', '../../lib']], []], 'one above the repository')
+  // A lockfile given on disk, the bundle's directory one of its importers: held to it, though no package of a registry asks for one.
+  const given = join(tmp, 'pnpm-lock.yaml')
+  writeFileSync(given, lock)
+  t.assert.deepStrictEqual(await run(fromLib, { lockfile: [given] }), ['valid', [given], [], []], 'as the lockfile given installs it')
+  t.assert.deepStrictEqual(await run({ ecosystem: 'npm:directory', directory: '../other' }, { lockfile: [given] }), ['invalid', [given], [['npm:directory', 'invalid', 'directory-not-locked', '../other']], []], 'one the lockfile given installs it from elsewhere than')
+  // A bin with a CRLF `#!` line, as pnpm before 12 copies it (that CR dropped), or as it is; a bundle's and a lockfile's.
+  const crlf = { ...repo, 'lib/bin.js': '#!/usr/bin/env node\r\nbin()\r\n' }
+  for (const bin of ['#!/usr/bin/env node\nbin()\r\n', '#!/usr/bin/env node\r\nbin()\r\n']) {
+    // eslint-disable-next-line no-await-in-loop -- run writes one bundle file at a time
+    t.assert.deepStrictEqual((await run({ ...fromLib, files: { 'index.js': 'lib\n', 'bin.js': bin } }, {}, crlf))[0], 'valid', JSON.stringify(bin))
+  }
+  t.assert.deepStrictEqual((await run({ ...fromLib, files: { 'index.js': 'lib\n', 'bin.js': '#!/usr/bin/env node\nbin()\n' } }, {}, crlf))[0], 'invalid', 'its other line endings changed too')
+  t.assert.deepStrictEqual((await run({ files: { 'index.js': 'lib\n', 'bin.js': '#!/usr/bin/env node\nbin()\r\n' } }, {}, crlf))[0], 'valid', 'an older stasis\'s npm record of it, held to the directory its lockfile names')
+  const locked = join(tmp, 'stasis.lock.json')
+  writeFileSync(locked, new Lockfile({ config: { scope: 'node_modules' }, modules: new Map([[dir, { name: 'lib', version: '2.0.0', ...fromLib, files: { 'bin.js': sha512integrity(bytes('#!/usr/bin/env node\nbin()\r\n')) } }]]), imports: new Map(), formats: new Map() }).serialize())
+  t.assert.equal((await validate(locked, { client: repoClient(crlf), github: 'org/repo', sha: commit, directory: 'web', own: false })).status, 'valid', 'a lockfile of its integrity')
+  // A record of an older stasis: npm's, of no integrity, held to the directory the lockfile installs it from.
+  t.assert.deepStrictEqual(await run({}), ['valid', ['pnpm-lock.yaml'], [], []], 'an npm record as before')
+  t.assert.deepStrictEqual(await run({ integrity: SRI }), ['invalid', ['pnpm-lock.yaml'], [['npm', 'invalid', 'integrity-not-locked', null]], []], 'an npm record of an integrity, which no directory has')
+  // With no repository to read: unverified, as a directory the lockfile names is with none read.
+  const file = join(tmp, 'bare.stasis.code.br')
+  writeBundle(file, { modules: new Map([[dir, { name: 'lib', version: '2.0.0', files: { 'index.js': 'lib\n' }, ...fromLib }]]) })
+  const bare = await validate(file, { own: false, lockfile: false })
+  t.assert.deepStrictEqual([bare.status, bare.packages.map((pkg) => [pkg.reason, pkg.at])], ['incomplete', [['local', '../lib']]])
+  const unlockedBare = await validate(file, { own: false })
+  t.assert.deepStrictEqual([unlockedBare.status, unlockedBare.packages.map((pkg) => [pkg.reason, pkg.at])], ['incomplete', [['local', '../lib']]], 'no repository to look its lockfile up in')
+  t.assert.ok(hasRow(printed(bare).rows, ['unverified', 'npm:directory', 'lib@2.0.0', 'installed from a directory of the repository, which isn\'t read: ../lib']), printed(bare).out)
+}))
+
+test('validateBundle: an npm:directory copy held to the innermost npm lockfile installing it, as any npm copy is', async (t) => {
+  const pnpm = (directory) => `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      lib:\n        specifier: file:${directory}\n        version: file:${directory}\n\npackages:\n\n  lib@file:${directory}:\n    resolution: {directory: ${directory}, type: directory}\n\nsnapshots:\n\n  lib@file:${directory}: {}\n`
+  const tree = async (dir) => (['lib', 'tools/vendor/lib'].includes(dir) ? new Map([['index.js', bytes('lib\n')]]) : new Map())
+  const locked = lockedBy([
+    { path: 'pnpm-lock.yaml', text: pnpm('lib'), from: 'repository', tree },
+    { path: 'tools/pnpm-lock.yaml', text: pnpm('vendor/lib'), from: 'repository', tree, root: '..', at: 'tools' },
+  ])
+  const told = async (directory) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([['tools/node_modules/.pnpm/lib@file+vendor+lib/node_modules/lib', { name: 'lib', version: '2.0.0', ecosystem: 'npm:directory', directory, files: { 'index.js': 'lib\n' } }]]) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { locked, directories: { tree, root: '' } })
+    return [report.status, report.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])]
+  }
+  t.assert.deepStrictEqual(await told('tools/vendor/lib'), ['valid', []], 'as tools/pnpm-lock.yaml installs it')
+  t.assert.deepStrictEqual(await told('lib'), ['invalid', [['directory-not-locked', 'lib']]], 'as the root\'s pnpm-lock.yaml installs another copy alone')
+})
 
 test('validate: an npm copy held to where the repository\'s npm lockfile installs it, from the lockfile\'s directory to the bundle\'s', withTmp(async (t, tmp) => {
   const files = { 'package.json': '{"name":"app","version":"1.0.0","workspaces":["web"]}\n', 'package-lock.json': npmLock('web/'), 'web/package.json': '{"name":"web","version":"1.0.0"}\n', 'web/src/main.js': 'main\n' }

@@ -8,7 +8,8 @@ const DEFAULT_TOOL = { name: '@exodus/stasis', version: pkg.version, vendor: 'Ex
 const newUuid = () => globalThis.crypto.randomUUID()
 
 // purl types we can mint: `soldeer` has no registered type, and `pkg:cargo` names crates.io's crate, which a
-// crate vendored from git or from a source not known (`cargo-git`, `cargo-unknown`) may not be.
+// crate vendored from git or from a source not known (`cargo-git`, `cargo-unknown`) may not be, as `pkg:npm` names
+// the registry's package, which one installed from a directory (`npm:directory`) is not.
 const PURL_TYPES = new Set(['npm', 'composer', 'cargo', 'github'])
 
 // An artifact's ecosystem by its formats, PHP's Composer, any other npm: its untagged buckets', and every
@@ -23,9 +24,9 @@ function classifyScope(ecosystem, dir) {
   return dir.split('/').includes('node_modules') ? 'dependency' : 'workspace'
 }
 
-// The purl/CycloneDX namespace (group): an npm scope, a Composer vendor or a GitHub owner.
+// The purl/CycloneDX namespace (group): an npm scope (a directory's package's too), a Composer vendor or a GitHub owner.
 function splitName(ecosystem, name) {
-  const namespaced = ecosystem === 'composer' || ecosystem === 'github' || (ecosystem === 'npm' && name.startsWith('@'))
+  const namespaced = ecosystem === 'composer' || ecosystem === 'github' || ((ecosystem === 'npm' || ecosystem === 'npm:directory') && name.startsWith('@'))
   const slash = name.indexOf('/')
   if (!namespaced || slash === -1) return { group: undefined, name }
   return { group: name.slice(0, slash), name: name.slice(slash + 1) }

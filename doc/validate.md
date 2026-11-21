@@ -278,6 +278,31 @@ with, whatever it is locked from.
 
 A version failing its lockfile is not compared, its files counted unverified.
 
+## Packages installed from a directory
+
+A dependency the bundle records as `npm:directory` (see
+[file formats](file-formats.md#stasiscodebr)), the package of a `file:`
+directory that pnpm or yarn copied into `node_modules`, names the directory it
+was installed from. Each copy's files are held to the repository's in that
+directory at the commit, the bundle's directory's path added in front: a file
+there with other bytes differs, and one it hasn't is unexpected; a bin whose
+`#!` line ends in CRLF there may have that CR dropped, as pnpm before 12 copies
+it (an older `npm` record of it, below, likewise). It needs no
+lockfile and nothing is fetched for it, so `--no-lockfile` and `--only-deps`
+hold it all the same, the repository read for it. Where its npm lockfile is
+read (the repository's, read for it where one is there but required only for
+registry packages, or one `--lockfile` gives), the lockfile must install a
+package of its name from that very directory, else it fails (`records a
+directory its lockfile doesn't install it from`). One outside the repository
+is left unverified, as is any with no repository and commit to read it of. It
+is held to the directory's files whatever name it is installed under, so no
+alias is asked of it; its place in pnpm's store is held as any copy's (below).
+
+A bundle or lockfile from an older stasis records such a package as `npm`, with
+no integrity. It is held as it was: to the directory its lockfile installs a
+package of its name from (above, `From a directory of the project`). One of
+those that records an integrity fails, as no directory has one.
+
 ## Where a package is installed
 
 Node resolves an npm package by its path, so a bundle could otherwise hold a

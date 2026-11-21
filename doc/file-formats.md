@@ -399,7 +399,16 @@ build still leaves it out.
   neither is known to be crates.io's crate of that name, so neither has a purl
   type or is audited (see the Rust bundle's table below). An artifact from
   before these two tags has every vendored crate `cargo`; regenerate it (adding
-  to it fails on the ecosystem mismatch). It reflects where
+  to it fails on the ecosystem mismatch). An npm package installed from a
+  directory, a `file:` one, which pnpm and yarn copy into `node_modules` (pnpm
+  into its store, `node_modules/.pnpm/<name>@file+<dir>/…`), is `npm:directory`:
+  no registry's package of its name, so it has no purl type and is not audited,
+  and its record names the directory in place of an `integrity` (see
+  `directory` under `stasis.code.br`). One linked instead (`link:`, a
+  workspace's, npm's `file:` directory) is first-party, under its real path
+  (above). An artifact from before this tag records such a package `npm`, with
+  no `integrity`: it still loads, is held and validated as before, and a merge
+  takes it as `npm:directory`'s (see there). It reflects where
   the package physically resolved, not the bundle's language — a Solidity or Bash
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
@@ -407,8 +416,9 @@ build still leaves it out.
 - A record carries no `repo` or `subpackages`: a dependency's repository and
   its subpath entry points are metadata, which a bundle carries (see `modules`
   under `stasis.code.br`) and a lockfile neither writes nor reads. An npm
-  dependency's record carries `integrity` and `patch` as a bundle's does, held
-  and merged as there (see `integrity` under `stasis.code.br`). A dependency
+  dependency's record carries `integrity` and `patch`, and an `npm:directory`
+  one its `directory`, as a bundle's does, held and merged as there (see
+  `directory` and `integrity` under `stasis.code.br`). A dependency
   record may carry `vendored`, the packages copied into it, after `ecosystem`,
   as a bundle's record does (see there), so that `stasis audit` and `stasis
   sbom` see them from a lockfile alone; it is metadata here too, never
@@ -586,6 +596,39 @@ bundle: node_modules/dep/.npmrc is a file no bundle may carry
   `scope = full`; `modules` may be omitted (treated as empty). A bundle carrying
   code in `scope = full` must declare at least one entry; a resources-only bundle
   may have none.
+- An `npm:directory` record carries `directory`, after `ecosystem`, and no other
+  record does: the directory its package was installed (copied) from, from the
+  bundle root, spelled as a patch's `file` is, but `.` for the root itself and
+  `..` for one above it (`../shared/lib`); an empty one, one leading with `/` or
+  `./`, ending with `/`, with a `..` or `.` past its start, or with a `\` is
+  refused, as is the tag without it. It takes the place of an `integrity`: no
+  archive was installed, and such a record carries neither `integrity` nor
+  `patch` (a build refuses a patch to a package installed from a directory, as
+  deptree refuses to apply one). A build from a lockfile
+  alone records the directory deptree copies it from (a pnpm `file:` override's,
+  a yarn 1 `file:` dependency's); one from disk, the one pnpm's copy of its
+  lockfile names (`resolution.directory`, from the lockfile's directory), or
+  yarn 1's `yarn.lock` (its `file:` spec, from `yarn.lock`'s directory, a
+  workspace's too), held to the lockfile beside `node_modules` as an integrity
+  is (`<lockfile> doesn't lock <dir> as installed (installed from …; it locks
+  …)`). A record takes the tag with the value: an `npm` one given a directory
+  is `npm:directory`'s.
+
+  It is held as `integrity` is (below), to the install record wherever a build,
+  `--add`, `stasis add` or a run meets one, and, where its directory is there,
+  each file of the record that the copy holds is held to the directory's, as a
+  copy left behind by an edit to either side (or to a hardlink pnpm made, which
+  an editor saving anew breaks) is stale: `<dir>/<file> is not
+  <directory>/<file>, which it was installed from: install from it again`. pnpm
+  before 12 making a bin's CRLF `#!` line LF in its copy is the one difference
+  taken. With no directory there (an image of `node_modules` alone), nothing
+  tells. A merge takes an `npm` record that attests nothing (no `integrity`,
+  `patch` or `directory`), an older stasis's of such a package, as
+  `npm:directory`'s, of the files it was recorded with alone as any attested
+  value is; one of an `integrity`, installed from no directory, disagrees with
+  it (`directory mismatch (none vs …)`).
+  [`stasis validate`](validate.md#packages-installed-from-a-directory) holds
+  it to that directory of the repository at the commit.
 - A dependency record may carry `integrity`, after `ecosystem`: the SRI of the
   archive it was installed from, as its lockfile locks it. That is an npm
   tarball's sha512, a vendored crate's sha256 (its `.cargo-checksum.json`'s
@@ -1379,13 +1422,14 @@ file resolves out of:
 | Bundler | Layout | `ecosystem` |
 | --- | --- | --- |
 | any | dep under `node_modules` | `npm` |
+| any | the same, installed (copied) from a directory, a `file:` one | `npm:directory` (`directory` from the install record) |
 | Solidity | Soldeer `dependencies/<name>-<version>/` | `soldeer` (name/version from dir) |
 | Solidity | `forge install` submodule `lib/<dir>/` | `github` (`owner/repo` from `.gitmodules` URL) |
 | Rust | `use <crate>` → `cargo vendor`'s `vendor/<crate>/`, a registry's copy | `cargo` (name/version from `Cargo.toml`) |
 | Rust | the same, a git checkout's copy | `cargo-git` (name/version from `Cargo.toml`) |
 | Rust | the same, a copy with no `.cargo-checksum.json` | `cargo-unknown` (name/version from `Cargo.toml`) |
 
-A dep under `node_modules` is `npm` whatever the language. A git submodule is
+A dep under `node_modules` is `npm` (or `npm:directory`) whatever the language. A git submodule is
 `github` only where its `.gitmodules` url is GitHub's: `https`, `ssh`, `git` or
 scp-like (`git@github.com:`) at `github.com` or `www.github.com`. One of another
 host, even one holding `github.com` (`https://notgithub.com/o/n`), or a path, is

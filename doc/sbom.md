@@ -59,6 +59,7 @@ from the `ecosystem` each dependency records:
 | Ecosystem | purl | Where it comes from |
 | --- | --- | --- |
 | `npm` | `pkg:npm/<name>@<version>` | `node_modules`, whatever the bundle language |
+| `npm:directory` | — (not the registry's) | npm packages installed from a directory (a `file:` one), which pnpm and yarn copy into `node_modules` |
 | `composer` | `pkg:composer/<vendor>/<name>@<version>` | PHP Composer `vendor/` |
 | `cargo` | `pkg:cargo/<name>@<version>` | Rust crates vendored by `cargo vendor` from a registry |
 | `cargo-git` | — (not crates.io's) | Rust crates vendored by `cargo vendor` from a git checkout (`.cargo-checksum.json` with `"package": null`) |
@@ -68,9 +69,12 @@ from the `ecosystem` each dependency records:
 
 npm scopes (`@scope/name`), Composer vendors, and GitHub owners map to the purl
 namespace and the CycloneDX `group`; Composer and GitHub names are lowercased per
-the purl spec. `soldeer`, `cargo-git` and `cargo-unknown` components carry a
-name + version but no purl: `pkg:cargo` names crates.io's crate, which a crate
-vendored from git, or from a source not known, may not be.
+the purl spec, and an `npm:directory` package's scope to the CycloneDX `group`
+as an npm one's. `soldeer`, `cargo-git`, `cargo-unknown` and `npm:directory`
+components carry a name + version but no purl: `pkg:cargo` names crates.io's
+crate, which a crate vendored from git, or from a source not known, may not be,
+as `pkg:npm` names the registry's package, which one installed from a
+directory is not.
 First-party/workspace packages take their purl ecosystem from the project itself.
 Artifacts predating the per-dependency `ecosystem` field fall back to npm (or
 Composer for a PHP bundle).

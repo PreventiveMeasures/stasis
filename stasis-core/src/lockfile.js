@@ -4,8 +4,9 @@ const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
-// What the tarball and patch a package was installed from are, and the copies it ships, so a lockfile can be audited alone.
-const LOCK_METADATA = ['integrity', 'patch', 'vendored']
+// What the directory, or tarball and patch, a package was installed from are, and the copies it ships, so a lockfile can
+// be audited alone.
+const LOCK_METADATA = ['directory', 'integrity', 'patch', 'vendored']
 
 export class Lockfile {
   static VERSION = VERSION

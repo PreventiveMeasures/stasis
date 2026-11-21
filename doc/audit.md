@@ -120,6 +120,7 @@ artifact tags it with (see [file formats](file-formats.md)):
 | `soldeer` | Soldeer packages | the advisories their GitHub repository publishes: a git dependency's, the one its artifact records, else the one Soldeer's registry names |
 | `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes, and OSV's records of it as a GitHub Action |
 | `cargo-git`, `cargo-unknown` | crates vendored from git, or with no `.cargo-checksum.json` | nothing: listed as not audited, never sent to OSV, whose crate of that name may be another |
+| `npm:directory` | npm packages installed from a directory (a `file:` one) | nothing: listed as not audited, its name, which may be private, never sent to a public database, whose package of that name is another |
 
 A copy of a package that a dependency ships inside itself, which the
 artifact lists in the dependency's `vendored` (Next.js compiles about 140 into

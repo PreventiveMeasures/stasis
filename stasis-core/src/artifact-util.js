@@ -81,6 +81,16 @@ export const normalizeRepo = (repo, what = 'bundle repo') => normalizeBlock(repo
 // An untagged node_modules bucket is npm's: an artifact from before the `ecosystem` tag records none.
 export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
+// An npm package installed from a directory (a `file:` one, which pnpm and yarn copy into node_modules) is no registry's
+// package of its name: tagged apart, its record naming the directory. `npm:`, as other installs may be told apart too.
+export const NPM_DIRECTORY = 'npm:directory'
+
+// The package manager's ecosystem an install of it is of: npm's, whether from a registry or a directory.
+export const ecosystemFamily = (ecosystem) => (ecosystem === NPM_DIRECTORY ? 'npm' : ecosystem)
+
+// What a package manager of npm's installed into node_modules, from a registry or a directory: its install tells which.
+export const isNpmInstalled = (dir, ecosystem) => hasNodeModulesSegment(dir) && ecosystemFamily(dependencyEcosystem(dir, ecosystem)) === 'npm'
+
 // The normalizer of a record's `field` block: only a bucket `carries` takes (a `kind` one) holds it, `required` set.
 const blockMetadata = (field, fields, required, carries, kind) => (dir, { ecosystem, [field]: block }, what) => {
   if (block === undefined) return undefined
@@ -98,6 +108,20 @@ const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{4
 // From the bundle root, `..` leading it alone: pnpm names a patch from the lockfile's directory, which may be above it.
 const PATCH_FILE = /^(?:\.\.\/)*(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+(?:\/(?!\.\.?(?:\/|$))[^/\\\p{Cc}]+)*$/u
 const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v), file: (v) => typeof v === 'string' && v.length <= 4096 && PATCH_FILE.test(v) }
+// As a patch's file, but `.` (the bundle root) and `..` (one above it) name a directory too.
+const isDirectoryPath = (v) => typeof v === 'string' && (v === '.' || /^\.\.(?:\/\.\.)*$/u.test(v) || PATCH_FIELDS.file(v))
+
+// Required of an `npm:directory` record, and carried by no other.
+const normalizeModuleDirectory = (dir, { ecosystem, directory }, what) => {
+  const tagged = ecosystem === NPM_DIRECTORY && hasNodeModulesSegment(dir)
+  if (directory === undefined) {
+    if (ecosystem === NPM_DIRECTORY) assert(false, `${what}: '${dir}' is ${tagged ? 'tagged' : 'no node_modules bucket, though tagged'} ${NPM_DIRECTORY}, and records no directory`)
+    return undefined
+  }
+  if (!tagged) assert(false, `${what}: '${dir}' is no ${NPM_DIRECTORY} dependency's bucket, and carries no directory`)
+  if (!isDirectoryPath(directory)) assert(false, `invalid ${what} module '${dir}' directory: ${JSON.stringify(directory)}`)
+  return directory
+}
 
 export function sha512Of(integrity) {
   const found = new Set((integrity ?? '').split(/\s+/u).filter((token) => token.startsWith('sha512-')).map((token) => token.split('?')[0]))
@@ -115,6 +139,7 @@ export const ARCHIVE_ALGORITHM = { npm: 'sha512', cargo: 'sha256', composer: 'sh
 const normalizeModuleIntegrity = (dir, { ecosystem, integrity }, what) => {
   if (integrity === undefined) return undefined
   const of = dependencyEcosystem(dir, ecosystem)
+  if (of === NPM_DIRECTORY) assert(false, `${what}: '${dir}' was installed from a directory, no archive, and carries no integrity`)
   if (!Object.hasOwn(ARCHIVE_ALGORITHM, of) || (of === 'npm' && !hasNodeModulesSegment(dir))) assert(false, `${what}: '${dir}' is no npm, cargo, composer or soldeer dependency's bucket, and carries no integrity`)
   if (typeof integrity !== 'string' || !SRI[ARCHIVE_ALGORITHM[of]].test(integrity)) assert(false, `invalid ${what} module '${dir}' integrity: ${JSON.stringify(integrity)}`)
   return integrity
@@ -167,22 +192,33 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
   return carried
 }
 
-const RECORD_METADATA = { integrity: normalizeModuleIntegrity, patch: normalizeModulePatch, repo: normalizeModuleRepo }
+const RECORD_METADATA = { directory: normalizeModuleDirectory, integrity: normalizeModuleIntegrity, patch: normalizeModulePatch, repo: normalizeModuleRepo }
 const DIR_FIELDS = Object.keys(DIR_METADATA)
 const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
 const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]
 
+// An npm record with a `directory` is `npm:directory`'s, one without npm's: a record takes the tag with the value, as
+// it gains one of its install, or loses one taken apart (State#absorbBundleRecord) until it is given back.
+const ecosystemOf = ({ ecosystem, directory }) => {
+  if (directory !== undefined) return ecosystem === undefined || ecosystem === 'npm' ? NPM_DIRECTORY : ecosystem
+  return ecosystem === NPM_DIRECTORY ? 'npm' : ecosystem
+}
+
 // Canonical key order; `ecosystem` and the metadata are omitted (not undefined) when absent.
 export const moduleInfo = (info) => {
   const record = { name: info.name, version: info.version }
-  for (const key of OPTIONAL_KEYS) if (info[key] !== undefined) record[key] = info[key]
+  for (const key of OPTIONAL_KEYS) {
+    const value = key === 'ecosystem' ? ecosystemOf(info) : info[key]
+    if (value !== undefined) record[key] = value
+  }
   record.files = info.files
   return record
 }
 
-// How a record's package was installed, which two records of one bucket must agree on: of a patch, its text's
-// integrity, and the `file` it was found at where both record one.
+// How a record's package was installed, which two records of one bucket must agree on: the directory it was copied
+// from; of a patch, its text's integrity, and the `file` it was found at where both record one.
 const AGREE = {
+  directory: (a, b) => a === b,
   integrity: (a, b) => a === b,
   patch: (a, b) => a?.integrity === b?.integrity && (a?.file === undefined || b?.file === undefined || a.file === b.file),
 }
@@ -192,8 +228,12 @@ export const sameAttested = (field, a, b) => AGREE[field](a, b)
 export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
 export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
 
-// A record of an integrity and no patch attests the patch null (installed unpatched); undefined: it tells nothing.
-export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
+// What a record attests there is none of, by what it records of its install: one of an archive's integrity or a patch
+// was installed from no directory (a patch to one is refused), one from a directory of no archive, and either,
+// recording no patch, unpatched.
+const ATTESTS_NONE = { directory: ['integrity', 'patch'], integrity: ['directory'], patch: ['integrity', 'directory'] }
+// null where it attests there is none; undefined: it tells nothing.
+export const attestedOf = (record, field) => record[field] ?? (ATTESTS_NONE[field].some((by) => record[by] !== undefined) ? null : undefined)
 
 const agree = (field, record, other, what) => {
   if (sameAttested(field, record[field], other[field])) return
@@ -651,7 +691,9 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
         ((existing.version == null) === (info.version == null) ? '' :
           ` -- an artifact from an older stasis may record a placeholder version for a workspace ` +
           `package without one; regenerate it (bundle=replace / lock=replace)`))
-      assert(existing.ecosystem === info.ecosystem,
+      // An npm record and an npm:directory one are of one package manager: whether it installed the package from a
+      // directory is attested (withMetadataOf), an older stasis's record of one, attesting nothing, taken to it.
+      assert(ecosystemFamily(existing.ecosystem) === ecosystemFamily(info.ecosystem),
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
       // An attested value one side alone records is of its files alone: the other may add none.
       out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))

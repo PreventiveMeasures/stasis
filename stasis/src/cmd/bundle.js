@@ -21,7 +21,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
+import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, ecosystemFamily, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, moduleExcluder, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -1633,8 +1633,10 @@ function archiveAccounts(modules, root) {
 // `built` with its npm dependencies as their install records name them, whatever its kind (a Solidity import
 // out of node_modules is one): their `accounts`, `accountsOf(modules)` any other's, its lockfile attesting so.
 function pinnedOf(built, root) {
-  const accounts = pinInstalled(built.bundle, root)
-  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
+  // Each lockfile, and each copy held to its directory, read once, as accountsOf reads them again.
+  const cache = { stores: new Map(), layouts: new Map(), held: new Set() }
+  const accounts = pinInstalled(built.bundle, root, diskHost, cache)
+  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root, diskHost, cache)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
 }
 
 function unionOfBuilds(name, builds, builts, roots) {
@@ -2148,7 +2150,7 @@ function refuseOtherRoot(artifact, what, root, { cwd, at }) {
   const named = [...artifact.modules].filter(([, info]) => typeof info.name === 'string')
   const ecosystemOf = ([dir, { ecosystem }]) => dependencyEcosystem(dir, ecosystem)
   const workspace = named.filter((bucket) => ecosystemOf(bucket) === undefined)
-  const [packages, entries] = workspace.length > 0 ? [workspace, [...artifact.entries]] : [named.filter((bucket) => ecosystemOf(bucket) === 'npm'), []]
+  const [packages, entries] = workspace.length > 0 ? [workspace, [...artifact.entries]] : [named.filter((bucket) => ecosystemFamily(ecosystemOf(bucket)) === 'npm'), []]
   if (packages.length === 0) return
   const holds = (dir) => packages.every(([pkg, { name }]) => readPackageJson(dir, moduleFileKey(pkg, 'package.json'))?.name === name) &&
     entries.every((entry) => isFile(join(dir, entry)))

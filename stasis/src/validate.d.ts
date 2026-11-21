@@ -20,11 +20,11 @@ export class ValidateError extends Error {
 
 // What validation checks of a bundle, or a stasis.lock.json (validationPlan): a file's bytes, or their integrity.
 export type PlanFile = { path: string; dir: string; rel: string; format?: string } & ({ bytes(): Uint8Array } | { integrity: string })
-export interface PlanPackage { ecosystem: string; name: string; version: string; files: PlanFile[]; recorded: Map<string, string>; integrities: Map<string, string>; repos: Map<string, { github: string; directory?: string; commit?: string }> }
+export interface PlanPackage { ecosystem: string; name: string; version: string; files: PlanFile[]; recorded: Map<string, string>; integrities: Map<string, string>; repos: Map<string, { github: string; directory?: string; commit?: string }>; directories: Map<string, string> }
 export interface ValidationPlan { files: number; own: PlanFile[]; packages: PlanPackage[]; patches: Map<string, string> }
 // A parsed bundle (Bundle.parse's, or parseFileWithKind's artifact).
 export interface PlannedBundle {
-  modules: Map<string, { name?: string; version?: string; ecosystem?: string; integrity?: string; repo?: { github: string; directory?: string; commit?: string }; patch?: { integrity: string; file?: string }; files: Record<string, unknown> }>
+  modules: Map<string, { name?: string; version?: string; ecosystem?: string; directory?: string; integrity?: string; repo?: { github: string; directory?: string; commit?: string }; patch?: { integrity: string; file?: string }; files: Record<string, unknown> }>
   formats?: Map<string, string>
 }
 export function validationPlan(bundle: PlannedBundle, options?: { lockfile?: boolean }): ValidationPlan
@@ -75,6 +75,8 @@ export interface Locked {
   of(name: string, version: string): LockedPatch | null | undefined
   locate(patch: { hash: string; names?: string[] }): Promise<{ path: string; text: string } | null>
   installed(dir: string): string | null | undefined
+  // Whether the npm lockfiles install a package of `name` from `directory`, from the bundle's root; undefined for none read.
+  locksDirectory(name: string, directory: string): boolean | undefined
   aliased(as: string, named: string): boolean | undefined
   from?: 'repository' | 'local'
   tree?: (dir: string) => Promise<Map<string, Uint8Array>>
@@ -124,6 +126,8 @@ export function validateBundle(plan: ValidationPlan, own: OwnCode | Promise<OwnC
     fetch?: Fetch; locked?: Locked | null; generated?: () => Promise<PrismaClientOutput[]>; deadline?: number; now?: () => number
     // A submodule's commit as the repository's tree pins one at a directory (null for none), and its repository's files there.
     submodules?: { at(dir: string): Promise<string | null>; read(at: GitAt): Promise<Map<string, Uint8Array>> }
+    // The repository's files under a directory at the commit, and the bundle's root there: what an npm:directory package is held to.
+    directories?: { tree(dir: string): Promise<Map<string, Uint8Array>>; root: string }
   }): Promise<BundleValidation>
 export function exitCodeOf(report: BundleValidation, options?: { allowUnverified?: boolean }): 0 | 1 | 2
 
