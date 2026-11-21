@@ -692,7 +692,7 @@ export function scanRustItems(content, { features = null, maybeFeatures = null, 
     addRef(m[0], m[0].split('::'), false, inlineAt(m.index), false, macroCall)
   }
   const inlineModuleVis = new Map()
-  for (const s of spans) if (!inlineModuleVis.has(s.path.join('::'))) inlineModuleVis.set(s.path.join('::'), s.vis)
+  for (const s of spans) upsert(inlineModuleVis, s.path.join('::'), () => s.vis)
   const inlineModules = [...inlineModuleVis.keys()].map((p) => p.split('::'))
   return { mods, refs: [...refs.values()], externCrates, bindings, imports, macros, invocations, calls, pathInvocations, callSites, includes, unfollowed, defined, inlineModules, inlineModuleVis, skipped }
 }
@@ -704,7 +704,7 @@ const hidesCrate = (im) => im.binding !== null && (im.segments.length > 1 || im.
 export function getModuleDir(filePath, { root = false } = {}) {
   const lastSlash = filePath.lastIndexOf('/')
   const dir = lastSlash === -1 ? '' : filePath.slice(0, lastSlash)
-  const name = lastSlash === -1 ? filePath : filePath.slice(lastSlash + 1)
+  const name = filePath.slice(lastSlash + 1)
   if (root || ROOT_NAMES.has(name) || name === 'mod.rs') return dir
   const stem = name.replace(/\.rs$/u, '')
   return dir ? `${dir}/${stem}` : stem
@@ -1715,11 +1715,11 @@ function hostedCopies(decl, items, templateCalls) {
   const names = new Set([decl.template])
   for (let grew = true; grew;) {
     grew = false
-    for (const [caller, called] of templateCalls) if (!names.has(caller) && [...called].some((n) => names.has(n))) grew = names.add(caller)
+    for (const [caller, called] of templateCalls) if (!names.has(caller) && !called.isDisjointFrom(names)) grew = names.add(caller)
   }
   const sites = [...names].flatMap((n) => items.callSites.get(n) ?? []).toSorted((a, b) => a.offset - b.offset)
   const byModule = new Map()
-  for (const site of sites) if (!byModule.has(site.inlinePath.join('::'))) byModule.set(site.inlinePath.join('::'), site)
+  for (const site of sites) upsert(byModule, site.inlinePath.join('::'), () => site)
   if (byModule.size === 0) byModule.set('', { offset: Infinity, inlinePath: [], inlineDirs: [] })
   const own = (list) => list.slice(decl.templateDepth)
   return [...byModule.values()].map((site) => ({ ...decl, inlinePath: [...site.inlinePath, ...own(decl.inlinePath)], inlineDirs: [...site.inlineDirs, ...own(decl.inlineDirs)], offset: site.offset }))
@@ -2171,8 +2171,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     }
     // A module whose import a path went through is a dependency of the file too (bitflags'
     // `$crate::__private::serde::Serialize` needs the root's `__private`), recorded when nothing else points at it.
-    const targets = new Set()
-    for (const t of specMap.values()) for (const f of t instanceof Map ? t.values() : [t]) targets.add(f)
+    const targets = new Set([...specMap.values()].flatMap(filesOf))
     for (const [owner, spec] of via) if (!targets.has(owner)) add(spec, owner)
   }
   let { out, unresolved, wanted } = resolveAll()

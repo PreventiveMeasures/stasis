@@ -195,7 +195,6 @@ function configEntryOptions(state, entry) {
   const entries = config?.entries
   // The config's own `define` is every entry's, named in its entries or not, and no entry's own is beside it.
   const shared = config?.define !== undefined
-  if (entries === undefined && !shared) return null
   if (entries !== undefined && !isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
   // As `stasis bundle` names it: by its path, else by a glob pattern matching it, none of them in a node_modules.
   const pathOf = (key) => toPosix(relative(state.root, resolve(state.root, key)))
@@ -219,13 +218,14 @@ function configEntryOptions(state, entry) {
   const strings = (flag) => stringsOf(options[flag], `${what}: ${flag}`)
   const sharedWhat = `the artifact's ${CONFIG_FILE}: define`
   if (shared) {
-    const own = Object.keys(entries ?? {}).find((key) => isPlainObject(entries[key]) && Object.hasOwn(entries[key], 'define'))
+    const own = keys.find((key) => isPlainObject(entries[key]) && Object.hasOwn(entries[key], 'define'))
     if (own !== undefined) throw new Error(`stasis build: ${sharedWhat} can't be combined with entries ${JSON.stringify(own)}'s define`)
   }
+  const defineWhat = shared ? sharedWhat : `${what}: define`
   const define = {}
-  for (const pair of shared ? stringsOf(config.define, sharedWhat) : strings('define')) {
+  for (const pair of stringsOf(shared ? config.define : options.define, defineWhat)) {
     const eq = pair.indexOf('=')
-    if (eq <= 0) throw new Error(`stasis build: ${shared ? sharedWhat : `${what}: define`} must be KEY=VALUE (got '${pair}')`)
+    if (eq <= 0) throw new Error(`stasis build: ${defineWhat} must be KEY=VALUE (got '${pair}')`)
     define[pair.slice(0, eq)] = pair.slice(eq + 1)
   }
   let platforms

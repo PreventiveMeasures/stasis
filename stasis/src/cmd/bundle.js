@@ -1116,15 +1116,15 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
-    const keptFor = (label) => (memo ? nestedMap(memo, `${label} ${platform ?? '*'}`) : undefined)
-    const field = fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript, typescriptPaths, host, kept: keptFor('resolutions') })
+    const fieldFor = (ts, label) => fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript: ts, typescriptPaths, host, kept: memo ? nestedMap(memo, `${label} ${platform ?? '*'}`) : undefined })
+    const field = fieldFor(typescript, 'resolutions')
     const { extras } = field
     // The project's own metro-resolver derives every condition but the extra `react-native` itself.
     const resolver = metroResolver
       ? createMetroResolver({ projectDir: baseDir, platform, sourceExts, mainFields, conditionNames: ['react-native'], assetExts, assetResolutions, host })
       : field.resolver
     // Without --typescript, the file a miss would land on under it: a hint in the unresolved report, never an edge.
-    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript: true, typescriptPaths, host, kept: keptFor('typescript resolutions') }).resolver
+    const typescriptResolve = typescript || metroResolver ? null : fieldFor(true, 'typescript resolutions').resolver
     // --babel: a specifier babel-plugin-module-resolver rewrites resolves as rewritten, as Metro resolves it
     // after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
@@ -1584,12 +1584,12 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
   const named = expandExtra(baseDir, patterns, written, host, moduleExcluder([parsePolicy(CONFIG_FILE, config)], baseDir, host)).files
+  if (named.size === 0) return built
   // Bundle#sources builds its Map afresh on each read.
   const bundled = built.bundle.sources
   // A file `extra` names that the build carries itself is attributed to both.
   const carried = [...named.keys()].filter((rel) => bundled.has(rel))
   const files = new Map([...named].filter(([rel]) => !bundled.has(rel)))
-  if (files.size === 0 && carried.length === 0) return built
   let { bundle } = built
   let extraLock
   if (files.size > 0) {
@@ -2053,7 +2053,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   }
   // A stasis file written in a package below the root roots stasis run and stasis bundle there.
   const shown = (path) => relative(resolve(cwd), path) || '.'
-  for (const file of [lockfileOnly ? undefined : outAbs, lockData ? lockAbs : undefined]) {
+  for (const file of [lockfileOnly ? undefined : outAbs, lockAbs]) {
     const dir = file && dirname(file)
     if (!file || !STASIS_ROOT_FILES.includes(basename(file)) || dir === root || !isPathWithin(root, dir)) continue
     if (diskHost.stat(join(dir, 'package.json')) === null) continue

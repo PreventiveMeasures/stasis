@@ -78,8 +78,7 @@ export function validationPlan(bundle, { lockfile = false } = {}) {
       if (lockfile && rel === CARGO_CHECKSUM && ecosystem === 'cargo') continue
       const file = lockfile ? { path, dir, rel, format, integrity: content } : { path, dir, rel, format, bytes: () => (format === 'resource:base64' ? Buffer.from(content, 'base64') : utf8.encode(content)) }
       if (ecosystem !== undefined) {
-        if (!packages.has(key)) packages.set(key, { ecosystem, name: info.name ?? '', version: info.version ?? '', files: [], recorded: new Map(), patchFiles: new Map(), integrities: new Map(), repos: new Map(), directories: new Map() })
-        packages.get(key).files.push(file)
+        upsert(packages, key, () => ({ ecosystem, name: info.name ?? '', version: info.version ?? '', files: [], recorded: new Map(), patchFiles: new Map(), integrities: new Map(), repos: new Map(), directories: new Map() })).files.push(file)
       } else if (path !== EMPTY_MODULE_PATH || content !== (lockfile ? EMPTY_INTEGRITY : '')) {
         if (!lockfile && (format === 'patch' || path.endsWith('.patch'))) patches.set(path, content)
         own.push(file)
@@ -772,7 +771,7 @@ function readLockfile(name, read) {
   const entries = new Map()
   const locals = new Map()
   const add = (pkg, version, entry) => upsert(entries, `${pkg}@${version}`, () => []).push(entry)
-  const local = (pkg, dir) => locals.set(pkg, new Set([...(locals.get(pkg) ?? []), posix.normalize(dir)]))
+  const local = (pkg, dir) => upsert(locals, pkg, () => new Set()).add(posix.normalize(dir))
   // `<as>\0<name>@<version>`, and a directory's package's `<as>\0<name>`, any version of it.
   const aliases = new Set()
   const directoryAliases = new Set()

@@ -1,7 +1,8 @@
 import { basename, dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 
-import { isTypeDeclaration, memoized, relativeEscapes } from '@exodus/stasis-core/util'
+import { isTypeDeclaration, memoized, relativeEscapes, withoutBom } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
+import { RELATIVE_REQUEST } from './resolve-node.js'
 import { hostMemo } from './vfs-bundle/lazy.js'
 
 // tsc-style module resolution (`--typescript`) for scan.js and resolve-fields.js: it only completes a miss with
@@ -212,7 +213,7 @@ export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new
 
 // tsconfig.json is JSONC. A config that exists but does not parse fails closed.
 function parseJsonc(text, file) {
-  if (text.charCodeAt(0) === 0xFE_FF) text = text.slice(1) // BOM
+  text = withoutBom(text)
   let out = ''
   let pendingComma = -1 // index in `out` of a comma that may turn out to be trailing
   for (let i = 0; i < text.length; i++) {
@@ -388,7 +389,7 @@ function typescriptTarget(parentFile, spec, { conditions, paths, host }) {
     const scope = nearestPackage(parentFile, host)
     return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, outputs, host }) : null
   }
-  if (spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..' || isAbsolute(spec)) {
+  if (RELATIVE_REQUEST.test(spec) || isAbsolute(spec)) {
     const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
     return probeTypescriptTarget(base, { dirOnly: DIR_ONLY_SPEC.test(spec), outputs, host })
   }

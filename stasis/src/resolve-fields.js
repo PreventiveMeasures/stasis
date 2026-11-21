@@ -69,6 +69,9 @@ function fileResolution(path, host) {
 // Map keys are strings, so a miss gets undefined.
 const matchRedirect = (map, relPath) => map.get([relPath, `${relPath}.js`, `${relPath}.json`].find((cand) => map.has(cand)))
 
+const isPathSpec = (spec) => spec.startsWith('.') || isAbsolute(spec)
+const pathFrom = (dir, spec) => (isAbsolute(spec) ? spec : resolvePath(dir, spec))
+
 // Each resolver reads its own manifests, so a build on the disk reads each as it is then.
 function manifestReader(host) {
   const manifests = hostMemo(host)
@@ -224,21 +227,15 @@ export function createFieldResolver({
     const imp = nearestPackage(parentFile, host, read)
     if (imp) {
       const map = mergeRedirectMap(imp.pkg, mainFields)
-      let r
-      if (spec.startsWith('.') || isAbsolute(spec)) {
-        const abs = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
-        r = matchRedirect(map, `./${toPosix(relative(imp.pkgDir, abs))}`)
-      } else {
-        r = map.get(spec)
-      }
+      const r = isPathSpec(spec) ? matchRedirect(map, `./${toPosix(relative(imp.pkgDir, pathFrom(dirname(parentFile), spec)))}`) : map.get(spec)
       if (r === false) return { empty: true }
       if (typeof r === 'string') {
         // A path target is relative to the package root, not the importing file; a bare one is resolved below.
-        if (r.startsWith('.') || isAbsolute(r)) return probe(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r))
+        if (isPathSpec(r)) return probe(pathFrom(imp.pkgDir, r))
         spec = r
       }
     }
-    if (spec.startsWith('.') || isAbsolute(spec)) return probe(isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec))
+    if (isPathSpec(spec)) return probe(pathFrom(dirname(parentFile), spec))
     if (isBuiltin(spec)) return spec.startsWith('node:') ? { builtin: true } : (viaPackage(spec) ?? { builtin: true })
     return viaPackage(spec)
   }

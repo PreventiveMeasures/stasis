@@ -9,7 +9,7 @@ import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundl
 import { archiveIntegrity, assertRealPathWithinBase, fileInBucket, isPlainObject, moduleInfo, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
-import { applyToDir, isDotRelative } from './paths.js'
+import { ancestors, applyToDir, isDotRelative } from './paths.js'
 import { readUtf8OrNull } from './solidity-ownership.js'
 import { nameErrors } from './toml.js'
 
@@ -146,18 +146,15 @@ function normalizeIncludePath(raw, dirRelative) {
 
 // Null with neither a directory anchor nor a literal; `dynamic` from the first variable, call or interpolation.
 function parseArgPath(code, start, strings) {
+  const anchor = matchDirAnchor(code, start)
+  const dirRelative = anchor !== null
+  const up = anchor?.up ?? 0
   let i = start
-  let dirRelative = false
-  let up = 0
-  const anchor = matchDirAnchor(code, i)
   if (anchor) {
     i = skipWs(code, anchor.end)
-    dirRelative = true
-    up = anchor.up
     if (code[i] !== '.') return null
     i = skipWs(code, i + 1)
-  }
-  if (!dirRelative && !stringAt(strings, i)) return null
+  } else if (!stringAt(strings, i)) return null
   let prefix = '/..'.repeat(up)
   for (;;) {
     const lit = stringAt(strings, i)
@@ -525,14 +522,14 @@ function packageVersions(packages) {
 }
 
 function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
-  for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
+  for (const dir of ancestors(dirname(fileRelPath))) {
     const cj = readJsonIfExists(join(baseDir, dir, 'composer.json'))
     if (cj?.name) {
       const known = installed.byDir.get(dir) ?? installed.byName.get(cj.name)
       return { pkgDir: dir, name: cj.name, version: known?.version ?? cj.version ?? fallbackVersion, repo: known?.repo, integrity: known?.integrity }
     }
-    if (dirname(dir) === dir) return null
   }
+  return null
 }
 
 // By the nearest composer.json's directory; workspace files and orphans in the root "." bucket, the placeholder's.

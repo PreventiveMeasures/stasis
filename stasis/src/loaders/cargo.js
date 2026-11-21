@@ -705,7 +705,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // Both feature resolutions by cargo's resolver, by nodeKey, run against stand-in platforms: a table
   // the loader can't decide is off for `sure` and on for `all`; `result` is the resolver's own for `all`.
   const resolveGraph = (graph, packages, file, dirOf) => {
-    const build = { packages, features, allFeatures, noDefaultFeatures, dev: entries.some((e) => linksDevDeps(e)), host: standInPlatform(MARK_HOST, hostInfo), targets: [standInPlatform(MARK_TARGET, targetInfo)] }
+    const build = { packages, features, allFeatures, noDefaultFeatures, dev: entries.some(linksDevDeps), host: standInPlatform(MARK_HOST, hostInfo), targets: [standInPlatform(MARK_TARGET, targetInfo)] }
     let undecided = false
     const decided = (on) => retarget(graph, (spec) => {
       const at = (platform) => {

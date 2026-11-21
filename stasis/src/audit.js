@@ -260,7 +260,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
       const key = keyOfPkg(pkg)
       if (askedKeys.has(key) || (byKey.has(key) && !lockedOnly.has(key))) continue
       byKey.set(key, pkg)
-      lockedOnly.set(key, (lockedOnly.get(key) ?? new Set()).add(named))
+      upsert(lockedOnly, key, () => new Set()).add(named)
     }
   }
   const others = [...byKey.values()]
