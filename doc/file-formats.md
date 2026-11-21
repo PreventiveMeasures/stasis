@@ -1818,7 +1818,9 @@ of the repository it records, as `stasis build` reads a lockfile's from disk.
 (`{ name, mode, data }`, as `@preventive/archive`'s `pack` takes them), the
 lockfile of its files at the top, recording its repository, then each file, an
 executable one `0o755`. A lockfile records no `reason` or `package`, so a tgz
-carries neither, and no directory capture's listing, but its hash.
+carries neither. A tar holds files alone, so a bundle recording a `directory`
+capture or a `stat:*` record (a `stasis run --fs` capture) is refused: it can't
+be written as a tgz, by `stasis bundle --format=tgz` or anything else.
 
 ## Resources in the bundle
 

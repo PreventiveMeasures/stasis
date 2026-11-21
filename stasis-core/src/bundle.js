@@ -274,14 +274,17 @@ export class Bundle {
   // What fromTar takes back: the bundle's tar, to pack (its entries `{ name, mode, data }`, as @preventive/archive's pack
   // takes them; the caller packs and gzips it, as it brotlis a stasis.code.br). The stasis.lock.json of its files at its
   // top, each file's digest `integrityOf(bytes)`'s, of the repository the bundle records; then each file by its path,
-  // an executable one 0o755. A directory capture is the lockfile's alone, as a tar holds no listing; `reason` and
-  // `package`, which a lockfile records none of, are left out.
+  // an executable one 0o755. A tar holds files alone, so a bundle recording a directory capture or a stat record (a
+  // `--fs` run's) is refused; `reason` and `package`, which a lockfile records none of, are left out.
   toTar({ integrityOf }) {
+    for (const [file, format] of this.formats) {
+      assert(format !== 'directory' && !isStatFormat(format), `bundle: '${file}' is a '${format}' record, which a .stasis.tgz can't carry`)
+    }
     const text = new TextEncoder()
     const data = new Map([...this.sources].map(([file, content]) => [file, this.formats.get(file) === 'resource:base64' ? fromBase64(content) : text.encode(content)]))
     const lockfile = Lockfile.fromBundle(this, (file) => integrityOf(data.get(file)))
     lockfile.repo = this.repo
-    const files = sortedByPath(data.keys()).filter((file) => this.formats.get(file) !== 'directory')
+    const files = sortedByPath(data.keys())
     return [
       { name: LOCK_FILE, mode: 0o644, data: text.encode(lockfile.serialize()) },
       ...files.map((name) => ({ name, mode: this.executable.has(name) ? 0o755 : 0o644, data: data.get(name) })),
