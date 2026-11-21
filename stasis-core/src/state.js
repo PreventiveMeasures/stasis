@@ -381,7 +381,6 @@ export class State {
         assert.deepStrictEqual([...bundle.entries].toSorted(), [...this.entries].toSorted(), 'bundle/lockfile entries mismatch')
       }
       for (const [dir, info] of bundle.modules) {
-        if (!info.name) continue // workspace bucket or fallback: no inferable name
         assert.ok(this.modules.has(dir), `bundle module ${dir} missing in lockfile`)
         const lockModule = this.modules.get(dir)
         assert.equal(info.name, lockModule.name)
@@ -411,8 +410,6 @@ export class State {
       // In place: this.entries may be a sidecar's parent's.
       for (const e of bundle.entries) this.entries.add(e)
       for (const [dir, info] of bundle.modules) {
-        // v0 partial metadata; a v1 workspace bucket may omit version.
-        if (!info.name || (!info.version && hasNodeModulesSegment(dir))) continue
         const existing = this.modules.get(dir)
         if (existing !== undefined) {
           // A dir may be added twice (code + resource halves).
