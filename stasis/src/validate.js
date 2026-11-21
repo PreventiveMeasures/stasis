@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { CONFIG_FILE, EMPTY_MODULE_PATH, EXECUTE_BITS, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, ecosystemFamily, hasNodeModulesSegment, integrityHex, isStatFormat, LOCK_FILE, memoized, moduleFileKey, NPM_DIRECTORY, parseLockfilesOption, posixPathEscapes, sha512Of, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, EMPTY_MODULE_PATH, TGZ_FILE, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, ecosystemFamily, hasNodeModulesSegment, integrityHex, isGzip, isStatFormat, isTgzName, LOCK_FILE, memoized, moduleFileKey, NPM_DIRECTORY, parseLockfilesOption, posixPathEscapes, sha512Of, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -20,10 +20,10 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { bundleFromLockfile } from './bundle-from-lockfile.js'
 import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseArtifactBytes, parseFileWithKind, readArtifactFile } from './parse.js'
+import { readStasisTgz } from './stasis-tgz.js'
 import { DIM, formatTable, painter } from './table.js'
 import { FILE_REASONS, LOCKFILE_ERRORS, OWN_REASONS, generatedBy, noteText } from './validate-notes.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
@@ -1269,53 +1269,17 @@ async function heldToCommitted(attested, directory, list, read) {
   }
 }
 
-// gzip's magic. No bundle starts so: brotli's first byte would ask a 16 MiB window, where stasis writes zlib's 4 MiB.
-const isGzip = (bytes) => bytes[0] === 0x1f && bytes[1] === 0x8b
-
-// A tgz of a stasis.lock.json at its top and exactly the files it attests: each a file of the bytes and execute bit it
-// attests, nothing else in it but directories. Read as the bundle of those, held to Bundle.parse's rules as a
-// stasis.code.br of it is, beside the lockfile. archive refuses any byte past either stream but zeros, as gzip(1) and
-// tar take them for padding.
-async function tgzArtifact(bytes, file) {
-  try {
-    const files = new Map()
-    for (const entry of unpack(await decompress(bytes, 'gzip', { limit: MAX_TAR_BYTES }))) {
-      if (entry.type === 'directory') continue
-      if (entry.type !== 'file' && entry.type !== 'contiguous-file') throw new Error(`${entry.name} is a ${entry.type}, which no ${LOCK_FILE} attests`)
-      files.set(entry.name, entry)
-    }
-    if (!files.has(LOCK_FILE)) throw new Error(`holds no ${LOCK_FILE} at its top`)
-    let lockfile
-    try {
-      lockfile = Lockfile.parse(asText.decode(files.get(LOCK_FILE).data))
-    } catch (cause) {
-      throw new Error(`its ${LOCK_FILE} is no stasis lockfile${cause.message ? ` (${cause.message})` : ''}`, { cause })
-    }
-    const read = new Set()
-    const bundle = bundleFromLockfile(lockfile, {
-      read: (path) => {
-        const data = files.get(path)?.data
-        if (data === undefined) throw new Error(`${path}, which its ${LOCK_FILE} attests, is not in it`)
-        read.add(path)
-        return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-      },
-    })
-    for (const [path, { mode }] of files) {
-      if (path === LOCK_FILE) continue
-      if (!read.has(path)) throw new Error(`${path} is in it, but not in its ${LOCK_FILE}`)
-      if (((mode & EXECUTE_BITS) !== 0) !== lockfile.executable.has(path)) throw new Error(`${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
-    }
-    return { kind: 'bundle', artifact: Bundle.parse(bundle.serializedBytes().toString('utf8')), lockfile }
-  } catch (cause) {
-    throw new Error(`${file}: ${cause.message}`, { cause })
-  }
-}
-
-// A bundle or stasis.lock.json as parseFileWithKind reads it, or a tgz of a stasis.lock.json and its files (tgzArtifact).
+// A bundle or stasis.lock.json as parseFileWithKind reads it, or a .stasis.tgz of a stasis.lock.json and its files
+// (readStasisTgz), the lockfile beside the bundle; a tgz under any other name refused.
 async function artifactOf(file) {
   if (file instanceof Lockfile || file instanceof Bundle) return parseFileWithKind(file)
   const bytes = readArtifactFile(file)
-  return isGzip(bytes) ? await tgzArtifact(bytes, file) : parseArtifactBytes(bytes, file)
+  if (isTgzName(file)) {
+    const { bundle, lockfile } = await readStasisTgz(bytes, file)
+    return { kind: 'bundle', artifact: bundle, lockfile }
+  }
+  if (isGzip(bytes)) throw new Error(`${file} is a tgz, which is validated as ${TGZ_FILE} or <name>.${TGZ_FILE} alone`)
+  return parseArtifactBytes(bytes, file)
 }
 
 export async function validate(file, { client, github, sha, directory, own = true, lockfile = true, fetch, deadline } = {}) {

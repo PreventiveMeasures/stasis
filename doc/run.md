@@ -15,7 +15,7 @@ the lockfile's and bundle's `integrity` and `patch` to, and records of the
 packages it captures anew (see [`integrity`](file-formats.md#stasiscodebr)).
 
 ```sh
-stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
+stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/(bundle.br|name.stasis.tgz)] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
 ```
 
 Files the run never loads, but which are to be attested anyway, are named in
@@ -44,7 +44,7 @@ killed it. The effective configuration is printed to stderr first.
 | - | - |
 | `--lock=mode` | What the run does with `stasis.lock.json`: `add`, `replace`, `frozen` or `ignore`, see [modes](#modes). |
 | `--bundle=mode` | Likewise for `stasis.code.br`: `add`, `replace`, `frozen`, `load` or `ignore`. `load` serves the recorded bytes instead of reading disk. |
-| `--bundle-file=path` | The bundle to read or write, instead of `stasis.code.br` in the project root. Needs `--bundle`. |
+| `--bundle-file=path` | The bundle to read or write, instead of `stasis.code.br` in the project root. Needs `--bundle`. A `.stasis.tgz` is read alone, see [A .stasis.tgz](#a-stasistgz). |
 | `--resources-bundle-file=path` | A split layout: the run's non-code files are read from and written to this sidecar bundle, the code bundle holding code alone. Needs `--bundle=add\|replace\|load\|frozen`. |
 | `--dependencies` | `node_modules` scope: attest the dependencies only, not the project's own files (the `scope` key). |
 | `--child-process` | Also attest the modules forked child processes load, see [Child processes](#child-processes---child-process). |
@@ -82,6 +82,36 @@ bundle alone with no `--lock`, or verified against the lockfile with
 `replace`. `--bundle=frozen` composes with any lock mode, and makes the bundle
 its own attestation, so a frozen bundle needs no sibling lockfile. Both files
 are looked up in the project root, see [discovery](file-formats.md#discovery).
+
+## A .stasis.tgz
+
+`--bundle-file` may name a `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`):
+a gzipped tar of a `stasis.lock.json` at its top and exactly the files it
+attests, as [`stasis validate`](validate.md#what-is-checked) takes one. The run
+serves the bundle of those files, as it would the `stasis.code.br` of them,
+with `--bundle=load` or `frozen`; it is never written, so `add` and `replace`
+are refused.
+
+```sh
+stasis run --bundle=load --bundle-file=app.stasis.tgz app.js                 # run from the tgz alone
+stasis run --lock=frozen --bundle=load --bundle-file=app.stasis.tgz app.js   # verified against the project's lockfile too
+stasis run --lock=ignore --bundle=frozen --bundle-file=app.stasis.tgz app.js # verify disk against the tgz
+```
+
+The tgz is read before the program starts, as `stasis validate` reads it: each
+file the bytes and execute bit its `stasis.lock.json` attests, nothing else in
+it, no byte past its gzip stream or tar's end but zeros. One that isn't fails
+the run before any of it runs, naming the path. The bundle the run takes is of
+the bytes read then alone: a tgz changed on disk since serves nothing. `--lock`
+is the project's lockfile as with any bundle; the tgz's own attests its files
+as it is read.
+
+- A `directory` capture (a `readdir` under `--fs`) is a listing's hash in a
+  lockfile, so the tgz holds no listing to serve: such a `readdir` fails, as one
+  of a file not attested does.
+- Only `--bundle-file` names one: a `bundleFile` in `stasis.config.json`
+  naming a `.stasis.tgz` is refused, as is one given to `stasis-core run`,
+  which reads no tar. A tgz under any other name is refused too.
 
 ## Native addons
 

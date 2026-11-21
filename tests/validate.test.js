@@ -1812,7 +1812,7 @@ test('validate: a bundle is held to the stasis.lock.json its repository commits 
   t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }]])
 }))
 
-test('validate: a tgz of a stasis.lock.json at its top and exactly the files it attests, each its bytes and execute bit, validates as their bundle does; anything else in it refused', withTmp(async (t, tmp) => {
+test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the files it attests, each its bytes and execute bit, validates as their bundle does; anything else in it, or a tgz of another name, refused', withTmp(async (t, tmp) => {
   const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
   const repo = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
   const built = (main = 'main\n') => new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, entries: new Set(['src/main.js']), executable: new Set(['src/main.js']), modules: new Map([
@@ -1837,17 +1837,23 @@ test('validate: a tgz of a stasis.lock.json at its top and exactly the files it 
   const bundle = built()
   const br = join(tmp, 'app.stasis.code.br')
   writeBundle(br, bundle)
-  const valid = await validated('app.tgz', await gzip(pack(entriesOf(bundle))))
+  const tgz = await gzip(pack(entriesOf(bundle)))
+  const valid = await validated('app.stasis.tgz', tgz)
   t.assert.deepStrictEqual([valid.status, valid.counts.matched, valid.own.checked], ['valid', 2, true])
   const untimed = ({ validatedAt: _, ...report }) => report
   t.assert.deepStrictEqual(untimed(valid), untimed(await validate(br, { client: repoClient(repo), fetch: upstream() })), 'as the bundle of its files is')
+  t.assert.deepStrictEqual(untimed(await validated('stasis.tgz', tgz)), untimed(valid), 'stasis.tgz, as <name>.stasis.tgz')
+  // A tgz under any other name, and anything else under its name, refused.
+  await Promise.all(['app.tgz', 'app.tar.gz', 'tgz.stasis.code.br', 'stasis.tgz.br', 'app.stasis-tgz'].map((name) =>
+    t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)} is a tgz, which is validated as stasis.tgz or <name>.stasis.tgz alone` })))
+  await t.assert.rejects(validated('br.stasis.tgz', readFileSync(br)), { message: `${join(tmp, 'br.stasis.tgz')}: the data does not decompress` })
   // Its files held to the repository and packages by their bytes, as a bundle's are.
-  const differs = await validated('edited.tgz', await gzip(pack(entriesOf(built('MAIN\n')))))
+  const differs = await validated('edited.stasis.tgz', await gzip(pack(entriesOf(built('MAIN\n')))))
   t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'src/main.js', kind: 'differs', of: 'own' }]])
 
-  const at = join(tmp, 'refused.tgz')
+  const at = join(tmp, 'refused.stasis.tgz')
   const refused = async (message, entries, { tar = pack(entries), after = [] } = {}) => t.assert.rejects(
-    validated('refused.tgz', Buffer.concat([await gzip(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
+    validated('refused.stasis.tgz', Buffer.concat([await gzip(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
   const [lockAtTop, , main, ms] = entriesOf(bundle)
   await refused(/src\/extra\.js is in it, but not in its stasis\.lock\.json/u, [...entriesOf(bundle), { name: 'src/extra.js', data: bytes('extra\n') }])
   await refused(/node_modules\/ms\/index\.js, which its stasis\.lock\.json attests, is not in it/u, [lockAtTop, main])

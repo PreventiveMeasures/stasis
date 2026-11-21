@@ -15,6 +15,18 @@ export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORIT
 export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 export const installedAccounts = (modules, root, options) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root, options)) || new Map()
 
+// A stasis.lock.json and the files it attests, gzipped as a tar: read by `stasis run` and `stasis validate` alone, as
+// `stasis.tgz` or `<name>.stasis.tgz`. A tar is no zero-dependency read, so stasis's run-archived.js registers here
+// the bundle of the bytes it read (`globalThis[ARCHIVED](bytes)`, undefined for any others).
+export const TGZ_FILE = 'stasis.tgz'
+export const ARCHIVED = Symbol.for('@exodus/stasis-core/archived')
+export const isTgzName = (path) => {
+  const base = basename(path)
+  return base === TGZ_FILE || base.endsWith(`.${TGZ_FILE}`)
+}
+// gzip's magic. No stasis bundle starts so: brotli's first byte would ask a 16 MiB window, where stasis writes zlib's 4 MiB.
+export const isGzip = (bytes) => bytes[0] === 0x1f && bytes[1] === 0x8b
+
 const NODE_EXT_FORMATS = new Map([
   ['mjs', 'module'], ['cjs', 'commonjs'], ['json', 'json'],
   ['mts', 'module-typescript'], ['cts', 'commonjs-typescript'],

@@ -6,7 +6,7 @@ and each dependency as its published package has it, held to the lockfile that
 installed it, those two covering every file it holds.
 
 ```sh
-stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|tgz)
+stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|name.stasis.tgz)
 ```
 
 | Flag | Meaning |
@@ -133,12 +133,14 @@ validated of them; one written otherwise records none: give `--github` and
 own code unverified; a vendored crate's `.cargo-checksum.json`, held to the
 crate by its bytes, is left out.
 
-A tgz (a gzipped tar, told by gzip's leading bytes) holding a
-`stasis.lock.json` at its top, beside the files it attests, as `tar -czf`
+A `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`, a gzipped tar) holding
+a `stasis.lock.json` at its top, beside the files it attests, as `tar -czf`
 packs what `stasis extract --lock=add` writes, is validated as the bundle of
 those files is, by their bytes, of the repository and commit the lockfile
-records. It must hold exactly the files the lockfile attests, else it is
-refused (exit 3), naming the path:
+records; [`stasis run`](run.md#a-stasistgz) runs one. A tgz under any other name
+(gzip's leading bytes), and anything else under its name, is refused (exit 3).
+It must hold exactly the files the lockfile attests, else it is refused (exit
+3), naming the path:
 
 - each file the lockfile attests, at its path from the tgz's top, of the bytes
   its integrity is of and the execute bit it attests (any of `0o111`);

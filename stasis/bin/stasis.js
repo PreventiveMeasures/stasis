@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import assert from 'node:assert/strict'
-import { parseLeadingOptions, valueFlagsOf } from '@exodus/stasis-core/util'
+import { isTgzName, parseLeadingOptions, valueFlagsOf } from '@exodus/stasis-core/util'
 import { addCli, brotliQualityOption, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
 import pkg from '../package.json' with { type: 'json' }
 
@@ -17,7 +17,7 @@ const pathsEqual = (a, b) => a === b || (existsSync(a) && realpathSync(a) === b)
 assert(basename(jsname) === 'stasis' || pathsEqual(jsname, fileURLToPath(import.meta.url)))
 
 const HELP = `Usage:
- stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
+ stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/(bundle.br|name.stasis.tgz)] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
  stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
  stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
@@ -31,7 +31,7 @@ const HELP = `Usage:
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories] path/to/(lockfile|bundle) ...
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories]  (the bundle stasis bundle builds of stasis.config.json's entries, not written)
- stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|tgz)
+ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|name.stasis.tgz)
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
 
@@ -127,8 +127,9 @@ if (command === '-v' || command === '--version') {
     // import map matches a non-mock run; native addons still can't load (--allow-addons off).
     nodeArgs.push('--conditions=node-addons')
   }
-  // Before the loader, whose State reads the install through it.
+  // Before the loader, whose State reads the install through it, and a .stasis.tgz bundle through run-archived.js.
   nodeArgs.push('--import', import.meta.resolve('../src/run-installed.js'))
+  if ((bundle === 'load' || bundle === 'frozen') && isTgzName(bundleFile)) nodeArgs.push('--import', import.meta.resolve('../src/run-archived.js'))
   // --mock uses stasis's loader-mock entry (composes the mock before installing the hooks), whose
   // denials the --import preloads then run under.
   const loader = import.meta.resolve(values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader')
@@ -445,7 +446,7 @@ if (command === '-v' || command === '--version') {
     valueFlags: ['--github', '--sha', '--directory', '--lockfile'],
     onError: misused,
   })
-  if (argv.length !== 1) misused('Error: stasis validate takes one bundle, stasis.lock.json or tgz')
+  if (argv.length !== 1) misused('Error: stasis validate takes one bundle, stasis.lock.json or .stasis.tgz')
   if (values.lockfile !== undefined && values['no-lockfile']) misused('Error: --lockfile and --no-lockfile: give one')
   // The repository is read with githubToken's token and the packages with withNpmToken's, as
   // `stasis github-bundle` reads them; its trees and the packages fetched are cached where
