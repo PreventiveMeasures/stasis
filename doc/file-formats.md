@@ -555,7 +555,8 @@ project's own may be carried:
 | `.env`, `.env.*`, `*.env` | env files, which Bun and others load as the project's, and which hold secrets |
 
 A bundle whose files reach one, a dependency's included, is refused as one
-reaching `stasis.lock.json` is, writing and reading alike:
+reaching `stasis.lock.json` is, writing and reading alike, and so is `stasis
+build` of a lockfile attesting one:
 
 ```
 bundle: node_modules/dep/.npmrc is a file no bundle may carry
@@ -1913,7 +1914,8 @@ call runs first (the program gets the genuine `Stats` and errors); the observed
 type is stored as a **payload-free** `stat:file`/`stat:directory` — no bytes,
 hash, or `files` entry. A bundle that carries content for a path its `formats`
 records `stat:*` is invalid: parsing it fails, so `stasis extract`, `stasis
-validate` and `stasis run` refuse it whole, and no bundle is written so (as
+validate` and `stasis run` refuse it whole, `stasis build` refuses a lockfile
+attesting a file for such a path, and no bundle is written so (as
 nothing would hold those bytes: `validate` checks no content of a stat record,
 and `extract` would write it). Only regular files and directories are modelled: a symlink
 (under `lstat`), socket, or FIFO records nothing; a `statSync` through an in-root

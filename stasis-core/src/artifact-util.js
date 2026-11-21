@@ -541,7 +541,7 @@ export function parseBuckets(json, what, fields = MODULE_METADATA) {
 // file key, its bucket `metadata` and `skipEmpty` (groupModules), and what else its file keys are held to (`checkFiles`).
 
 // Unique across buckets: hashes, attestation lookups and a bundle's `sources` key on the flat path.
-function checkedFileKeys(modules, formats, { what, regenerate, checkFiles }) {
+export function checkedFileKeys(modules, formats, { what, regenerate, checkFiles }) {
   const flatKeys = flatFileKeys(modules, what, (key) => assert(false,
     `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
     `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`))

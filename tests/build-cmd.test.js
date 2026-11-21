@@ -9,6 +9,7 @@ import { brotliCompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -826,6 +827,36 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     rmSync(join(tmp, 'src', 'hello.js'))
     const lockfile = Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     t.assert.throws(() => bundleFromLockfile(lockfile, { root: tmp }), /missing on disk: src\/hello\.js/)
+  }))
+
+  // Lockfile.parse takes both, as a lockfile attests no content: the bundle built of one is held to Bundle.parse's rules.
+  const lockfileAttesting = (tmp, file, content, format) => {
+    cpSync(fullFixture, tmp, { recursive: true })
+    mkdirSync(dirname(join(tmp, file)), { recursive: true })
+    writeFileSync(join(tmp, file), content)
+    const json = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    json.sources['.'].files[file] = sha512integrity(Buffer.from(content))
+    json.formats[file] = format
+    return Lockfile.parse(JSON.stringify(json))
+  }
+
+  test('bundleFromLockfile refuses content for a payload-free stat record', withTmp(async (t, tmp) => {
+    const lockfile = lockfileAttesting(tmp, 'src/evil.js', 'process.exit(1)\n', 'stat:file')
+    t.assert.throws(() => bundleFromLockfile(lockfile, { root: tmp }), /'src\/evil\.js' is a payload-free 'stat:file' record, yet carries content/)
+  }))
+
+  test('bundleFromLockfile refuses a file no bundle may carry', withTmp(async (t, tmp) => {
+    const lockfile = lockfileAttesting(tmp, '.pnpmfile.cjs', 'module.exports = {}\n', 'commonjs')
+    t.assert.throws(() => bundleFromLockfile(lockfile, { root: tmp }), /\.pnpmfile\.cjs is a file no bundle may carry/)
+  }))
+
+  test('build refuses a lockfile attesting content for a payload-free stat record', withTmp(async (t, tmp) => {
+    const lockfile = lockfileAttesting(tmp, 'src/evil.js', 'process.exit(1)\n', 'stat:file')
+    writeFileSync(join(tmp, 'stasis.lock.json'), lockfile.serialize())
+    const r = await runCli(['build', '--output=out.js', 'stasis.lock.json'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /'src\/evil\.js' is a payload-free 'stat:file' record, yet carries content/)
+    t.assert.equal(existsSync(join(tmp, 'out.js')), false)
   }))
 
   test('bundleFromLockfile requires a recorded import graph', async (t) => {

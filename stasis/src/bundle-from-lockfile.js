@@ -7,7 +7,9 @@ import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { moduleFileKey, moduleInfo, narrowExecutable } from '@exodus/stasis-core/util'
 
 // An in-memory Bundle of a lockfile, each attested file read from disk under `root` and held to its SRI digest, as a
-// `stasis run --lock=frozen` replay holds it. A directory capture (format 'directory') is no file to load.
+// `stasis run --lock=frozen` replay holds it. A directory capture (format 'directory') is no file to load. Held to
+// what Bundle.parse holds a stasis.code.br's files to, which Lockfile.parse does not: a lockfile attesting a file no
+// bundle may carry, or a `files` entry for a payload-free stat record, is refused as such a bundle is.
 export function bundleFromLockfile(lockfile, { root }) {
   if (!lockfile.imports) throw new Error('stasis: lockfile has no recorded import graph')
   const formats = lockfile.formats ?? new Map()
@@ -33,7 +35,7 @@ export function bundleFromLockfile(lockfile, { root }) {
     }
     modules.set(dir, moduleInfo({ ...info, files: out }))
   }
-  return new Bundle({
+  return Bundle.checkFiles(new Bundle({
     config: lockfile.config,
     entries: lockfile.entries,
     modules,
@@ -41,5 +43,5 @@ export function bundleFromLockfile(lockfile, { root }) {
     formats,
     // To the files carried (a skipped `directory` drops out), keeping Bundle.parse's rules true for a hand-built lockfile.
     executable: narrowExecutable(lockfile.executable, { modules, formats, scope: lockfile.config.scope }),
-  })
+  }))
 }
