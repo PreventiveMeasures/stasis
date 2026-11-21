@@ -1609,6 +1609,27 @@ test("validate: a github-bundle's stasis.lock.json held to the repository and co
   t.assert.deepStrictEqual([elsewhere.status, elsewhere.own.directory], ['valid', 'packages/app'])
 }))
 
+test('validate: a github-bundle --format=tgz, named as its stasis.code.br but .stasis.tgz, validates as that bundle does', withTmp(async (t, tmp) => {
+  t.mock.method(console, 'warn', () => {})
+  const files = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'pnpm-lock.yaml': pnpmLockfile('.', 'packages/api'),
+    'packages/api/package.json': json({ name: 'api', version: '1.0.0', main: 'src/a.js' }),
+    'packages/api/src/a.js': "module.exports = require('./b.js')\n",
+    'packages/api/src/b.js': 'module.exports = 1\n',
+  }
+  const bundled = (format) => githubBundleCommand({ cwd: tmp, github: 'org/repo', sha: commit, directory: 'packages/api', packageManager: 'pnpm', client: fakeClient(files), format, env: {} })
+  await bundled('tgz')
+  await bundled(undefined)
+  const name = `org-repo.packages-api.${commit.slice(0, 7)}`
+  const untimed = ({ validatedAt: _, ...report }) => report
+  const [tgz, br] = await Promise.all(['stasis.tgz', 'stasis.code.br'].map((suffix) => validate(join(tmp, `${name}.${suffix}`), { client: repoClient(files) })))
+  t.assert.deepStrictEqual([tgz.status, tgz.own.repository, tgz.counts.matched], ['valid', 'org/repo', 2])
+  t.assert.deepStrictEqual(untimed(tgz), untimed(br))
+  await t.assert.rejects(bundled('zip'), { message: "githubBundleCommand: --format must be br or tgz (got 'zip')" })
+}))
+
 // A repository whose schema's client `src/generated/prisma`, which it doesn't commit, index.ts imports; its
 // `prisma` and `@prisma/client` stand-ins linked from vendor/: nothing fetched.
 const PRISMA_LOCK = pnpmLockfile('.').replace('  .: {}\n', ['  .:', '    dependencies:', "      '@prisma/client':", '        specifier: link:vendor/client', '        version: link:vendor/client',

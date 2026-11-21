@@ -6,12 +6,13 @@ import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainOb
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
-import { checkLockfileOnly } from './output.js'
+import { bundleFormat, checkLockfileOnly } from './output.js'
 
 export const BUNDLE_FLAGS = {
   mapping: { type: 'string' },
   manifests: { type: 'boolean' },
   output: { type: 'string', short: 'o' },
+  format: { type: 'string' },
   scope: { type: 'string' },
   lockfile: { type: 'string' },
   'lockfile-only': { type: 'boolean' },
@@ -41,7 +42,7 @@ export const BUNDLE_FLAGS = {
 }
 
 // The flags of the bundle as a whole; every other one is an entry's, which stasis.config.json's `entries` sets.
-const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'lockfile-only', 'brotli-quality', 'add', 'deptree'])
+const OUTPUT_FLAGS = new Set(['output', 'format', 'lockfile', 'lockfile-only', 'brotli-quality', 'add', 'deptree'])
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
 // Given once per value, which a comma doesn't separate (a define's JSON value may hold one).
 const REPEATED_FLAGS = new Set(['define'])
@@ -187,8 +188,9 @@ function outputOptions(values, { js, sol, jsAndSol }) {
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
   const lockfileOnly = Boolean(values['lockfile-only'])
-  checkLockfileOnly('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'] })
-  return { output: values.output, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
+  checkLockfileOnly('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'], format: values.format })
+  bundleFormat('', { format: values.format, output: values.output, brotliQuality: values['brotli-quality'] })
+  return { output: values.output, format: values.format, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
 }
 
 // An entry's options in stasis.config.json's `entries` as parseArgs would give the flags they alias: `true`

@@ -1781,8 +1781,9 @@ macro's input like any other -- while reading the files from disk too, so a
 
 A gzipped tar of a `stasis.lock.json` at its top and exactly the files it
 attests, as `tar -czf` packs what `stasis extract --lock=add` writes, named
-`stasis.tgz` or `<name>.stasis.tgz`. Stasis never writes one (an `--output`
-naming one is refused). `stasis validate`, `run` (`--bundle=load` or `frozen`),
+`stasis.tgz` or `<name>.stasis.tgz`. `stasis bundle` and `stasis github-bundle`
+write one with `--format=tgz` or an `--output` so named (`stasis run` writes
+none). `stasis validate`, `run` (`--bundle=load` or `frozen`),
 `build`, `audit`, `diff` and `sbom` read it as the bundle of its files, its
 lockfile beside it; a tgz under any other name (gzip's leading bytes), and
 anything else under its name, is refused. Its tar is read with
@@ -1813,6 +1814,11 @@ unpacked, as `Bundle.parse` is given a bundle's text with its brotli undone:
 builtin. It builds the bundle with `Bundle.fromLockfile(lockfile, { read,
 integrityOf })`, the bundle of a lockfile's files as `read(file)` reads them,
 of the repository it records, as `stasis build` reads a lockfile's from disk.
+`bundle.toTar({ integrityOf })` is what `fromTar` takes back: the entries to pack
+(`{ name, mode, data }`, as `@preventive/archive`'s `pack` takes them), the
+lockfile of its files at the top, recording its repository, then each file, an
+executable one `0o755`. A lockfile records no `reason` or `package`, so a tgz
+carries neither, and no directory capture's listing, but its hash.
 
 ## Resources in the bundle
 

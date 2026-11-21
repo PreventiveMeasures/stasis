@@ -64,3 +64,14 @@ test('Bundle.fromTar: refuses a tar other than exactly its stasis.lock.json\'s f
   refused(odd('src', bytes('["main.js"]'), 'directory'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
   refused(odd('src', bytes('["main.js"]'), 'directory').filter(({ name }) => name !== 'src'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
 })
+
+test('bundle.toTar: what Bundle.fromTar takes back, the lockfile of its files at its top, each file by its path, an executable one 0o755; a directory capture\'s listing left to the lockfile', (t) => {
+  const listed = new Bundle({ ...bundle, repo: bundle.repo, formats: new Map([...bundle.formats, ['src', 'directory']]), modules: new Map([['.', { ...bundle.modules.get('.'), files: { ...bundle.modules.get('.').files, src: '["main.js"]' } }]]) })
+  const entries = listed.toTar({ integrityOf })
+  t.assert.deepStrictEqual(entries.map(({ name, mode }) => [name, mode]), [['stasis.lock.json', 0o644], ['assets/logo.png', 0o644], ['bin/run.sh', 0o755], ['src/main.js', 0o644]])
+  const tar = entries.map((one) => ({ ...one, type: 'file' }))
+  const back = Bundle.fromTar(tar, { integrityOf })
+  t.assert.ok(back.serialize() === new Bundle({ ...bundle, repo: bundle.repo, formats: listed.formats }).serialize(), 'but the listing, of which the lockfile records the hash alone')
+  t.assert.equal(JSON.parse(new TextDecoder().decode(entries[0].data)).sources['.'].files.src, integrityOf(bytes('["main.js"]')))
+  t.assert.equal(Bundle.fromTar(bundle.toTar({ integrityOf }).map((one) => ({ ...one, type: 'file' })), { integrityOf }).serialize(), bundle.serialize())
+})
