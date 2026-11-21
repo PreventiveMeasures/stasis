@@ -99,12 +99,10 @@ export function checkNonEmpty(name, fields) {
   }
 }
 
-export function checkTarget(name, { os, cpu, libc }) {
+// The target a tree is laid out for, and the store it is cached in.
+export function checkTree(name, { os, cpu, libc, cache }) {
   checkNonEmpty(name, { os, cpu })
   if (libc !== undefined && !['glibc', 'musl', 'unknown'].includes(libc)) throw new TypeError(`${name}: libc must be one of 'glibc', 'musl', 'unknown'`)
-}
-
-export function checkCache(name, cache) {
   if (cache === undefined || cache === false || (typeof cache?.read === 'function' && typeof cache?.write === 'function')) return
   throw new TypeError(`${name}: cache must be false, or a store with read and write, or left out`)
 }

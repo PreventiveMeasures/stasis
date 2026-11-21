@@ -8,7 +8,7 @@ import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed, heldToLockfile } from './bundle.js'
 import { githubToken, withNpmToken } from './tokens.js'
-import { bundledSummary, heldSummary, lockedSummary, lockfileOnlyError, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundledSummary, checkLockfileOnly, heldSummary, lockedSummary, unpackedSummary, writeFile, writeOutput } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
 const NAME_MAX = 255
@@ -33,8 +33,7 @@ export function githubBundleFile({ github, directory, commit }, suffix = BUNDLE_
 // build, and the repo it records the build's, and is left as it is. One not there is written, where `lockfile` or
 // `lockfileOnly` asks for it, recording the repo as the bundle does.
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
-  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, brotliQuality, named: true }) : null
-  if (lockfileOnlyRefused !== null) throw new Error(`githubBundleCommand: ${lockfileOnlyRefused}`)
+  checkLockfileOnly('githubBundleCommand: ', { lockfileOnly, lockfile, output, brotliQuality, named: true })
   const locks = lockfile !== undefined || lockfileOnly
   // The local lockfile's mode is the environment's alone: a repo's `lock: frozen` pins its own stasis.lock.json.
   const mode = env.EXODUS_STASIS_LOCK || 'frozen'

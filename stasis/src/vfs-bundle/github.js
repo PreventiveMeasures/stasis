@@ -8,7 +8,7 @@ import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle, configuredLockfiles, debugTimed, prismaClientsOf } from '../cmd/bundle.js'
 import { checkAhead, defaultEntries, entryPattern, expandEntries } from './entries.js'
-import { checkCache, checkNonEmpty, checkTarget, detectPackageManager, listsFile, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
+import { checkNonEmpty, checkTree, detectPackageManager, listsFile, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
@@ -195,8 +195,7 @@ async function repoTree(name, { github, sha, tag, branch, directory, path, clien
 
 // Nothing is read from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id.
 export async function buildGitHubBundle({ github, sha, tag, branch, directory, path, client, packageManager, ...options } = {}) {
-  checkTarget('buildGitHubBundle', options)
-  checkCache('buildGitHubBundle', options.cache)
+  checkTree('buildGitHubBundle', options)
   const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, branch, directory, path, client, packageManager, own: true }, options))
   let { entries } = tree
   if (entries === undefined) {

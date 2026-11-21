@@ -4,10 +4,10 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
-import { archiveIntegrity, fileInBucket, isPlainObject, memoized, moduleInfo, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
+import { archiveIntegrity, isPlainObject, memoized, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
-import { collectFromDisk } from './bash.js'
+import { collectFromDisk, utf8Of } from './bash.js'
 import { ancestors, applyToDir, isDotRelative } from './paths.js'
 import { readUtf8OrNull } from './solidity-ownership.js'
 import { nameErrors } from './toml.js'
@@ -420,28 +420,22 @@ export function resolveClassFile(fqcn, autoload, baseDir) {
   return candidates.find((file) => isFileOnDisk(baseDir, file)) ?? null
 }
 
-// By the nearest composer.json's directory; workspace files and orphans in the root "." bucket, the placeholder's.
-// A package's own composer.json usually omits its `version`, which `packages` (loadComposerPackages') tell.
-export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion, packages = loadComposerPackages(baseDir)) {
+// A source's bucket (codeBundle's classifyDep), by the nearest composer.json's directory; workspace files and orphans
+// in the root ".", orphans of `workspace`'s identity. A package's own composer.json usually omits its `version`, which
+// `packages` (loadComposerPackages') tell.
+export function composerClassifier(baseDir, workspace, packages = loadComposerPackages(baseDir)) {
   const byDir = new Map(packages.filter((p) => p.dir).map((p) => [p.dir, p]))
   const byName = new Map(packages.map((p) => [p.name, p]))
   const manifest = memoized((dir) => readJsonIfExists(join(baseDir, dir, 'composer.json')))
-  const modules = new Map()
-  const bucket = (dir, info) => upsert(modules, dir, () => moduleInfo({ ...info, files: Object.create(null) }))
-
-  for (const [path, content] of sources) {
+  return (path) => {
     const dir = ancestors(dirname(path)).find((at) => manifest(at)?.name)
-    if (dir === undefined) {
-      bucket('.', { name: fallbackName, version: fallbackVersion }).files[path] = content
-      continue
-    }
+    if (dir === undefined) return { bucketDir: '.', ...workspace }
     const { name, version } = manifest(dir)
     const known = byDir.get(dir) ?? byName.get(name)
     // The root package is workspace code; one below it an installed dependency.
     const installed = dir === '.' ? {} : { ecosystem: 'composer', integrity: known?.integrity, repo: known?.repo }
-    bucket(dir, { name, version: known?.version ?? version ?? fallbackVersion, ...installed }).files[fileInBucket(dir, path)] = content
+    return { bucketDir: dir, name, version: known?.version ?? version ?? workspace.version, ...installed }
   }
-  return modules
 }
 
 // Laravel registers service providers nothing references statically: composer.json's and the `packages`'
@@ -573,7 +567,7 @@ export function buildPhpTree(sources, { baseDir, autoload = null } = {}) {
 
 // No file, or a specifier resolved to a directory: buildPhpTree tells a real include's edge unresolved.
 const PHP_FILES = {
-  what: 'PHP source',
+  decode: utf8Of('PHP source'),
   skipped: { ENOENT: '[loader.php] Missing import', EISDIR: '[loader.php] Missing import' },
 }
 

@@ -6,7 +6,7 @@ import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainOb
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
-import { lockfileOnlyError } from './output.js'
+import { checkLockfileOnly } from './output.js'
 
 export const BUNDLE_FLAGS = {
   mapping: { type: 'string' },
@@ -54,17 +54,36 @@ const CONSENT_FLAGS = new Map([
   ['cargo-target', 'rustc'],
 ])
 // Each entry flag's option, as buildBundle takes it.
-const OPTION_FLAGS = {
+export const OPTION_FLAGS = {
   mappingFile: 'mapping', manifests: 'manifests', scope: 'scope', conditions: 'conditions', mainFields: 'mainFields', metro: 'metro', metroResolver: 'metro-resolver', babel: 'babel', babelAliases: 'babel-aliases', platforms: 'platforms', jsx: 'jsx', flow: 'flow', typescript: 'typescript', tsconfig: 'tsconfig', resources: 'resources', define: 'define', packageJSON: 'package-json', cargo: 'cargo', cargoFeatures: 'cargo-features', cargoNoDefaultFeatures: 'cargo-no-default-features', cargoAllFeatures: 'cargo-all-features', cargoTarget: 'cargo-target', cargoManifests: 'cargo-manifests',
 }
-// The entry flags one language's bundles alone take, by its entriesLanguage key.
-const LANGUAGE_FLAGS = [
-  ['allSol', '.sol', ['mapping', 'manifests']],
-  ['allRust', 'Rust', ['cargo', 'cargo-features', 'cargo-no-default-features', 'cargo-all-features', 'cargo-target', 'cargo-manifests']],
-  ['allJs', 'JS', ['scope', 'conditions', 'flow', 'typescript', 'mainFields', 'metro', 'jsx', 'package-json', 'resources', 'define']],
+// The entry flags (and --lockfile) one language's bundles alone take, by its entriesLanguage key, bundle.js's KINDS'.
+export const LANGUAGE_FLAGS = [
+  ['sol', '.sol', ['mapping', 'manifests']],
+  ['rust', 'Rust', ['cargo', 'cargo-features', 'cargo-no-default-features', 'cargo-all-features', 'cargo-target', 'cargo-manifests']],
+  ['js', 'JS', ['scope', 'lockfile', 'conditions', 'flow', 'typescript', 'mainFields', 'metro', 'jsx', 'package-json', 'resources', 'define']],
 ]
 const flagText = (name, value) => (value === true ? `--${name}` : `--${name}=${value}`)
 const isStrings = (value) => typeof value === 'string' || (Array.isArray(value) && value.every((v) => typeof v === 'string'))
+export const nonEmpty = (list) => Array.isArray(list) && list.length > 0
+
+// Refuses what of buildBundle's `options` the others rule out, `prefix` its message's; `partial`: a stasis.config.json
+// entry may yet complete them, so what one needs of another is left to the build.
+export function checkCombinations(prefix, { metro, conditions, mainFields, platforms, metroResolver, babel, babelAliases, typescript, tsconfig }, partial = false) {
+  const refusal = [
+    [tsconfig !== undefined && !typescript && !partial, '--tsconfig is only valid with --typescript'],
+    [metro && nonEmpty(conditions), "--conditions can't be combined with --metro (it sets its own conditions)"],
+    [metro && mainFields !== undefined, "--mainFields can't be combined with --metro (it sets its own mainFields)"],
+    [metro && !nonEmpty(platforms) && !partial, '--metro requires --platforms (e.g. --platforms=ios,android)'],
+    [!metro && nonEmpty(platforms) && !partial, '--platforms is only valid with --metro'],
+    [metroResolver && !metro, '--metro-resolver is only valid with --metro'],
+    [babel && !metro, '--babel is only valid with --metro'],
+    [babelAliases !== undefined && !metro && !partial, '--babel-aliases is only valid with --metro'],
+    [babelAliases !== undefined && babel, "--babel-aliases can't be combined with --babel (both set the import aliases)"],
+    [typescript && metroResolver, "--typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)"],
+  ].find(([refused]) => refused)
+  if (refusal) throw new Error(`${prefix}${refusal[1]}`)
+}
 
 function listFlag(value, error) {
   if (value === undefined) return undefined
@@ -99,18 +118,18 @@ function prefixed(prefix, fn) {
 
 const isJsEntry = (entry) => JS_EXTENSIONS.values().some((ext) => entry.endsWith(ext))
 
-// Which language `entries` all are in, or `jsAndSol` for JS and Solidity entries together, each built apart.
+// Which language `entries` all are in, by KINDS key, or `jsAndSol` for JS and Solidity entries together, each built apart.
 function entriesLanguage(entries, cwd, host = diskHost) {
   // Beside JS entries, a directory one is of the Solidity ones.
   const dirError = directoryEntryError(entries.filter((f) => !isJsEntry(f)), cwd, host)
   if (dirError !== null) throw new Error(dirError)
   const lang = {
-    allSol: entries.every((f) => isSolidityEntry(f, cwd, host)),
-    allPhp: entries.every((f) => f.endsWith('.php')),
-    allJs: entries.every(isJsEntry),
-    allBash: entries.every((f) => /\.(?:sh|bash)$/u.test(f)),
-    allRust: entries.every((f) => f.endsWith('.rs')),
-    allTeal: entries.every((f) => f.endsWith('.teal')),
+    sol: entries.every((f) => isSolidityEntry(f, cwd, host)),
+    php: entries.every((f) => f.endsWith('.php')),
+    js: entries.every(isJsEntry),
+    bash: entries.every((f) => /\.(?:sh|bash)$/u.test(f)),
+    rust: entries.every((f) => f.endsWith('.rs')),
+    teal: entries.every((f) => f.endsWith('.teal')),
   }
   if (Object.values(lang).some(Boolean)) return lang
   if (entries.every((f) => isJsEntry(f) || isSolidityEntry(f, cwd, host))) return { ...lang, jsAndSol: true }
@@ -143,7 +162,6 @@ function buildOptions(values, lang) {
   // --metro parses JSX and Flow, as Metro's Babel does in every file.
   options.jsx ||= metro
   options.flow ||= metro
-  if (values.tsconfig !== undefined && !options.typescript) throw new Error('--tsconfig is only valid with --typescript')
   options.mainFields = listFlag(values.mainFields, '--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
   // A platform name becomes an edge key, so no '/' (parsers reject it) or '*' (a reserved placeholder).
   for (const p of options.platforms) {
@@ -151,27 +169,15 @@ function buildOptions(values, lang) {
   }
   options.resources = listFlag(values.resources, '--resources must list at least one extension or filename (e.g. --resources=png,svg)')
   parseResourcesOption('--resources', options.resources) // checked here, for a clean usage error
-  if (metro) {
-    if (options.conditions.length > 0) throw new Error("--conditions can't be combined with --metro (it sets its own conditions)")
-    if (options.mainFields !== undefined) throw new Error("--mainFields can't be combined with --metro (it sets its own mainFields)")
-    if (options.platforms.length === 0) throw new Error('--metro requires --platforms (e.g. --platforms=ios,android)')
-  } else if (options.platforms.length > 0) {
-    throw new Error('--platforms is only valid with --metro')
-  }
-  const { metroResolver, babel, babelAliases } = options
-  if (metroResolver && !metro) throw new Error('--metro-resolver is only valid with --metro')
-  if (babel && !metro) throw new Error('--babel is only valid with --metro')
-  if (babelAliases !== undefined && !metro) throw new Error('--babel-aliases is only valid with --metro')
-  if (babelAliases !== undefined && babel) throw new Error("--babel-aliases can't be combined with --babel (both set the import aliases)")
-  if (options.typescript && metroResolver) throw new Error("--typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
+  checkCombinations('', options)
   if (values.define !== undefined) options.define = parseDefineFlags(null, values.define)
   return options
 }
 
-function outputOptions(values, { allJs, allSol, jsAndSol }) {
-  if (values.lockfile && !allJs) throw new Error('--lockfile is only valid for JS bundles')
+function outputOptions(values, { js, sol, jsAndSol }) {
+  if (values.lockfile && !js) throw new Error('--lockfile is only valid for JS bundles')
   const deptree = Boolean(values.deptree)
-  if (deptree && !allJs && !allSol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
+  if (deptree && !js && !sol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
   // The CONSENT_FLAGS that run a program of the project's from disk, where --deptree installs nothing.
   for (const flag of deptree ? ['babel', 'metro-resolver'] : []) {
     if (values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${CONSENT_FLAGS.get(flag)} from disk, where --deptree installs nothing)`)
@@ -180,8 +186,7 @@ function outputOptions(values, { allJs, allSol, jsAndSol }) {
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
   const lockfileOnly = Boolean(values['lockfile-only'])
-  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'] }) : null
-  if (lockfileOnlyRefused !== null) throw new Error(lockfileOnlyRefused)
+  checkLockfileOnly('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'] })
   return { output: values.output, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
 }
 

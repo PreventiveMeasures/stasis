@@ -3,10 +3,9 @@
 // commands, `$VAR` paths, absolute or escaping paths) is best-effort and dropped.
 
 import { isUtf8 } from 'node:buffer'
-import { realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { diskHost } from '@exodus/stasis-core/host'
 import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { applyToDir } from './paths.js'
@@ -79,49 +78,42 @@ export function buildBashTree(sources) {
   return { sources, resolutions, missing }
 }
 
-// Reads at once: a wave can be huge (a PHP dynamic include's directory), and opening every file at once EMFILE.
-const READ_CONCURRENCY = 64
+// `bytes` of a `what` file as UTF-8: one that isn't is refused rather than carried with U+FFFD in it.
+export const utf8Of = (what) => (bytes, relPath) => {
+  if (!isUtf8(bytes)) throw new Error(`${what} is not valid UTF-8: ${relPath}`)
+  return bytes.toString('utf8')
+}
 
-// The `what` files (UTF-8) `entries` reach on disk, wave by wave, `refsOf(relPath, content)` the paths each one
-// reaches in turn. One not there, or a directory, is warned of as `skipped[err.code]` says and left out without
-// aborting the walk.
-export async function collectFromDisk(baseDir, entries, { what, skipped }, refsOf) {
+// The files `entries` reach under `baseDir` through `host`, wave by wave, each `decode`d, `refsOf(relPath, content)`
+// the paths each one reaches in turn. One whose read fails with a code `skipped` has is warned of as it says and left
+// out without aborting the walk.
+export function collectFromDisk(baseDir, entries, { decode, skipped, host = diskHost }, refsOf) {
   const sources = new Map()
-  const realBase = realpathSync(baseDir)
-
-  const read = async (relPath) => {
+  const realBase = host.realpath(baseDir)
+  const read = (relPath) => {
     try {
-      assertRealPathWithinBase(realBase, baseDir, relPath)
-      const bytes = await readFile(join(baseDir, relPath))
-      // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
-      if (!isUtf8(bytes)) throw new Error(`${what} is not valid UTF-8: ${relPath}`)
-      return [relPath, bytes.toString('utf8')]
+      assertRealPathWithinBase(realBase, baseDir, relPath, host)
+      return [relPath, decode(host.readFile(join(baseDir, relPath)), relPath)]
     } catch (err) {
-      if (err.code !== 'ENOENT' && err.code !== 'EISDIR') throw err
+      if (!Object.hasOwn(skipped, err.code)) throw err
       console.warn(`${skipped[err.code]}: ${relPath}`)
       return null
     }
   }
-
-  for (let wave = entries; ;) {
-    const toLoad = [...new Set(wave)].filter((p) => !sources.has(p))
-    if (toLoad.length === 0) return sources
-    const reads = []
-    for (let k = 0; k < toLoad.length; k += READ_CONCURRENCY) {
-      // eslint-disable-next-line no-await-in-loop -- batches are intentionally sequential to cap open files
-      reads.push(...(await Promise.all(toLoad.slice(k, k + READ_CONCURRENCY).map(read))))
-    }
+  for (let wave = entries; wave.length > 0;) {
+    const reads = [...new Set(wave)].filter((p) => !sources.has(p)).map(read)
     wave = []
     for (const [relPath, content] of reads.filter(Boolean)) {
       sources.set(relPath, content)
       for (const ref of refsOf(relPath, content)) wave.push(ref)
     }
   }
+  return sources
 }
 
 // A slash ref can resolve to a directory (`source ./lib`).
 const BASH_FILES = {
-  what: 'Shell script',
+  decode: utf8Of('Shell script'),
   skipped: { ENOENT: '[loader.bash] Missing file', EISDIR: '[loader.bash] Skipping directory reference' },
 }
 

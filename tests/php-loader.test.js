@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { bucketsOf } from '../stasis/src/cmd/bundle.js'
 import {
-  bucketizePhpSources,
   buildPhpTree,
   collectPhpFilesFromDisk,
+  composerClassifier,
   extractPhpImportDirs,
   extractPhpImports,
   extractPhpPathRefs,
@@ -377,7 +378,7 @@ test('bucketizePhpSources groups vendor packages with name+version from composer
     ['vendor/acme/lib/src/Client.php', '<?php'],
     ['vendor/autoload.php', '<?php'], // no package composer.json -> workspace
   ])
-  const modules = bucketizePhpSources(composer, sources, 'php-bundle', '0.0.0')
+  const modules = bucketsOf(sources, composerClassifier(composer, { name: 'php-bundle', version: '0.0.0' }))
 
   // Vendor package: own bucket, name from composer.json, version from
   // installed.json, and the `composer` ecosystem marking it as a dependency.
@@ -400,7 +401,7 @@ test('bucketizePhpSources groups vendor packages with name+version from composer
 })
 
 test('bucketizePhpSources falls back to the placeholder identity with no composer.json', (t) => {
-  const modules = bucketizePhpSources(join(fixtures, 'basic'), new Map([['src/A.php', '<?php']]), 'php-bundle', '0.0.0')
+  const modules = bucketsOf(new Map([['src/A.php', '<?php']]), composerClassifier(join(fixtures, 'basic'), { name: 'php-bundle', version: '0.0.0' }))
   t.assert.deepStrictEqual([...modules.keys()], ['.'])
   t.assert.equal(modules.get('.').name, 'php-bundle')
   t.assert.equal(modules.get('.').version, '0.0.0')
@@ -557,7 +558,7 @@ test('bucketizePhpSources and loadLaravelProviderFiles take the packages from co
       ['vendor/acme/laravel-ext/src/ExtServiceProvider.php', '<?php'],
       ['vendor/acme/legacy/Acme/Legacy/Thing.php', '<?php'],
     ])
-    const modules = bucketizePhpSources(dir, sources, 'php-bundle', '0.0.0')
+    const modules = bucketsOf(sources, composerClassifier(dir, { name: 'php-bundle', version: '0.0.0' }))
     t.assert.deepStrictEqual(
       [...modules].map(([at, { name, version, ecosystem }]) => [at, name, version, ecosystem]),
       [

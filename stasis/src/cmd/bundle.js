@@ -24,7 +24,7 @@ import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSO
 import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, ecosystemFamily, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, moduleExcluder, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
-import { parseBundleBytes } from '@exodus/stasis-core/brotli'
+import { compressBundleText, parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { added as addedTo } from '@preventive/rn/src/rn-config.js'
@@ -41,19 +41,19 @@ import { decodeUtf8, solidityOwnership } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
 import { createCargoContext } from '../loaders/cargo.js'
+import { inRounds, untouchedMemo, warningsHeld } from '../vfs-bundle/lazy.js'
 import { ancestors } from '../loaders/paths.js'
 import {
-  bucketizePhpSources,
   buildPhpTree,
   collectPhpFilesFromDisk,
+  composerClassifier,
   loadComposerAutoload,
   loadComposerPackages,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
-import { bundledSummary, lockedSummary, lockfileOnlyError, packagesLabel, unpackedSummary, writeBundle, writeFile } from './output.js'
+import { bundledSummary, checkLockfileOnly, lockedSummary, packagesLabel, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { LANGUAGE_FLAGS, OPTION_FLAGS, checkCombinations, configuredBuilds, nonEmpty, withConfigDefine } from './bundle-options.js'
 import { withNpmToken } from './tokens.js'
-
-const nonEmpty = (list) => Array.isArray(list) && list.length > 0
 
 // The deepest dir holding every one of `paths`, relative to `cwd` (`..` where they escape it, by remapping).
 export function outermostDir(paths, cwd) {
@@ -156,34 +156,33 @@ function assertSelfContained(lang, noun, entries, sources, missing) {
   if (issues.length > 0) throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}`)
 }
 
-// A file of no package goes in "." under the workspace identity: Bundle.parse needs every bucket to attest one. A
-// PHP bundle's `modules` come bucketed already.
+// Each of `sources` in the bucket `classify(path)` gives, its `bucketDir` and identity.
+export function bucketsOf(sources, classify) {
+  const modules = new Map()
+  for (const [path, content] of sources) {
+    const dep = classify(path)
+    const bucket = modules.get(dep.bucketDir)
+    modules.set(dep.bucketDir, bucket === undefined ? moduleInfo({ ...dep, files: Object.create(null) }) : withMetadataOf(bucket, dep))
+    modules.get(dep.bucketDir).files[fileInBucket(dep.bucketDir, path)] = content
+  }
+  return modules
+}
+
+// A file of no package goes in "." under the workspace identity: Bundle.parse needs every bucket to attest one.
 function codeBundle({
-  baseDir, entries, sources, modules, resolutions, keyedResolutions = new Map(), workspaceName, workspaceVersion = '0.0.0', format, formats,
+  baseDir, entries, sources, resolutions, keyedResolutions = new Map(), workspaceName, workspaceVersion = '0.0.0', format, formats,
   conditionKey = format, classifyDep, host, packageOf = packageLookup(baseDir, { host }), consumer = 'bundle', consumerFiles,
 }) {
-  if (modules === undefined) {
-    modules = new Map()
-    const ensureBucket = (dir, identity) => {
-      const bucket = modules.get(dir)
-      modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
-      return modules.get(dir)
+  const modules = bucketsOf(sources, (path) => {
+    const dep = classifyDep?.(path)
+    if (dep) return dep
+    const meta = packageOf(path)
+    // One of node_modules whose nearest package.json is the workspace root's (or none) is a misconfigured dep.
+    if (splitNodeModulesPath(path) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
+      throw new Error(`No package.json with name+version found for ${path}`)
     }
-    for (const [path, content] of sources) {
-      const dep = classifyDep?.(path)
-      if (dep) {
-        ensureBucket(dep.bucketDir, dep).files[fileInBucket(dep.bucketDir, path)] = content
-        continue
-      }
-      const meta = packageOf(path)
-      // One of node_modules whose nearest package.json is the workspace root's (or none) is a misconfigured dep.
-      if (splitNodeModulesPath(path) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
-        throw new Error(`No package.json with name+version found for ${path}`)
-      }
-      const [dir, identity] = meta ? [meta.pkgDir, meta] : ['.', { name: workspaceName, version: workspaceVersion }]
-      ensureBucket(dir, identity).files[fileInBucket(dir, path)] = content
-    }
-  }
+    return meta ? { ...meta, bucketDir: meta.pkgDir } : { bucketDir: '.', name: workspaceName, version: workspaceVersion }
+  })
   return new Bundle({
     config: { scope: 'full' },
     entries: new Set(entries),
@@ -381,8 +380,8 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
   const sources = await collectPhpFilesFromDisk(baseDir, [...normalized, ...providerRoots], { autoload })
   const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload })
   assertSelfContained('PHP', 'import', normalized, sources, missing)
-  const modules = bucketizePhpSources(baseDir, sources, 'php-bundle', '0.0.0', packages)
-  return codeBundle({ baseDir, entries: normalized, sources, modules, resolutions, format: 'php' })
+  const classifyDep = composerClassifier(baseDir, { name: 'php-bundle', version: '0.0.0' }, packages)
+  return codeBundle({ baseDir, entries: normalized, sources, resolutions, format: 'php', classifyDep })
 }
 
 function displayPath(url, baseDir) {
@@ -969,16 +968,7 @@ const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
 const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'
 
 // A cache across a lazy tree's rounds: what `read()` gives, kept where it read no package not unpacked yet.
-function keptAcross(label, host, memo) {
-  const kept = memo ? nestedMap(memo, label) : null
-  return (key, read) => {
-    if (kept?.has(key)) return kept.get(key)
-    const before = kept === null ? 0 : host.touches()
-    const value = read()
-    if (kept !== null && host.touches() === before) kept.set(key, value)
-    return value
-  }
-}
+const keptAcross = (label, host, memo) => untouchedMemo(host.touches, memo ? { across: nestedMap(memo, label) } : { cache: false })
 
 // `fn()`, its reads probes of what files packages hold, which read none of their code, where `host` (a lazy
 // tree's) tells them apart.
@@ -1475,44 +1465,26 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   if (kind === undefined) {
     throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
-  // Refuse each of the options `given` that is on, for the `only` (`what`) bundles alone, in order.
-  const onlyFor = (only, what, given) => {
-    if (kind === only) return
-    for (const [flag, on] of Object.entries(given)) if (on) throw new Error(`${name}: --${flag} is only valid for ${what} bundles`)
+  // Each entry flag, whether it is on; `define` parsed (checked) whatever the kind.
+  const on = {
+    mapping: mappingFile, manifests, cargo, 'cargo-features': nonEmpty(cargoFeatures), 'cargo-no-default-features': cargoNoDefaultFeatures,
+    'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget, 'cargo-manifests': cargoManifests, scope: scope !== undefined,
+    lockfile: lockfile !== undefined, conditions: nonEmpty(conditions), flow, typescript, mainFields: mainFields !== undefined,
+    metro: metro || nonEmpty(platforms), jsx, 'package-json': packageJSON, resources: nonEmpty(resources), define: parseDefine(name, define).size > 0,
   }
-  onlyFor('sol', '.sol', { mapping: mappingFile, manifests })
-  onlyFor('rust', 'Rust', { cargo, 'cargo-features': nonEmpty(cargoFeatures), 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget, 'cargo-manifests': cargoManifests })
-  onlyFor('js', 'JS', { scope: scope !== undefined, lockfile: lockfile !== undefined, conditions: nonEmpty(conditions), flow, typescript })
-  if (tsconfig !== undefined && !typescript && !partial) throw new Error(`${name}: --tsconfig is only valid with --typescript`)
+  for (const [only, what, flags] of LANGUAGE_FLAGS) {
+    const flag = only === kind ? undefined : flags.find((one) => on[one])
+    if (flag !== undefined) throw new Error(`${name}: --${flag} is only valid for ${what} bundles`)
+  }
   // Checked here too, so a typo surfaces with the command name rather than deep in the scan.
-  if (nonEmpty(resources)) {
-    if (kind !== 'js') throw new Error(`${name}: --resources is only valid for JS bundles`)
-    parseResourcesOption(name, resources)
-  }
-  // `define` is parsed (checked) whatever the kind.
-  onlyFor('js', 'JS', { mainFields: mainFields !== undefined, jsx, define: parseDefine(name, define).size > 0, 'package-json': packageJSON, metro: metro || nonEmpty(platforms) })
-  if (metro) {
-    if (nonEmpty(conditions)) throw new Error(`${name}: --conditions can't be combined with --metro (it sets its own conditions)`)
-    if (mainFields !== undefined) throw new Error(`${name}: --mainFields can't be combined with --metro (it sets its own mainFields)`)
-    if (!nonEmpty(platforms) && !partial) throw new Error(`${name}: --metro requires --platforms (e.g. --platforms=ios,android)`)
-    // A platform name becomes an edge key, which Bundle/Lockfile parse refuse with a '/', and '*' is reserved.
-    for (const p of Array.isArray(platforms) ? platforms : []) {
-      if (typeof p !== 'string' || p.length === 0 || p === '*' || p.includes('/')) {
-        throw new Error(`${name}: invalid platform '${p}' (a platform name can't be empty, contain '/', or be '*')`)
-      }
+  if (nonEmpty(resources)) parseResourcesOption(name, resources)
+  checkCombinations(`${name}: `, { metro, conditions, mainFields, platforms, metroResolver, babel, babelAliases, typescript, tsconfig }, partial)
+  if (babelAliases !== undefined && (typeof babelAliases !== 'string' || babelAliases === '')) throw new TypeError(`${name}: babelAliases must be a path to a JSON file`)
+  // A platform name becomes an edge key, which Bundle/Lockfile parse refuse with a '/', and '*' is reserved.
+  for (const p of metro && Array.isArray(platforms) ? platforms : []) {
+    if (typeof p !== 'string' || p.length === 0 || p === '*' || p.includes('/')) {
+      throw new Error(`${name}: invalid platform '${p}' (a platform name can't be empty, contain '/', or be '*')`)
     }
-  } else if (nonEmpty(platforms) && !partial) {
-    throw new Error(`${name}: --platforms is only valid with --metro`)
-  }
-  if (metroResolver && !metro) throw new Error(`${name}: --metro-resolver is only valid with --metro`)
-  if (babel && !metro) throw new Error(`${name}: --babel is only valid with --metro`)
-  if (babelAliases !== undefined) {
-    if (typeof babelAliases !== 'string' || babelAliases === '') throw new TypeError(`${name}: babelAliases must be a path to a JSON file`)
-    if (!metro && !partial) throw new Error(`${name}: --babel-aliases is only valid with --metro`)
-    if (babel) throw new Error(`${name}: --babel-aliases can't be combined with --babel (both set the import aliases)`)
-  }
-  if (typescript && metroResolver) {
-    throw new Error(`${name}: --typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)`)
   }
   // Refused before anything is built (or fetched).
   if (mainFields !== undefined || metro) fieldBuildOptions(name, { cwd, scope, resources, host })
@@ -1680,7 +1652,7 @@ async function layLazily(name, project, cwd, specs, lazy) {
 }
 
 async function prismaOutputs(tree, project, options) {
-  const [{ generatePrismaClients }, { treeHost }, { inRounds }] = await Promise.all([import('../vfs-bundle/prisma.js'), import('../vfs-bundle/tree.js'), import('../vfs-bundle/lazy.js')])
+  const [{ generatePrismaClients }, { treeHost }] = await Promise.all([import('../vfs-bundle/prisma.js'), import('../vfs-bundle/tree.js')])
   const generating = (reads) => generatePrismaClients({ ...options, host: treeHost(tree, project, reads), root: tree.root })
   return tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)
 }
@@ -1702,11 +1674,9 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
 
 // `project` is a Vfs, which `vfs` is, or the disk, for `stasis bundle --deptree`, which gives the `plan` of builds.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false, why } = {}) {
-  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinFromTree, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
-  const { configuredBuilds, withConfigDefine } = await import('./bundle-options.js')
+  const { checkKind, checkLazy, checkTree, layOutTrees, packageManagerOf, pinFromTree, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
-  checkTarget(name, { os, cpu, libc })
-  checkCache(name, cache)
+  checkTree(name, { os, cpu, libc, cache })
   if (lazy !== undefined && typeof lazy !== 'boolean') throw new TypeError(`${name}: lazy must be a boolean`)
   // Checked as the Bundle checks it, before anything is fetched.
   if (repo !== undefined) repo = new Bundle({ repo }).repo
@@ -1763,7 +1733,6 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   }
   const laidOut = specs.length > 1 ? 'Laid out the trees' : specs[0].lazy ? 'Laid out the tree' : 'Installed the tree'
   const tree = await debugTimed(laidOut, () => layOutTrees({ project, specs, os, cpu, libc, client, cache, installDevDependencies, refuseInstalled }))
-  const { inRounds, warningsHeld } = await import('../vfs-bundle/lazy.js')
   // The Prisma Clients generated once before any build, so that each of a lazy tree's rounds reads the same project.
   let outside = project
   let expected = []
@@ -1910,12 +1879,8 @@ function reportedRounds(attempt, unpack) {
   ]
 }
 
-// The options of a build's entries, each of which stasis.config.json's `entries` may set (bundle-options.js's OPTION_FLAGS).
-const ENTRY_OPTIONS = [
-  'entries', 'mappingFile', 'manifests', 'scope', 'conditions', 'mainFields', 'platforms', 'metro', 'metroResolver', 'babel', 'babelAliases', 'jsx', 'flow',
-  'typescript', 'tsconfig', 'resources', 'define', 'packageJSON', 'cargo', 'cargoFeatures', 'cargoNoDefaultFeatures', 'cargoAllFeatures', 'cargoTarget', 'cargoManifests',
-]
-const entryOptionsOf = (options) => Object.fromEntries(ENTRY_OPTIONS.map((key) => [key, options[key]]))
+// The options of a build's entries, each of which stasis.config.json's `entries` may set.
+const entryOptionsOf = (options) => Object.fromEntries(['entries', ...Object.keys(OPTION_FLAGS)].map((key) => [key, options[key]]))
 
 // `stasis bundle`'s Bundle, not written, a JS one held to the project's stasis.lock.json as `stasis bundle` holds it.
 export async function buildBundle({ cwd = process.cwd(), env = process.env, ...given } = {}) {
@@ -1930,8 +1895,7 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, ...g
 // Run `stasis bundle` (doc/bundle.md).
 export async function bundleCommand({ cwd = process.cwd(), output, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
   if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
-  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, add, brotliQuality }) : null
-  if (lockfileOnlyRefused !== null) throw new Error(`bundleCommand: ${lockfileOnlyRefused}`)
+  checkLockfileOnly('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality })
   const built = await buildOfCommand({ ...options, cwd, output, lockfile })
   const { root } = built
   // By default at the root, where `stasis run --bundle=load` discovers it: in cwd below the root it would root
@@ -2009,7 +1973,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   const files = [...bundle.sources.keys()]
   const modules = bundle.modules
 
-  const dest = lockfileOnly ? undefined : writeBundle(cwd, target, serialized, brotliQuality)
+  const dest = lockfileOnly ? undefined : writeOutput(cwd, target, compressBundleText(serialized, brotliQuality))
   if (lockData) writeFile(lockAbs, lockData)
   // The bundle's paths are relative to its root; shown relative to cwd, as `dest` is.
   const fromDir = posix.join(toPosix(relative(resolve(cwd), root)), outermostDir(files, root))

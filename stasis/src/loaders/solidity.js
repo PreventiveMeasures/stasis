@@ -4,8 +4,9 @@
 import { isAbsolute, join, posix, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
-import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
+import { collectFromDisk } from './bash.js'
 import {
   FOUNDRY_TOML,
   REMAPPINGS_TXT,
@@ -253,32 +254,11 @@ export function buildSolidityTree(sources, { remappings = [], baseDir, libs = []
 
 // Entries are taken as verbatim import targets naming no file too (Foundry-style `import "src/A.sol"`).
 export function collectSolidityFilesFromDisk(baseDir, entries, remappings, { libs = [], host = diskHost, ownership = solidityOwnership(baseDir, { host }) } = {}) {
-  const sources = new Map()
   const knownEntries = new Set(entries)
-  const realBase = host.realpath(baseDir)
   const options = { remappings, baseDir, libs, ownership, host }
   for (const entry of entries) ownership.assert(entry, 'entry ')
-  for (let wave = entries; wave.length > 0;) {
-    const reads = [...new Set(wave)].filter((p) => !sources.has(p)).map((relPath) => {
-      try {
-        assertRealPathWithinBase(realBase, baseDir, relPath, host)
-        return [relPath, decodeUtf8(host.readFile(join(baseDir, relPath)), relPath)]
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          console.warn(`[loader.solidity] Missing import: ${relPath}`)
-          return null
-        }
-        throw err
-      }
-    })
-    const next = []
-    for (const [relPath, content] of reads.filter(Boolean)) {
-      sources.set(relPath, content)
-      for (const { path } of importsOf(content, relPath, options, knownEntries)) if (path) next.push(path)
-    }
-    wave = next
-  }
-  return sources
+  const files = { decode: decodeUtf8, skipped: { ENOENT: '[loader.solidity] Missing import' }, host }
+  return collectFromDisk(baseDir, entries, files, (relPath, content) => importsOf(content, relPath, options, knownEntries).map(({ path }) => path).filter(Boolean))
 }
 
 // Symlinks followed as forge's walkdir (`follow_links`) collects a source dir: a linked directory whose real
