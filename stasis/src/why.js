@@ -1,4 +1,4 @@
-import { entryDirOf, hasNodeModulesSegment, moduleFileKey, upsert } from '@exodus/stasis-core/util'
+import { entryDirOf, hasNodeModulesSegment, moduleFileKey, nestedMap, upsert } from '@exodus/stasis-core/util'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 
@@ -227,7 +227,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
   // key -> reason bucket ('' unattributed) -> Map(chainKey -> node names)
   const acc = new Map()
   const truncatedKeys = new Set()
-  const addChain = (key, bucket, nodes) => upsert(upsert(acc, key, () => new Map()), bucket, () => new Map()).set(chainKey(nodes), nodes)
+  const addChain = (key, bucket, nodes) => nestedMap(nestedMap(acc, key), bucket).set(chainKey(nodes), nodes)
 
   for (const file of files) {
     const artifact = parseFile(file)
