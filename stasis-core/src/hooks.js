@@ -369,6 +369,14 @@ function assertInfraMatchesBundle(url) {
   }
 }
 
+// Saving attributes isn't supported yet: only `type: 'json'`, of a JSON module.
+function assertImportAttributes(importAttributes, url) {
+  if (importAttributes === undefined) return
+  const expectedAttrs = Object.create(null)
+  if (importAttributes.type && extname(new URL(url).pathname) === '.json') expectedAttrs.type = 'json'
+  assert.deepStrictEqual(importAttributes, expectedAttrs)
+}
+
 const EXCLUDED = Symbol('excludeModules')
 
 // Not `recording`: the program may catch the miss.
@@ -401,12 +409,6 @@ function resolve(specifier, context, nextResolve) {
     return res
   }
 
-  if (importAttributes !== undefined) {
-    const expectedAttrs = Object.create(null) // saving not supported yet; enforce expected attrs
-    if (extname(specifier) === '.json' && importAttributes?.type) expectedAttrs.type = 'json'
-    assert.deepStrictEqual(importAttributes, expectedAttrs)
-  }
-
   // Full-scope load serves the entry from the bundle, so state must exist before nextResolve.
   if (!state && !parentURL && process.env.EXODUS_STASIS_BUNDLE === 'load'
       && process.env.EXODUS_STASIS_SCOPE !== 'node_modules') initState(process.cwd())
@@ -415,6 +417,7 @@ function resolve(specifier, context, nextResolve) {
     // inNodeModules(), not a raw substring: a symlinked workspace source is read from disk.
     if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) {
       const res = nextResolve(specifier)
+      assertImportAttributes(importAttributes, res.url)
       if (parentURL) missIfExcluded(specifier, parentURL, res.url, conditions)
       return res
     }
@@ -429,6 +432,7 @@ function resolve(specifier, context, nextResolve) {
       if (!parentURL && state.config.full && !forkedChild) state.assertEntry(url)
       format = state.getFormat(url)
     }
+    assertImportAttributes(importAttributes, url)
     // Friendlier error at resolve time; the load gate is the load-bearing one. Metro's code resolves as a file of
     // no format did, its load refused. As does a native addon the bundle carries, which Node loads from disk by
     // its path, past the load hook: none is served.
@@ -441,6 +445,7 @@ function resolve(specifier, context, nextResolve) {
   const res = nextResolve(specifier)
   const { url, format } = res
 
+  assertImportAttributes(importAttributes, url)
   assert.equal(res.importAttributes, undefined) // unsupported yet
   if (parentURL) assert.ok(state)
   if (parentURL) missIfExcluded(specifier, parentURL, url, conditions)
