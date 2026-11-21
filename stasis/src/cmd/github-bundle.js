@@ -8,14 +8,14 @@ import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed, heldToLockfile } from './bundle.js'
 import { githubToken, withNpmToken } from './tokens.js'
-import { bundledSummary, checkLockfileOnly, heldSummary, lockedSummary, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundledSummary, bundleFileOf, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
 const NAME_MAX = 255
 const portable = (s) => s.replaceAll(/[^\w.-]/gu, '_')
 
-// `owner-name[.<directory, its / made ->].<commit's first 7>.stasis.code.br`, or `.stasis.lock.json` for
-// `suffix` LOCK_FILE. A directory too long for NAME_MAX keeps what fits of its start, then `_` and its sha256's
+// `owner-name[.<directory, its / made ->].<commit's first 7>.stasis.code.br`, or `.stasis.tgz` or `.stasis.lock.json` for
+// `suffix` TGZ_FILE or LOCK_FILE. A directory too long for NAME_MAX keeps what fits of its start, then `_` and its sha256's
 // first 8 (a valid `github` leaves it 91 at least, 89 of a lockfile).
 export function githubBundleFile({ github, directory, commit }, suffix = BUNDLE_FILE) {
   const repo = portable(github.replace('/', '-'))
@@ -32,8 +32,9 @@ export function githubBundleFile({ github, directory, commit }, suffix = BUNDLE_
 // `.stasis.code.br`. One there holds the build, by EXODUS_STASIS_LOCK's mode, frozen without it: it must attest the
 // build, and the repo it records the build's, and is left as it is. One not there is written, where `lockfile` or
 // `lockfileOnly` asks for it, recording the repo as the bundle does.
-export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
-  checkLockfileOnly('githubBundleCommand: ', { lockfileOnly, lockfile, output, brotliQuality, named: true })
+export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, format: asked, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
+  checkLockfileOnly('githubBundleCommand: ', { lockfileOnly, lockfile, output, brotliQuality, format: asked, named: true })
+  const format = bundleFormat('githubBundleCommand: ', { format: asked, output, brotliQuality })
   const locks = lockfile !== undefined || lockfileOnly
   // The local lockfile's mode is the environment's alone: a repo's `lock: frozen` pins its own stasis.lock.json.
   const mode = env.EXODUS_STASIS_LOCK || 'frozen'
@@ -55,7 +56,7 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
   let dest
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   if (lockfileOnly) bundle.serializedBytes()
-  else dest = await debugTimed('Wrote the bundle', () => writeOutput(cwd, output ?? named(BUNDLE_FILE), compressBundle(bundle, brotliQuality)))
+  else dest = await debugTimed('Wrote the bundle', async () => writeOutput(cwd, output ?? named(bundleFileOf(format)), format === 'tgz' ? await stasisTgzOf(bundle) : compressBundle(bundle, brotliQuality)))
   if (lockData !== undefined) writeFile(lockAbs, lockData)
   const from = `${options.github}@${bundle.repo.commit}${directory ? `/${directory}` : ''}`
   const summarized = (summary, to) => summary(bundle.sources.size, bundle.modules, from, to)

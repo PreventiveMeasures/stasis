@@ -52,11 +52,23 @@ test('Bundle.fromTar: refuses a tar other than exactly its stasis.lock.json\'s f
   const odd = (path, data, format) => {
     const lock2 = Object.assign(lockfileFromBundle(bundle), { repo: bundle.repo })
     lock2.modules.get('.').files[path] = integrityOf(data)
-    if (format) lock2.formats.set(path, format)
+    // Its own, not the bundle's, whose Map Lockfile.fromBundle shares.
+    if (format) lock2.formats = new Map([...lock2.formats, [path, format]])
     return [entry('stasis.lock.json', bytes(lock2.serialize())), ...files, entry(path, data)]
   }
   refused(odd('src/latin1.js', latin1), "stasis: src/latin1.js is recorded as 'code' but is not valid UTF-8")
   // Content for a payload-free stat record, a file no bundle carries: as Bundle.parse refuses a stasis.code.br of them.
   refused(odd('src/evil.js', bytes('evil\n'), 'stat:file'), "bundle: 'src/evil.js' is a payload-free 'stat:file' record, yet carries content")
   refused(odd('.npmrc', bytes('x\n')), 'bundle: .npmrc is a file no bundle may carry')
+})
+
+test('bundle.toTar: what Bundle.fromTar takes back, the lockfile of its files at its top, each file by its path, an executable one 0o755; a directory capture\'s listing left to the lockfile', (t) => {
+  const listed = new Bundle({ ...bundle, repo: bundle.repo, formats: new Map([...bundle.formats, ['src', 'directory']]), modules: new Map([['.', { ...bundle.modules.get('.'), files: { ...bundle.modules.get('.').files, src: '["main.js"]' } }]]) })
+  const entries = listed.toTar({ integrityOf })
+  t.assert.deepStrictEqual(entries.map(({ name, mode }) => [name, mode]), [['stasis.lock.json', 0o644], ['assets/logo.png', 0o644], ['bin/run.sh', 0o755], ['src/main.js', 0o644]])
+  const tar = entries.map((one) => ({ ...one, type: 'file' }))
+  const back = Bundle.fromTar(tar, { integrityOf })
+  t.assert.ok(back.serialize() === new Bundle({ ...bundle, repo: bundle.repo, formats: listed.formats }).serialize(), 'but the listing, of which the lockfile records the hash alone')
+  t.assert.equal(JSON.parse(new TextDecoder().decode(entries[0].data)).sources['.'].files.src, integrityOf(bytes('["main.js"]')))
+  t.assert.equal(Bundle.fromTar(bundle.toTar({ integrityOf }).map((one) => ({ ...one, type: 'file' })), { integrityOf }).serialize(), bundle.serialize())
 })
