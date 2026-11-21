@@ -42,14 +42,12 @@ export function metroHost(host, mainFields = defaults.mainFields) {
   }
 }
 
-// Metro builds an asset of several files into the module of the lowest path (getArrayLowestItem).
-const lowestPath = (paths) => paths.reduce((lowest, path) => (path < lowest ? path : lowest))
-
-// `builtin`: whether a specifier Metro failed (null) is a Node builtin.
+// `builtin`: whether a specifier Metro failed (null) is a Node builtin. Metro builds an asset of several files into the
+// module of the lowest path (getArrayLowestItem).
 export function scanResolution(resolution, builtin) {
   if (resolution === null) return builtin ? { builtin: true } : null
   if (resolution.type === 'empty') return { empty: true }
-  const file = resolution.type === 'sourceFile' ? resolution.filePath : lowestPath(resolution.filePaths)
+  const file = resolution.type === 'sourceFile' ? resolution.filePath : resolution.filePaths.toSorted()[0]
   return { url: pathToFileURL(file).toString() }
 }
 

@@ -56,26 +56,14 @@ const BINDS = {
 }
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'])
 
-// Plain property accesses alone, as Metro inlines them: not `process.env['NODE_ENV']` or `process.env?.NODE_ENV`.
-function dottedPath(node) {
-  const parts = []
-  for (;;) {
-    if (WRAPPERS.has(node.type)) node = node.expression
-    else if (node.type === 'MemberExpression' && !node.computed && !node.optional) {
-      parts.unshift(node.property.name)
-      node = node.object
-    } else break
-  }
-  if (node.type !== 'Identifier') return null
-  parts.unshift(node.name)
-  return parts.join('.')
-}
-
-// As far as it is static from its root identifier (`process.env[name]` writes `process.env`).
-function writtenPath(node) {
+// The dotted path `node` names from its root identifier. Read, plain property accesses alone, as Metro inlines them:
+// not `process.env['NODE_ENV']` or `process.env?.NODE_ENV`. `written`, as far as it is static (`process.env[name]`
+// writes `process.env`).
+function memberPath(node, written = false) {
   const parts = []
   while (WRAPPERS.has(node.type) || node.type === 'MemberExpression') {
     if (node.type === 'MemberExpression') {
+      if (!written && (node.computed || node.optional)) return null
       const property = node.computed
         ? (node.property.type === 'Literal' && typeof node.property.value === 'string' ? node.property.value : null)
         : node.property.name
@@ -98,14 +86,14 @@ function ownPaths(program) {
   const paths = new Set()
   const target = (node) => {
     if (!node) return
-    if (node.type === 'Identifier') paths.add(node.name)
-    else if (node.type === 'ObjectPattern') for (const p of node.properties) target(p.type === 'RestElement' ? p.argument : p.value)
+    if (node.type === 'ObjectPattern') for (const p of node.properties) target(p.type === 'RestElement' ? p.argument : p.value)
     else if (node.type === 'ArrayPattern') for (const e of node.elements) target(e)
     else if (node.type === 'AssignmentPattern') target(node.left)
     else if (node.type === 'RestElement') target(node.argument)
     else if (node.type === 'TSParameterProperty') target(node.parameter)
-    else if (node.type === 'MemberExpression' || WRAPPERS.has(node.type)) {
-      const path = writtenPath(node)
+    else {
+      // An identifier, or a member (through any wrapper) as far as it is static; nothing else names a path.
+      const path = memberPath(node, true)
       if (path !== null) paths.add(path)
     }
   }
@@ -154,7 +142,7 @@ export function branchFolder(defines, program) {
         return node.expressions.length === 0 && typeof node.quasis[0].value.cooked === 'string' ? node.quasis[0].value.cooked : UNKNOWN
       case 'Identifier':
       case 'MemberExpression': {
-        const path = dottedPath(node)
+        const path = memberPath(node)
         return path !== null && values.has(path) ? values.get(path) : UNKNOWN
       }
       case 'UnaryExpression': {

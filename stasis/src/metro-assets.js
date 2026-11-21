@@ -12,15 +12,9 @@ const REGISTRY_ROOT = /^((?:.*\/)?node_modules\/react-native)\/Libraries\/Image\
 // Resolved as Metro resolves it among the code files `carried` (by project path): in the react-native nearest up
 // from the asset, else the only one (pnpm's). Throws where the artifact carries none, or several none of them nearest.
 export function assetRegistryResolver(platform, carried) {
-  const pick = (root) => {
-    for (const ext of METRO_SOURCE_EXTS) {
-      for (const suffix of [`.${platform}`, '.native', '']) {
-        const file = `${root}/Libraries/Image/AssetRegistry${suffix}.${ext}`
-        if (carried.has(file)) return file
-      }
-    }
-    return undefined
-  }
+  const pick = (root) => METRO_SOURCE_EXTS
+    .flatMap((ext) => [`.${platform}`, '.native', ''].map((suffix) => `${root}/Libraries/Image/AssetRegistry${suffix}.${ext}`))
+    .find((file) => carried.has(file))
   const roots = new Set(carried.keys().map((file) => REGISTRY_ROOT.exec(file)?.[1]).filter((root) => root !== undefined && pick(root) !== undefined))
   const nearest = (rel) => {
     for (let dir = posix.dirname(rel); ; dir = posix.dirname(dir)) {
