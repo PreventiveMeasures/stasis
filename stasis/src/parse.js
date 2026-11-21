@@ -1,18 +1,18 @@
 import { readFileSync } from 'node:fs'
+import { gunzipSync } from 'node:zlib'
 
 import { brotliDecompressStrict } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
-import { EXECUTE_BITS, LOCK_FILE, TGZ_FILE, isGzip, isTgzName } from '@exodus/stasis-core/util'
-import { decompress } from '@preventive/archive/compression.js'
+import { EXECUTE_BITS, LOCK_FILE, isGzip, isTgzName, misnamedTgz } from '@exodus/stasis-core/util'
 import { unpack } from '@preventive/archive/tar.js'
 
 import { bundleFromLockfile } from './bundle-from-lockfile.js'
 
 // As upstream's tree verification bounds a tarball.
-const MAX_TAR_BYTES = 2 ** 30
-// A BOM is no lockfile's.
-const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+export const MAX_TAR_BYTES = 2 ** 30
+// Strict, a BOM kept: a lockfile's JSON can't start with one, and patch-package keeps one a patched file starts with.
+export const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 // A file's bytes, a failure to read it told by its path.
 function readArtifactFile(file) {
@@ -24,20 +24,23 @@ function readArtifactFile(file) {
   }
 }
 
-// A stasis artifact by its leading byte: a lockfile's JSON starts with `{`, a bundle is brotli. A Lockfile or Bundle
-// in place of the path is taken as it is. A .stasis.tgz is parseArtifactFile's to read.
+// A stasis artifact by its leading byte: a lockfile's JSON starts with `{`, a bundle is brotli; a .stasis.tgz by its
+// name (readStasisTgz's, its `lockfile` beside the bundle). A Lockfile or Bundle in place of the path is taken as it is.
+// A lockfile's is its `lockfile` too.
 export function parseFileWithKind(file) {
-  if (file instanceof Lockfile) return { kind: 'lockfile', artifact: file }
+  if (file instanceof Lockfile) return { kind: 'lockfile', artifact: file, lockfile: file }
   if (file instanceof Bundle) return { kind: 'bundle', artifact: file }
-  if (isTgzName(file)) throw new Error(`${file} is a .stasis.tgz, which parseArtifactFile reads`)
   const buf = readArtifactFile(file)
-  if (isGzip(buf)) throw new Error(`${file} is a tgz, which is read as ${TGZ_FILE} or <name>.${TGZ_FILE} alone`)
+  if (isTgzName(file)) return readStasisTgz(buf, file)
+  if (isGzip(buf)) throw new Error(misnamedTgz(file))
   if (buf[0] === 0x7b /* '{' */) {
+    let lockfile
     try {
-      return { kind: 'lockfile', artifact: Lockfile.parse(buf.toString('utf8')) }
+      lockfile = Lockfile.parse(buf.toString('utf8'))
     } catch (cause) {
       throw new Error(`Failed to parse stasis lockfile: ${file}`, { cause })
     }
+    return { kind: 'lockfile', artifact: lockfile, lockfile }
   }
   let text
   try {
@@ -57,19 +60,22 @@ export function parseFile(file) {
   return parseFileWithKind(file).artifact
 }
 
-// As parseFileWithKind, or a .stasis.tgz (`stasis.tgz` or `<name>.stasis.tgz`), readStasisTgz's.
-export async function parseArtifactFile(file) {
-  return typeof file === 'string' && isTgzName(file) ? readStasisTgz(readArtifactFile(file), file) : parseFileWithKind(file)
+// Its every member, nothing past the last but zeros, which gzip(1) and tar take for padding: zlib takes a zero after a
+// member for the end of the input, whatever follows it.
+function gunzipStrict(bytes) {
+  const { buffer, engine } = gunzipSync(bytes, { info: true, maxOutputLength: MAX_TAR_BYTES })
+  if (!bytes.subarray(engine.bytesWritten).every((byte) => byte === 0)) throw new Error('bytes past its gzip stream')
+  return buffer
 }
 
 // The bytes of a .stasis.tgz (`file`, for errors): a stasis.lock.json at its top and exactly the files it attests, each
-// a file of the bytes and execute bit it attests, nothing else in it but directories. Its bundle (bundleFromLockfile's,
-// held to Bundle.parse's file rules), the lockfile beside it. archive refuses any byte past either stream but zeros, as
-// gzip(1) and tar take them for padding.
-export async function readStasisTgz(bytes, file) {
+// a file of the bytes and execute bit it attests, nothing else in it but directories, no byte past its gzip stream or
+// its tar's end but zeros (@preventive/archive's unpack refuses those in the tar). Its bundle (bundleFromLockfile's,
+// held to Bundle.parse's file rules), the lockfile beside it.
+export function readStasisTgz(bytes, file) {
   try {
     const files = new Map()
-    for (const entry of unpack(await decompress(bytes, 'gzip', { limit: MAX_TAR_BYTES }))) {
+    for (const entry of unpack(gunzipStrict(bytes))) {
       if (entry.type === 'directory') continue
       if (entry.type !== 'file' && entry.type !== 'contiguous-file') throw new Error(`${entry.name} is a ${entry.type}, which no ${LOCK_FILE} attests`)
       files.set(entry.name, entry)

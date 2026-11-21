@@ -21,7 +21,7 @@ import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-uti
 
 import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
-import { parseArtifactFile } from './parse.js'
+import { MAX_TAR_BYTES, asText, parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
 import { FILE_REASONS, LOCKFILE_ERRORS, OWN_REASONS, generatedBy, noteText } from './validate-notes.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
@@ -31,15 +31,11 @@ export const MAX_TOLD = 500
 const AT_ONCE = 6
 // As patch-package looks for a hunk, this many lines either side of where its header says.
 const FUZZ = 20
-// As upstream's tree verification bounds a tarball.
-const MAX_TAR_BYTES = 2 ** 30
 // What `cargo vendor` writes beside a vendored crate, which no crate holds: held to the crate (checksumOf).
 const CARGO_CHECKSUM = '.cargo-checksum.json'
 const EMPTY_INTEGRITY = sha512integrity(new Uint8Array())
 
 const utf8 = new TextEncoder()
-// A BOM kept, as patch-package keeps it: a patch applied changes no byte but those its hunks change.
-const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 export class PatchError extends Error {
   constructor(code) {
@@ -1268,10 +1264,10 @@ async function heldToCommitted(attested, directory, list, read) {
 }
 
 export async function validate(file, { client, github, sha, directory, own = true, lockfile = true, fetch, deadline } = {}) {
-  // A tgz's own lockfile is what it attests, and records where it was built.
-  const { kind, artifact, lockfile: carried } = await parseArtifactFile(file)
+  // A lockfile's, or a .stasis.tgz's, is what it attests and records where it was built.
+  const { kind, artifact, lockfile: carried } = parseFileWithKind(file)
   const plan = validationPlan(artifact, { lockfile: kind === 'lockfile' })
-  const attested = () => carried ?? (kind === 'lockfile' ? artifact : Lockfile.fromBundle(artifact, (path, content) => bundledIntegrity(content, artifact.formats?.get(path))))
+  const attested = () => carried ?? Lockfile.fromBundle(artifact, (path, content) => bundledIntegrity(content, artifact.formats?.get(path)))
   const repo = (carried ?? artifact).repo ?? {}
   const where = { github: github ?? repo.github, commit: sha ?? repo.commit, directory: directory ?? repo.directory ?? '' }
   const readLocal = (path) => ofLockfile(path, () => readFileSync(path, 'utf8'))

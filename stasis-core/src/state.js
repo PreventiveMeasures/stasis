@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ARCHIVED, ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isGzip, isTgzName, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
+import { ARCHIVED, ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isGzip, isTgzName, misnamedTgz, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
 import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, manifestIdentity, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { classifiedFiles, expandExtra, fileKind } from './add.js'
 import { linksOn, moduleExcluder } from './policy.js'
@@ -24,16 +24,14 @@ const VERSION = corePackage.version
 const CAN_OBSERVE_EXECUTE_BITS = canObserveExecuteBits()
 const REBUNDLE = 'Re-bundle with the current stasis or `bundle=replace` against a v0-free starting point to upgrade.'
 
-// A .stasis.tgz is served as the bundle stasis's run-archived.js read of these very bytes, so one changed since serves
-// nothing; a tgz under another name, none.
+// A .stasis.tgz as stasis's run-archived.js reads it; a tgz under another name, none.
 function servedBundleOf(bytes, path) {
-  if (!isTgzName(path)) {
-    assert.ok(!isGzip(bytes), `stasis: ${path} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone`)
-    return parseBundleBytes(bytes)
+  if (isTgzName(path)) {
+    assert.ok(globalThis[ARCHIVED], `stasis: ${path} is a .stasis.tgz, which \`stasis run\` reads (stasis-core runs a stasis.code.br)`)
+    return globalThis[ARCHIVED](bytes, path)
   }
-  const bundle = globalThis[ARCHIVED]?.(bytes)
-  assert.ok(bundle, `stasis: ${path} is a .stasis.tgz, which \`stasis run --bundle-file\` reads as it starts (stasis-core runs a stasis.code.br)`)
-  return bundle
+  assert.ok(!isGzip(bytes), `stasis: ${misnamedTgz(path)}`)
+  return parseBundleBytes(bytes)
 }
 
 function readPackageJSON(host, pkgAbsolute) {
@@ -511,10 +509,8 @@ export class State {
   // Refuse a path another live State (ANY copy) already claims; canonicalized so `./x`/`x`/symlinks compare equal.
   #claimWritePath(key, prefix = '') {
     const value = this.config[key]
-    if (!value) return
+    if (!value || !this.#claim) return
     const label = `${prefix}${key} '${value}'`
-    assert.ok(!isTgzName(value), `stasis: ${label} is a .stasis.tgz, which a run reads (bundle = load or frozen) and never writes`)
-    if (!this.#claim) return
     const canonical = canonicalizePath(value, this.#host)
     for (const other of liveStates()) {
       const owner = other.claimedWritePathLabel(canonical)

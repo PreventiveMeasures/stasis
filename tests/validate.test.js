@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { stripVTControlCharacters, styleText } from 'node:util'
-import { brotliCompressSync } from 'node:zlib'
+import { brotliCompressSync, gzipSync } from 'node:zlib'
 
 import { toBase32 } from '@exodus/bytes/base32.js'
 import { Bundle } from '@exodus/stasis-core/bundle'
@@ -24,6 +24,7 @@ import { DIM, takesColors } from '../stasis/src/table.js'
 import { NPM_TOKEN_VARS } from '../stasis/src/cmd/tokens.js'
 import { NOT_UTF8_NPMRC, NPM_TOKEN, tokenHome } from './tokens.helper.js'
 import { fakeClient, json, lockfile as pnpmLockfile } from './vfs-bundle-github.helper.js'
+import { tgzOf } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -1828,7 +1829,6 @@ test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the f
     { name: 'src/main.js', data: bytes(bundle.modules.get('.').files['src/main.js']), mode: 0o755 },
     { name: 'node_modules/ms/index.js', data: bytes(MS['index.js']) },
   ]
-  const gzip = async (tar) => Buffer.from(await compress(tar, 'gzip'))
   const validated = async (name, data) => {
     const path = join(tmp, name)
     writeFileSync(path, data)
@@ -1837,7 +1837,7 @@ test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the f
   const bundle = built()
   const br = join(tmp, 'app.stasis.code.br')
   writeBundle(br, bundle)
-  const tgz = await gzip(pack(entriesOf(bundle)))
+  const tgz = tgzOf(entriesOf(bundle))
   const valid = await validated('app.stasis.tgz', tgz)
   t.assert.deepStrictEqual([valid.status, valid.counts.matched, valid.own.checked], ['valid', 2, true])
   const untimed = ({ validatedAt: _, ...report }) => report
@@ -1846,14 +1846,14 @@ test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the f
   // A tgz under any other name, and anything else under its name, refused.
   await Promise.all(['app.tgz', 'app.tar.gz', 'tgz.stasis.code.br', 'stasis.tgz.br', 'app.stasis-tgz'].map((name) =>
     t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone` })))
-  await t.assert.rejects(validated('br.stasis.tgz', readFileSync(br)), { message: `${join(tmp, 'br.stasis.tgz')}: the data does not decompress` })
+  await t.assert.rejects(validated('br.stasis.tgz', readFileSync(br)), { message: `${join(tmp, 'br.stasis.tgz')}: incorrect header check` })
   // Its files held to the repository and packages by their bytes, as a bundle's are.
-  const differs = await validated('edited.stasis.tgz', await gzip(pack(entriesOf(built('MAIN\n')))))
+  const differs = await validated('edited.stasis.tgz', tgzOf(entriesOf(built('MAIN\n'))))
   t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'src/main.js', kind: 'differs', of: 'own' }]])
 
   const at = join(tmp, 'refused.stasis.tgz')
   const refused = async (message, entries, { tar = pack(entries), after = [] } = {}) => t.assert.rejects(
-    validated('refused.stasis.tgz', Buffer.concat([await gzip(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
+    validated('refused.stasis.tgz', Buffer.concat([gzipSync(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
   const [lockAtTop, , main, ms] = entriesOf(bundle)
   await refused(/src\/extra\.js is in it, but not in its stasis\.lock\.json/u, [...entriesOf(bundle), { name: 'src/extra.js', data: bytes('extra\n') }])
   await refused(/node_modules\/ms\/index\.js, which its stasis\.lock\.json attests, is not in it/u, [lockAtTop, main])
@@ -1874,11 +1874,13 @@ test('validate: a .stasis.tgz of a stasis.lock.json at its top and exactly the f
   }
   await refused(/bundle: 'src\/evil\.js' is a payload-free 'stat:file' record, yet carries content/u, [attesting('.', 'src/evil.js', 'stat:file'), main, ms, { name: 'src/evil.js', data: bytes('odd\n') }])
   await refused(/bundle: node_modules\/ms\/\.npmrc is a file no bundle may carry/u, [attesting('node_modules/ms', '.npmrc'), main, ms, { name: 'node_modules/ms/.npmrc', data: bytes('odd\n') }])
-  // No byte past either stream: neither after the gzip member, nor in another one gzip(1) reads on into, nor after the
-  // tar's end marker.
+  // No byte past either stream but zeros: none after the gzip member, nor past a zero after it (where zlib stops), nor in
+  // another member gzip(1) reads on into, nor after the tar's end marker.
   const tar = pack(entriesOf(bundle))
-  await refused(/the data does not decompress/u, [], { tar, after: [0x41] })
-  await refused(/data after the end of the archive at byte \d+/u, [], { tar, after: await gzip(bytes('hidden')) })
+  await refused(/unexpected end of file/u, [], { tar, after: [0x41] })
+  await refused(/bytes past its gzip stream/u, [], { tar, after: [0, 0, 0x41] })
+  t.assert.equal((await validated('padded.stasis.tgz', Buffer.concat([gzipSync(tar), Buffer.alloc(10)]))).status, 'valid', 'zeros, as padding')
+  await refused(/data after the end of the archive at byte \d+/u, [], { tar, after: gzipSync(bytes('hidden')) })
   await refused(/data after the end of the archive at byte \d+/u, [], { tar: Buffer.concat([tar, Buffer.alloc(512, 0x41)]) })
 
   // The CLI refuses one (3), the error alone on stderr.

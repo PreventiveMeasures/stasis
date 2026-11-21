@@ -96,12 +96,11 @@ stasis run --lock=frozen --bundle=load --bundle-file=app.stasis.tgz app.js   # v
 stasis run --lock=ignore --bundle=frozen --bundle-file=app.stasis.tgz app.js # verify disk against the tgz
 ```
 
-It is read and held to its `stasis.lock.json` before the program starts: one
-that isn't exactly its lockfile's files fails the run before any of it runs.
-The run serves the bytes read then alone, so a tgz changed on disk since serves
-nothing. `--lock` is the project's lockfile, as with any bundle. Only
-`--bundle-file` names one: a `bundleFile` in `stasis.config.json` naming one is
-refused, as is `stasis-core run`, which reads no tar.
+It is read and held to its `stasis.lock.json` as the run starts, as a bundle
+is read: one that isn't exactly its lockfile's files fails the run before any
+of it runs. `--lock` is the project's lockfile, as with any bundle.
+`stasis.config.json`'s `bundleFile` may name one too; `stasis-core run`, which
+reads no tar, refuses it.
 
 ## Native addons
 

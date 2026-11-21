@@ -1,13 +1,13 @@
 import { resolve } from 'node:path'
 
-import { parseArtifactFile } from '../parse.js'
+import { parseFile } from '../parse.js'
 import { collectComponents, generateSbom } from '../sbom.js'
 import { writeOutput } from './output.js'
 
 // The one-line summary goes to stderr so it never corrupts an SBOM streamed to stdout.
-export async function sbomCommand({ cwd = process.cwd(), files, format, output, now, uuid } = {}) {
-  if (!Array.isArray(files) || files.length === 0) throw new Error('sbom: at least one lockfile, bundle or .stasis.tgz is required')
-  const components = collectComponents(await Promise.all(files.map(async (f) => (await parseArtifactFile(resolve(cwd, f))).artifact)))
+export function sbomCommand({ cwd = process.cwd(), files, format, output, now, uuid } = {}) {
+  if (!Array.isArray(files) || files.length === 0) throw new Error('sbom: at least one lockfile or bundle is required')
+  const components = collectComponents(files.map((f) => parseFile(resolve(cwd, f))))
   const doc = generateSbom(format, components, { now, uuid })
   const dest = writeOutput(cwd, output ?? '-', JSON.stringify(doc, undefined, 2) + '\n')
   const n = components.length

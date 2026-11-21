@@ -1779,12 +1779,12 @@ macro's input like any other -- while reading the files from disk too, so a
 
 A gzipped tar of a `stasis.lock.json` at its top and exactly the files it
 attests, as `tar -czf` packs what `stasis extract --lock=add` writes, named
-`stasis.tgz` or `<name>.stasis.tgz`. Stasis never writes one. `stasis
-validate`, `run` (`--bundle=load` or `frozen`), `build`, `audit`, `diff` and
-`sbom` read it as the bundle of its files, its lockfile beside it; a tgz under
-any other name (gzip's leading bytes), and anything else under its name, is
-refused. It is read, with `@preventive/archive`, and refused naming the path,
-unless it holds:
+`stasis.tgz` or `<name>.stasis.tgz`. Stasis never writes one (an `--output`
+naming one is refused). `stasis validate`, `run` (`--bundle=load` or `frozen`),
+`build`, `audit`, `diff` and `sbom` read it as the bundle of its files, its
+lockfile beside it; a tgz under any other name (gzip's leading bytes), and
+anything else under its name, is refused. Its tar is read with
+`@preventive/archive`, and it is refused, naming the path, unless it holds:
 
 - each file the lockfile attests, at its path from the tgz's top, of the bytes
   its integrity is of and the execute bit it attests (any of `0o111`);

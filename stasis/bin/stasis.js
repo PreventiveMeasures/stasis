@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import assert from 'node:assert/strict'
-import { isTgzName, parseLeadingOptions, valueFlagsOf } from '@exodus/stasis-core/util'
+import { parseLeadingOptions, valueFlagsOf } from '@exodus/stasis-core/util'
 import { addCli, brotliQualityOption, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
 import pkg from '../package.json' with { type: 'json' }
 
@@ -127,9 +127,8 @@ if (command === '-v' || command === '--version') {
     // import map matches a non-mock run; native addons still can't load (--allow-addons off).
     nodeArgs.push('--conditions=node-addons')
   }
-  // Before the loader, whose State reads the install through it, and a .stasis.tgz bundle through run-archived.js.
-  nodeArgs.push('--import', import.meta.resolve('../src/run-installed.js'))
-  if ((bundle === 'load' || bundle === 'frozen') && isTgzName(bundleFile)) nodeArgs.push('--import', import.meta.resolve('../src/run-archived.js'))
+  // Before the loader, whose State reads the install through run-installed.js, and a .stasis.tgz's tar through run-archived.js.
+  nodeArgs.push('--import', import.meta.resolve('../src/run-installed.js'), '--import', import.meta.resolve('../src/run-archived.js'))
   // --mock uses stasis's loader-mock entry (composes the mock before installing the hooks), whose
   // denials the --import preloads then run under.
   const loader = import.meta.resolve(values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader')
@@ -347,10 +346,10 @@ if (command === '-v' || command === '--version') {
   // --stat is required for now (it reports what changed, not the content); bare `stasis diff`
   // is reserved for a future content-level diff.
   if (!values.stat) fail('Error: stasis diff currently requires --stat')
-  if (argv.length !== 2) fail('Error: stasis diff takes exactly two files (lockfile, bundle or .stasis.tgz)')
+  if (argv.length !== 2) fail('Error: stasis diff takes exactly two files (lockfile or bundle)')
   // --imports also diffs the resolution graphs (added/removed/redirected edges); off by default (verbose).
   const { diffCommand } = await import('../src/cmd/diff.js')
-  const { differences } = await diffCommand({ cwd: process.cwd(), left: argv[0], right: argv[1], stat: true, imports: values.imports })
+  const { differences } = diffCommand({ cwd: process.cwd(), left: argv[0], right: argv[1], stat: true, imports: values.imports })
   // Exit non-zero when the artifacts differ, so it composes in CI.
   process.exitCode = differences ? 1 : 0
 } else if (command === 'prune') {
@@ -485,7 +484,7 @@ if (command === '-v' || command === '--version') {
   if (!['spdx', 'cyclonedx'].includes(values.format)) fail('Error: --format must be spdx or cyclonedx')
   if (argv.length === 0) fail('Nothing to export: no lockfile or bundle given')
   const { sbomCommand } = await import('../src/cmd/sbom.js')
-  await sbomCommand({
+  sbomCommand({
     cwd: process.cwd(),
     files: argv,
     format: values.format,
