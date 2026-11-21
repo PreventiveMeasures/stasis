@@ -125,13 +125,6 @@ export const ownOrResolvedState = (label, options) =>
 export const unsupportedExtension = (label, what) =>
   `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
 
-// A file's kind (code|resource), or a throw naming it as `what` where it's neither.
-export function classifyOrThrow(label, path, resources, what = `'${path}'`) {
-  const kind = classifyExtension(path, resources)
-  if (kind === 'unknown') throw new Error(unsupportedExtension(label, what))
-  return kind
-}
-
 // Refuse non-UTF-8 code rather than silently encode it as a resource.
 export function assertCodeUtf8(label, path, source) {
   assert.ok(isUtf8(source), `${label}: code-classified file has non-UTF-8 bytes: ${path}`)
@@ -157,15 +150,18 @@ export class PluginState {
   }
 
   // Dedupe is by path, so a rebuild with new bytes would emit them while the bundle and lockfile keep the old ones.
-  // -> the refusal of each build after the first
-  startBuild() {
+  // -> `refusal` for each build after the first
+  startBuild(refusal = `${this.label}: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)`) {
     this.#builds += 1
     if (this.#builds === 1) return undefined
-    return `${this.label}: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)`
+    return refusal
   }
 
-  classify(path) {
-    return classifyOrThrow(this.label, path, this.state.config.resources)
+  // A file's kind (code|resource), or a throw naming it as `what` where it's neither.
+  classify(path, what = `'${path}'`) {
+    const kind = classifyExtension(path, this.state.config.resources)
+    if (kind === 'unknown') throw new Error(unsupportedExtension(this.label, what))
+    return kind
   }
 
   // Whether `path` is new to this plugin, marking it seen.
@@ -175,9 +171,10 @@ export class PluginState {
     return true
   }
 
-  addFile(path, source, kind, isEntry) {
+  // `options` go on to State#addFile as given (Metro's format and inferFormat).
+  addFile(path, source, kind, isEntry, options) {
     if (kind === 'code') assertCodeUtf8(this.label, path, source)
-    this.state.addFile(fileURL(path), { source, isEntry, resource: kind === 'resource', reason: this.reason })
+    this.state.addFile(fileURL(path), { source, isEntry, resource: kind === 'resource', reason: this.reason, ...options })
   }
 
   addImport(importer, specifier, target, importAttributes) {
