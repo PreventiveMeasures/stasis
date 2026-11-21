@@ -85,12 +85,10 @@ are looked up in the project root, see [discovery](file-formats.md#discovery).
 
 ## A .stasis.tgz
 
-`--bundle-file` may name a `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`):
-a gzipped tar of a `stasis.lock.json` at its top and exactly the files it
-attests, as [`stasis validate`](validate.md#what-is-checked) takes one. The run
-serves the bundle of those files, as it would the `stasis.code.br` of them,
-with `--bundle=load` or `frozen`; it is never written, so `add` and `replace`
-are refused.
+`--bundle-file` may name a [`.stasis.tgz`](file-formats.md#stasistgz): the run
+serves the bundle of its files, as it would the `stasis.code.br` of them, with
+`--bundle=load` or `frozen`. It is never written: `add` and `replace` are
+refused.
 
 ```sh
 stasis run --bundle=load --bundle-file=app.stasis.tgz app.js                 # run from the tgz alone
@@ -98,20 +96,12 @@ stasis run --lock=frozen --bundle=load --bundle-file=app.stasis.tgz app.js   # v
 stasis run --lock=ignore --bundle=frozen --bundle-file=app.stasis.tgz app.js # verify disk against the tgz
 ```
 
-The tgz is read before the program starts, as `stasis validate` reads it: each
-file the bytes and execute bit its `stasis.lock.json` attests, nothing else in
-it, no byte past its gzip stream or tar's end but zeros. One that isn't fails
-the run before any of it runs, naming the path. The bundle the run takes is of
-the bytes read then alone: a tgz changed on disk since serves nothing. `--lock`
-is the project's lockfile as with any bundle; the tgz's own attests its files
-as it is read.
-
-- A `directory` capture (a `readdir` under `--fs`) is a listing's hash in a
-  lockfile, so the tgz holds no listing to serve: such a `readdir` fails, as one
-  of a file not attested does.
-- Only `--bundle-file` names one: a `bundleFile` in `stasis.config.json`
-  naming a `.stasis.tgz` is refused, as is one given to `stasis-core run`,
-  which reads no tar. A tgz under any other name is refused too.
+It is read and held to its `stasis.lock.json` before the program starts: one
+that isn't exactly its lockfile's files fails the run before any of it runs.
+The run serves the bytes read then alone, so a tgz changed on disk since serves
+nothing. `--lock` is the project's lockfile, as with any bundle. Only
+`--bundle-file` names one: a `bundleFile` in `stasis.config.json` naming one is
+refused, as is `stasis-core run`, which reads no tar.
 
 ## Native addons
 

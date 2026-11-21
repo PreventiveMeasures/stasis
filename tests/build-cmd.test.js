@@ -10,9 +10,8 @@ import { brotliCompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { compress } from '@preventive/archive/compression.js'
-import { pack } from '@preventive/archive/tar.js'
 import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
+import { tgzOf } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -131,7 +130,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     const read = (path) => readFileSync(join(fullFixture, path))
     const tgz = async (name, files = {}) => {
       const entries = { 'stasis.lock.json': read('stasis.lock.json'), 'src/entry.js': read('src/entry.js'), 'src/hello.js': read('src/hello.js'), ...files }
-      writeFileSync(join(tmp, name), await compress(pack(Object.entries(entries).map(([entry, data]) => ({ name: entry, data }))), 'gzip'))
+      writeFileSync(join(tmp, name), await tgzOf(entries))
     }
     writeFileSync(join(tmp, 'package.json'), '{ "name": "x", "version": "0.0.0", "private": true, "type": "module" }')
     // No source on disk: the tgz's alone.

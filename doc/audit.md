@@ -3,10 +3,8 @@
 `stasis audit` reports published security advisories for the dependencies one
 or more lockfiles (`stasis.lock.json`) and/or bundles (`stasis.code.br`)
 record. Only installed dependencies are audited; first-party code is never
-sent to a registry. A `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`) is
-audited as the bundle of its files, read and held to its `stasis.lock.json` as
-[`stasis validate`](validate.md#what-is-checked) reads one; a tgz under any
-other name is refused.
+sent to a registry. A [`.stasis.tgz`](file-formats.md#stasistgz) is audited
+as the bundle of its files.
 
 ```sh
 stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories] path/to/(lockfile|bundle|name.stasis.tgz) ...

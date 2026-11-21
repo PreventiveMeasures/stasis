@@ -27,12 +27,12 @@ const HELP = `Usage:
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json|name.stasis.tgz) [entry]
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
- stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
+ stasis diff --stat [--imports] path/to/(lockfile|bundle|name.stasis.tgz) path/to/(lockfile|bundle|name.stasis.tgz)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories] path/to/(lockfile|bundle|name.stasis.tgz) ...
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories]  (the bundle stasis bundle builds of stasis.config.json's entries, not written)
  stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/(bundle|stasis.lock.json|name.stasis.tgz)
- stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
+ stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle|name.stasis.tgz) ...
  stasis --version
 
 Each command's options: https://github.com/PreventiveMeasures/stasis/blob/main/doc/<command>.md
@@ -347,10 +347,10 @@ if (command === '-v' || command === '--version') {
   // --stat is required for now (it reports what changed, not the content); bare `stasis diff`
   // is reserved for a future content-level diff.
   if (!values.stat) fail('Error: stasis diff currently requires --stat')
-  if (argv.length !== 2) fail('Error: stasis diff takes exactly two files (lockfile or bundle)')
+  if (argv.length !== 2) fail('Error: stasis diff takes exactly two files (lockfile, bundle or .stasis.tgz)')
   // --imports also diffs the resolution graphs (added/removed/redirected edges); off by default (verbose).
   const { diffCommand } = await import('../src/cmd/diff.js')
-  const { differences } = diffCommand({ cwd: process.cwd(), left: argv[0], right: argv[1], stat: true, imports: values.imports })
+  const { differences } = await diffCommand({ cwd: process.cwd(), left: argv[0], right: argv[1], stat: true, imports: values.imports })
   // Exit non-zero when the artifacts differ, so it composes in CI.
   process.exitCode = differences ? 1 : 0
 } else if (command === 'prune') {
@@ -485,7 +485,7 @@ if (command === '-v' || command === '--version') {
   if (!['spdx', 'cyclonedx'].includes(values.format)) fail('Error: --format must be spdx or cyclonedx')
   if (argv.length === 0) fail('Nothing to export: no lockfile or bundle given')
   const { sbomCommand } = await import('../src/cmd/sbom.js')
-  sbomCommand({
+  await sbomCommand({
     cwd: process.cwd(),
     files: argv,
     format: values.format,

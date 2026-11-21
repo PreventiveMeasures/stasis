@@ -133,30 +133,10 @@ validated of them; one written otherwise records none: give `--github` and
 own code unverified; a vendored crate's `.cargo-checksum.json`, held to the
 crate by its bytes, is left out.
 
-A `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`, a gzipped tar) holding
-a `stasis.lock.json` at its top, beside the files it attests, as `tar -czf`
-packs what `stasis extract --lock=add` writes, is validated as the bundle of
-those files is, by their bytes, of the repository and commit the lockfile
-records; [`stasis run`](run.md#a-stasistgz), [`stasis build`](build.md#bundle-vs-lockfile)
-and [`stasis audit`](audit.md) take one too. A tgz under any other name
-(gzip's leading bytes), and anything else under its name, is refused (exit 3).
-It must hold exactly the files the lockfile attests, else it is refused (exit
-3), naming the path:
-
-- each file the lockfile attests, at its path from the tgz's top, of the bytes
-  its integrity is of and the execute bit it attests (any of `0o111`);
-- no other file, nor a symlink, hard link or device: directories alone besides;
-- read as `stasis build` reads a lockfile's files (code as UTF-8), and held to
-  the rules a `stasis.code.br` parses by: no content for a payload-free `stat:*`
-  record, no file no bundle may carry (a `.npmrc`, say), though a lockfile may
-  attest one;
-- no byte past the gzip stream, nor past the tar's end marker, as
-  `@preventive/archive` reads them (a second gzip member is read on into, as
-  gzip(1) reads it), but zeros, which gzip(1) and tar take for padding.
-
-A `stasis.lock.json` in a directory of it (npm's `package/`) is not at its top.
-A `directory` capture's path is a directory of it or absent, never a file;
-its listing is not held to the tgz, as no listing is validated.
+A [`.stasis.tgz`](file-formats.md#stasistgz) is validated as the bundle of its
+files is, by their bytes, of the repository and commit its `stasis.lock.json`
+records. One that isn't exactly the files its lockfile attests, or a tgz under
+another name, is refused (exit 3), naming the path.
 
 Composer packages, Soldeer zips and crates vendored from git, or with no
 `.cargo-checksum.json`, have no package upstream fetches by name and version:

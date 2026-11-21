@@ -1,5 +1,5 @@
 import { packageRepo } from '@exodus/stasis-core/bundle-util'
-import { dependencyEcosystem, isTgzName, moduleFileKey, NPM_DIRECTORY, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, moduleFileKey, NPM_DIRECTORY, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -214,8 +214,8 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // The advisories of `files`' packages (paths, a .stasis.tgz's among them, or artifacts in memory); `reason` audits only what that consumer
 // recorded. `npmMalware`: npm's malware advisories of every npm dependency, whatever `reason`, and `lockfile`'s too.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false, lockfile = null } = {}) {
-  // A .stasis.tgz read once, held to its stasis.lock.json: its bundle in its place, as collectPackages and why read the rest.
-  files = await Promise.all(files.map(async (file) => (typeof file === 'string' && isTgzName(file) ? (await parseArtifactFile(file)).artifact : file)))
+  // Each parsed once, a .stasis.tgz held to its stasis.lock.json as it is read, for collectPackages and why to read.
+  files = await Promise.all(files.map(async (file) => (await parseArtifactFile(file)).artifact))
   // --why-deep (keep every chain, see dropSuffixed) and --why-full (no `...` collapse) imply --why.
   why = why || whyDeep || whyFull
   let index

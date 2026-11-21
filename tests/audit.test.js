@@ -10,13 +10,12 @@ import { stripVTControlCharacters, styleText } from 'node:util'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { compress } from '@preventive/archive/compression.js'
-import { pack } from '@preventive/archive/tar.js'
 
 import { AuditError, EMOJI, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
 import { DIM } from '../stasis/src/table.js'
 import { GITHUB, NPM, OSV, logos } from '../stasis/src/sixel.js'
+import { tgzOf } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -1148,7 +1147,7 @@ const writeTgz = async (dir, name, files = {}) => {
   const lockfile = Lockfile.fromBundle(new Bundle({ entries: new Set(['src/entry.js']), modules }), (path, content) => sha512integrity(content)).serialize()
   const entries = { 'stasis.lock.json': lockfile, 'src/entry.js': 'export const x = 1\n', 'node_modules/foo/index.js': 'export const f = 1\n', 'node_modules/baz/index.js': 'export const b = 1\n', ...files }
   const path = join(dir, name)
-  writeFileSync(path, await compress(pack(Object.entries(entries).map(([entry, text]) => ({ name: entry, data: new TextEncoder().encode(text) }))), 'gzip'))
+  writeFileSync(path, await tgzOf(entries))
   return path
 }
 

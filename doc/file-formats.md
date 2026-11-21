@@ -1775,6 +1775,32 @@ itself, in whichever of its files (syn's `parse_quote!`), when it is that
 macro's input like any other -- while reading the files from disk too, so a
 `mod` such a body declares is found whichever file the walk meets first.
 
+## `.stasis.tgz`
+
+A gzipped tar of a `stasis.lock.json` at its top and exactly the files it
+attests, as `tar -czf` packs what `stasis extract --lock=add` writes, named
+`stasis.tgz` or `<name>.stasis.tgz`. Stasis never writes one. `stasis
+validate`, `run` (`--bundle=load` or `frozen`), `build`, `audit`, `diff` and
+`sbom` read it as the bundle of its files, its lockfile beside it; a tgz under
+any other name (gzip's leading bytes), and anything else under its name, is
+refused. It is read, with `@preventive/archive`, and refused naming the path,
+unless it holds:
+
+- each file the lockfile attests, at its path from the tgz's top, of the bytes
+  its integrity is of and the execute bit it attests (any of `0o111`);
+- no other file, nor a symlink, hard link or device: directories alone besides;
+- its files as `stasis build` reads a lockfile's (code as UTF-8), held to the
+  rules a `stasis.code.br` parses by: no content for a payload-free `stat:*`
+  record, no file no bundle may carry (a `.npmrc`, say);
+- no byte past the gzip stream, nor past the tar's end marker, but zeros, which
+  gzip(1) and tar take for padding. A second gzip member is read on into, as
+  gzip(1) reads it.
+
+A `stasis.lock.json` in a directory of it (npm's `package/`) is not at its top.
+A `directory` capture is a listing's hash in a lockfile, so a tgz holds no
+listing: its path is a directory of it or absent, never a file, and a run
+serves no `readdir` of it.
+
 ## Resources in the bundle
 
 Resources (images, fonts, any non-code file a build references) live in the same

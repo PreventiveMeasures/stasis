@@ -2,10 +2,11 @@
 
 `stasis diff` compares two stasis artifacts — lockfiles (`stasis.lock.json`)
 and/or bundles (`stasis.code.br`), in any combination — and reports what changed
-at both the **module** (package) and the **file** level.
+at both the **module** (package) and the **file** level. A
+[`.stasis.tgz`](file-formats.md#stasistgz) is compared as the bundle of its files.
 
 ```sh
-stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
+stasis diff --stat [--imports] path/to/(lockfile|bundle|name.stasis.tgz) path/to/(lockfile|bundle|name.stasis.tgz)
 ```
 
 | Flag | Meaning |

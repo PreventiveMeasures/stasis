@@ -255,13 +255,9 @@ A specifier the artifact doesn't record is handed back to esbuild, which
 externalizes it. Where disk bytes differ from the artifact, a bundle uses its own
 bytes and a lockfile fails the build closed.
 
-A `.stasis.tgz` (`stasis.tgz` or `<name>.stasis.tgz`), a gzipped tar of a
-`stasis.lock.json` and exactly the files it attests, is built as the bundle of
-those files: like a bundle it needs nothing on disk, and like a lockfile each
-file is held to its `sha512`, as the tgz is read, before the build starts. One
-holding anything else, or a file of other bytes, fails the build naming the
-path, as [`stasis validate`](validate.md#what-is-checked) refuses it. A tgz
-under any other name is refused.
+A [`.stasis.tgz`](file-formats.md#stasistgz) is built as the bundle of its
+files: like a bundle it needs nothing on disk, and like a lockfile each file is
+held to its `sha512`, as the tgz is read, before the build starts.
 
 ## Scope and language
 

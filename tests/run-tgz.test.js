@@ -8,9 +8,7 @@ import { stripVTControlCharacters } from 'node:util'
 
 import { State } from '@exodus/stasis-core/state'
 import { ARCHIVED } from '@exodus/stasis-core/util'
-import { compress } from '@preventive/archive/compression.js'
-import { pack } from '@preventive/archive/tar.js'
-
+import { tgzOf } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -19,7 +17,6 @@ const coreCli = join(here, '..', 'stasis-core', 'bin', 'stasis-core.js')
 const fixture = join(here, 'fixtures', 'cli-run')
 // No inherited stasis variable, which the CLI's env-conflict guard would trip on.
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('EXODUS_STASIS_')))
-const bytes = (text) => new TextEncoder().encode(text)
 
 const run = async (bin, args, cwd) => {
   const child = spawn(process.execPath, [bin, 'run', ...args], { cwd, env })
@@ -32,17 +29,17 @@ const run = async (bin, args, cwd) => {
 }
 
 // The fixture's stasis.lock.json and the files it attests, as `tar -czf` packs them; `files` in place of its own.
-const tgzOf = async (files = {}) => {
+const fixtureTgz = async (files = {}) => {
   const read = (path) => readFileSync(join(fixture, path), 'utf8')
   const entries = { 'stasis.lock.json': read('stasis.lock.json'), 'src/entry.js': read('src/entry.js'), 'src/hello.js': read('src/hello.js'), ...files }
-  return Buffer.from(await compress(pack(Object.entries(entries).map(([name, text]) => ({ name, data: bytes(text) }))), 'gzip'))
+  return tgzOf(entries)
 }
 const PWNED = { 'src/hello.js': 'export const greet = () => "pwned"\n' }
 
 test('stasis run --bundle=load serves a .stasis.tgz\'s files, held to its stasis.lock.json; --bundle=frozen holds disk to them', withTmp(async (t, tmp) => {
   cpSync(fixture, tmp, { recursive: true })
   const tgz = join(tmp, 'app.stasis.tgz')
-  writeFileSync(tgz, await tgzOf())
+  writeFileSync(tgz, await fixtureTgz())
   // Its files alone: none on disk.
   rmSync(join(tmp, 'src'), { recursive: true })
   const verified = await run(cli, ['--lock=frozen', '--bundle=load', `--bundle-file=${tgz}`, 'src/entry.js'], tmp)
@@ -64,14 +61,14 @@ test('stasis run refuses a .stasis.tgz other than its stasis.lock.json\'s files,
   const load = (file) => ['--lock=frozen', '--bundle=load', `--bundle-file=${file}`, 'src/entry.js']
 
   const tampered = join(tmp, 'tampered.stasis.tgz')
-  writeFileSync(tampered, await tgzOf(PWNED))
+  writeFileSync(tampered, await fixtureTgz(PWNED))
   const refused = await run(cli, load(tampered), tmp)
   t.assert.notEqual(refused.status, 0)
   t.assert.match(refused.stderr, new RegExp(`${RegExp.escape(tampered)}: stasis: src/hello\\.js does not match the lockfile`, 'u'))
   t.assert.doesNotMatch(refused.stdout, /pwned/u, 'none of it runs')
 
   const tgz = join(tmp, 'app.stasis.tgz')
-  writeFileSync(tgz, await tgzOf())
+  writeFileSync(tgz, await fixtureTgz())
   const written = await Promise.all(['add', 'replace'].map((mode) => run(cli, [`--bundle=${mode}`, `--bundle-file=${tgz}`, 'src/entry.js'], tmp)))
   const neverWritten = [1, "Error: a .stasis.tgz is read (--bundle=load or frozen), never written\nRun 'stasis --help' for usage.\n"]
   t.assert.deepStrictEqual(written.map(({ status, stderr }) => [status, stderr]), [neverWritten, neverWritten])
@@ -95,7 +92,7 @@ test('stasis run refuses a .stasis.tgz other than its stasis.lock.json\'s files,
 test('run-archived.js serves State the bundle of the bytes it read alone: a .stasis.tgz changed since serves nothing', withTmp(async (t, tmp) => {
   cpSync(fixture, tmp, { recursive: true })
   const tgz = join(tmp, 'app.stasis.tgz')
-  const read = await tgzOf()
+  const read = await fixtureTgz()
   writeFileSync(tgz, read)
   process.env.EXODUS_STASIS_BUNDLE_FILE = tgz
   t.after(() => delete globalThis[ARCHIVED])

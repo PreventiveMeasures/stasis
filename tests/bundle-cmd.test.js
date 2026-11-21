@@ -3509,7 +3509,7 @@ cliTest('CLI: diff folds per-platform edges to the resolved-file set (detects a 
   // vs {Button.ios.js, Button.js} differ. Without the fold both Maps contribute nothing
   // and the edge would read unchanged, so assert it IS reported as a changed import.
   const stub = { write() {} }
-  const { diff } = diffCommand({ left: iosAndroid, right: iosWeb, stat: true, imports: true, out: stub })
+  const { diff } = await diffCommand({ left: iosAndroid, right: iosWeb, stat: true, imports: true, out: stub })
   const buttonChange = diff.imports.changed.find((c) => c.parent === 'src/entry.js' && c.specifier === './Button')
   t.assert.ok(buttonChange, './Button must be reported as a changed import')
   // The FOLD reduces each side's per-platform Map to its resolved-file SET; assert those
@@ -3519,7 +3519,7 @@ cliTest('CLI: diff folds per-platform edges to the resolved-file set (detects a 
   // A --metro bundle still diffs clean against an identical copy (no false positives).
   const copy = join(tmp, 'copy.br')
   t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${copy}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
-  t.assert.equal(diffCommand({ left: iosAndroid, right: copy, stat: true, imports: true, out: stub }).differences, false)
+  t.assert.equal((await diffCommand({ left: iosAndroid, right: copy, stat: true, imports: true, out: stub })).differences, false)
 }))
 
 cliTest('CLI: extract unpacks a --metro multi-platform bundle (both variants + a platform-keyed lockfile)', withTmp(async (t, tmp) => {

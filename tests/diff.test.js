@@ -11,6 +11,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { diffArtifacts, formatDiffStat, hasDifferences, normalizeArtifact } from '../stasis/src/diff.js'
 import { diffCommand } from '../stasis/src/cmd/diff.js'
+import { tgzOf } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -438,10 +439,10 @@ const writeBundle = (dir, obj, name) => {
   return p
 }
 
-test('diffCommand reads two files, returns the diff and a differences flag', withTmp((t, tmp) => {
+test('diffCommand reads two files, returns the diff and a differences flag', withTmp(async (t, tmp) => {
   const bumped = { ...LOCK, modules: { 'node_modules/foo': { name: 'foo', version: '2.0.0', ecosystem: 'npm', files: { 'index.js': 'sha512-FOO2' } } } }
   const sink = { writes: [], write(s) { this.writes.push(s) } }
-  const { diff, differences } = diffCommand({
+  const { diff, differences } = await diffCommand({
     left: writeLock(tmp, LOCK, 'a.lock.json'),
     right: writeLock(tmp, bumped, 'b.lock.json'),
     stat: true,
@@ -452,7 +453,7 @@ test('diffCommand reads two files, returns the diff and a differences flag', wit
   t.assert.match(sink.writes.join(''), /node_modules\/foo {2}foo 1\.0\.0 -> 2\.0\.0/)
 }))
 
-test('diffCommand compares a lockfile against a brotli code bundle on disk', withTmp((t, tmp) => {
+test('diffCommand compares a lockfile against a brotli code bundle on disk', withTmp(async (t, tmp) => {
   const src = 'export const x = 1\n'
   const lock = writeLock(tmp, {
     version: 0, config: { scope: 'full' }, entries: ['src/index.js'],
@@ -465,14 +466,27 @@ test('diffCommand compares a lockfile against a brotli code bundle on disk', wit
     modules: {}, formats: { 'src/index.js': 'module' }, imports: {},
   }, 'stasis.code.br')
   const sink = { write() {} }
-  const { differences } = diffCommand({ left: lock, right: bundle, stat: true, out: sink })
+  const { differences } = await diffCommand({ left: lock, right: bundle, stat: true, out: sink })
   t.assert.equal(differences, false, 'a lockfile and a matching code bundle have no differences')
 }))
 
-test('diffCommand requires --stat and two files', withTmp((t, tmp) => {
+test('diffCommand reads a .stasis.tgz as the bundle of its files, held to its stasis.lock.json', withTmp(async (t, tmp) => {
+  const src = 'export const x = 1\n'
+  const app = (files) => ({ '.': { name: 'app', version: '1.0.0', files } })
+  const lockfile = JSON.stringify({ version: 0, config: { scope: 'full' }, entries: ['src/index.js'], sources: app({ 'src/index.js': sha512integrity(src) }), modules: {}, imports: {}, formats: { 'src/index.js': 'module' } })
+  const bundle = writeBundle(tmp, { version: 1, config: { scope: 'full' }, entries: ['src/index.js'], sources: app({ 'src/index.js': src }), modules: {}, formats: { 'src/index.js': 'module' }, imports: {} }, 'stasis.code.br')
+  const tgz = join(tmp, 'app.stasis.tgz')
+  writeFileSync(tgz, await tgzOf({ 'stasis.lock.json': lockfile, 'src/index.js': src }))
+  const sink = { writes: [], write(s) { this.writes.push(s) } }
+  t.assert.equal((await diffCommand({ left: tgz, right: bundle, stat: true, out: sink })).differences, false, 'as the bundle of its files')
+  writeFileSync(tgz, await tgzOf({ 'stasis.lock.json': lockfile, 'src/index.js': 'export const x = 2\n' }))
+  await t.assert.rejects(diffCommand({ left: tgz, right: bundle, stat: true, out: sink }), { message: new RegExp(`^${RegExp.escape(tgz)}: stasis: src/index\\.js does not match the lockfile`, 'u') })
+}))
+
+test('diffCommand requires --stat and two files', withTmp(async (t, tmp) => {
   const p = writeLock(tmp, LOCK, 'a.lock.json')
-  t.assert.throws(() => diffCommand({ left: p, right: p, stat: false }), /--stat/)
-  t.assert.throws(() => diffCommand({ left: p, stat: true }), /two files/)
+  await t.assert.rejects(diffCommand({ left: p, right: p, stat: false }), /--stat/)
+  await t.assert.rejects(diffCommand({ left: p, stat: true }), /two files/)
 }))
 
 // ── CLI integration ──────────────────────────────────────────────────────────

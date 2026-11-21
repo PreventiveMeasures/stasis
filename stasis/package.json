@@ -84,7 +84,6 @@
     "src/run-installed.js",
     "src/sbom.js",
     "src/sixel.js",
-    "src/stasis-tgz.js",
     "src/table.js",
     "src/validate.d.ts",
     "src/validate.js",
