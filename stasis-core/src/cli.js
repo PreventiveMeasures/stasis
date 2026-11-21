@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { constants as osConstants } from 'node:os'
 import { resolve } from 'node:path'
-import { BUNDLE_MODES, LOCK_MODES, parseBrotliQuality, parseLeadingOptions, valueFlagsOf } from './util.js'
+import { BUNDLE_MODES, FS_MODES, LOCK_MODES, parseBrotliQuality, parseLeadingOptions, valueFlagsOf } from './util.js'
 
 const RUN_OPTIONS = {
   lock: { type: 'string', default: 'none' },
@@ -35,7 +35,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
   if (bundle === 'load' && (lock === 'add' || lock === 'replace')) fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
   if (lock === 'none' && bundle === 'none') fail('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
-  if (values.fs !== undefined && !['sync', 'async'].includes(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
+  if (values.fs !== undefined && !FS_MODES.has(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
   if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
   const brotliQuality = brotliQualityOption(values['brotli-quality'], fail)
   const imports = values.import ?? []
@@ -106,8 +106,7 @@ export async function addCli(argv, { label, fail }) {
 }
 
 export async function extractCli(argv, { label, fail }) {
-  const options = { output: { type: 'string', short: 'o' }, lock: { type: 'string' } }
-  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
+  const values = parseLeadingOptions(argv, { output: { type: 'string', short: 'o' }, lock: { type: 'string' } }, { onError: fail })
   if (argv.length === 0) fail('Nothing to extract: no bundle file given')
   if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
   if (values.lock !== undefined && !LOCK_MODES.has(values.lock)) fail('Error: invalid --lock value')

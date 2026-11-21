@@ -8,14 +8,14 @@ import { sha512integrity } from './state-util.js'
 import { EXECUTE_BITS, canObserveExecuteBits, LOCK_FILE, LOCK_MODES, moduleFileKey, relativeEscapes } from './util.js'
 
 // Buffer.from silently drops invalid chars, so a tampered `resource:base64` could hash-spoof; require a fixed point.
-function assertCanonicalBase64(content, file) {
+function decoded(bundle, file, content) {
+  if (bundle.formats.get(file) !== 'resource:base64') return content
   const buf = Buffer.from(content, 'base64')
   if (buf.toString('base64') !== content) throw new Error(`extract: non-canonical base64 in resource:base64 content for ${file}`)
   return buf
 }
 
-export const lockfileFromBundle = (bundle) => Lockfile.fromBundle(bundle, (file, content) =>
-  sha512integrity(bundle.formats.get(file) === 'resource:base64' ? assertCanonicalBase64(content, file) : content))
+export const lockfileFromBundle = (bundle) => Lockfile.fromBundle(bundle, (file, content) => sha512integrity(decoded(bundle, file, content)))
 
 function firstDifference(bundle, lock, path = '') {
   if (bundle === lock) return null
@@ -32,17 +32,17 @@ function firstDifference(bundle, lock, path = '') {
   return null
 }
 
-function readLockfile(lockAbs) {
+// Bundle.parse and Lockfile.parse throw message-less asserts; wrap so the user learns which file failed.
+function parsedFile(what, path, parse, encoding) {
   try {
-    return Lockfile.parse(readFileSync(lockAbs, 'utf-8'))
+    return parse(readFileSync(path, encoding))
   } catch (cause) {
-    throw new Error(`extract: not a valid stasis lockfile: ${lockAbs}`, { cause })
+    throw new Error(`extract: not a valid stasis ${what}: ${path}`, { cause })
   }
 }
 
 // Nothing recorded changes, execute bits too, but a payload-free stat:* record, which content of its kind upgrades.
-function addToLockfile(lockAbs, derived) {
-  const lock = readLockfile(lockAbs)
+function addToLockfile(lock, derived, lockAbs) {
   try {
     return lock.mergeAgreeing(derived)
   } catch (cause) {
@@ -76,6 +76,19 @@ function alreadyInPlace(abs, file, content, bundleId) {
   return true
 }
 
+// Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600 target)
+// and setuid/setgid/sticky are cleared. Throws where the mode can't be read or set.
+function applyMode(abs, exec) {
+  const stats = lstatSync(abs)
+  // Never chmod through a symlink: +x on a link's target could make an arbitrary file outside outDir runnable.
+  if (stats.isSymbolicLink()) return
+  const perms = stats.mode & 0o7777
+  const rwx = perms & 0o777
+  // Execute wherever readable, with owner-execute as a floor so an aggressive umask can't defeat it.
+  const want = exec ? rwx | ((rwx & 0o444) >> 2) | 0o100 : rwx & ~EXECUTE_BITS
+  if (want !== perms) chmodSync(abs, want)
+}
+
 export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: lockMode, logLabel = 'stasis-core' } = {}) {
   if (!bundleFile) throw new Error('extract: a bundle file is required')
   if (lockMode !== undefined && !LOCK_MODES.has(lockMode)) {
@@ -83,14 +96,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   }
   const bundleAbs = resolve(cwd, bundleFile)
   if (!existsSync(bundleAbs)) throw new Error(`extract: bundle file not found: ${bundleAbs}`)
-
-  let bundle
-  try {
-    bundle = parseBundleBytes(readFileSync(bundleAbs))
-  } catch (cause) {
-    // Bundle.parse throws message-less asserts; wrap so the user learns which file failed.
-    throw new Error(`extract: not a valid stasis bundle: ${bundleAbs}`, { cause })
-  }
+  const bundle = parsedFile('bundle', bundleAbs, parseBundleBytes)
 
   // v0 bundles have null metadata, so no lockfile can be derived (serialize requires name+version).
   const withLockfile = bundle.version === Bundle.VERSION
@@ -138,7 +144,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
       targets.add(abs)
       // Executability rides the plan, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)
-      writes.push({ abs, content: bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec, file })
+      writes.push({ abs, content: decoded(bundle, key, content), exec, file })
     }
   }
   // A file planned as another's parent directory would make the writes throw halfway through.
@@ -148,10 +154,11 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   }
   const writesLock = lock === 'add' || lock === 'replace'
   const derived = withLockfile && (frozen || writesLock) ? lockfileFromBundle(bundle) : null
+  const onDisk = frozen || merging ? parsedFile('lockfile', lockAbs, (text) => Lockfile.parse(text), 'utf-8') : null
   // Every field of the lockfile must match, compared re-serialized, so formatting is free.
-  const diff = frozen ? firstDifference(JSON.parse(derived.serialize()), JSON.parse(readLockfile(lockAbs).serialize())) : null
+  const diff = frozen ? firstDifference(JSON.parse(derived.serialize()), JSON.parse(onDisk.serialize())) : null
   if (diff !== null) throw new Error(`extract: --lock=frozen: the bundle does not match ${lockAbs}: ${diff}`)
-  const lockText = derived === null || frozen ? null : (merging ? addToLockfile(lockAbs, derived) : derived).serialize()
+  const lockText = derived === null || frozen ? null : (merging ? addToLockfile(onDisk, derived, lockAbs) : derived).serialize()
 
   // What is already on disk is checked whole before the first write too; nor may the lockfile's land on the bundle.
   const bundleId = fileId(bundleAbs)
@@ -170,40 +177,22 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
     if (alreadyInPlace(abs, file, content, bundleId)) inPlace.add(abs)
   }
 
-  // Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600
-  // target) and setuid/setgid/sticky are cleared. v0 attests no modes.
+  // v0 attests no modes.
   const withModes = withLockfile && canObserveExecuteBits()
   let chmodFailures = 0
-  const applyMode = (abs, exec) => {
-    let stats
-    try {
-      stats = lstatSync(abs)
-    } catch {
-      chmodFailures += 1
-      return
-    }
-    // Never chmod through a symlink: +x on a link's target could make an arbitrary file outside outDir runnable.
-    if (stats.isSymbolicLink()) return
-    const perms = stats.mode & 0o7777
-    const rwx = perms & 0o777
-    // Execute wherever readable, with owner-execute as a floor so an aggressive umask can't defeat it.
-    const want = exec ? rwx | ((rwx & 0o444) >> 2) | 0o100 : rwx & ~EXECUTE_BITS
-    if (want === perms) return
-    // Tolerated per file: a mode-less filesystem (vfat/exFAT/CIFS) accepts the write and rejects the chmod.
-    try {
-      chmodSync(abs, want)
-    } catch {
-      chmodFailures += 1
-    }
-  }
-
   for (const { abs, content, exec } of writes) {
     if (!inPlace.has(abs)) {
       mkdirSync(dirname(abs), { recursive: true })
       // Exclusive: a file that appeared since the check, or one a case-insensitive disk folds onto another, fails.
       writeFileSync(abs, content, { flag: 'wx' })
     }
-    if (withModes) applyMode(abs, exec)
+    if (!withModes) continue
+    // Tolerated per file: a mode-less filesystem (vfat/exFAT/CIFS) accepts the write and rejects the chmod.
+    try {
+      applyMode(abs, exec)
+    } catch {
+      chmodFailures += 1
+    }
   }
   mkdirSync(outDir, { recursive: true }) // for an empty bundle, where no write created it
   if (lockText !== null) writeFileSync(lockAbs, lockText)

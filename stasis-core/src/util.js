@@ -15,20 +15,19 @@ export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORIT
 export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 export const installedAccounts = (modules, root, options) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root, options)) || new Map()
 
-// JS_UNRESOLVED_EXTS (.js/.ts type/syntax-dependent, .jsx/.tsx transformed) classify as null, not a format.
 const NODE_EXT_FORMATS = new Map([
   ['mjs', 'module'], ['cjs', 'commonjs'], ['json', 'json'],
   ['mts', 'module-typescript'], ['cts', 'commonjs-typescript'],
 ])
-const JS_UNRESOLVED_EXTS = new Set(['js', 'ts', 'jsx', 'tsx'])
+// .js/.ts (type/syntax-dependent) and .jsx/.tsx (transformed) classify as null, not a format; metroFormat's is generic.
+const GENERIC_EXT_FORMATS = new Map([['js', 'generic-javascript'], ['ts', 'generic-typescript'], ['jsx', 'generic-javascript'], ['tsx', 'generic-typescript']])
 export const JS_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
-export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...JS_UNRESOLVED_EXTS])
+export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...GENERIC_EXT_FORMATS.keys()])
 // As Node spells them, by extname: `Foo.MJS` and a `.mjs` dotfile are none (require loads them as commonjs).
 export const nodeExtFormat = (path) => NODE_EXT_FORMATS.get(extname(path).slice(1))
 
 // The code Metro builds from source: the format its name gives it, else for JS or TS a generic one, its module type
 // being Metro's to decide. As Node spells the extension, as nodeExtFormat does.
-const GENERIC_EXT_FORMATS = new Map([['js', 'generic-javascript'], ['jsx', 'generic-javascript'], ['ts', 'generic-typescript'], ['tsx', 'generic-typescript']])
 export const metroFormat = (path) => nodeExtFormat(path) ?? GENERIC_EXT_FORMATS.get(extname(path).slice(1))
 
 export const pathExt = (filePath) => /\.([^./\\]+)$/.exec(filePath)?.[1].toLowerCase() ?? ''
@@ -74,6 +73,7 @@ export function parseResourcesOption(label, resources) {
 // `lock`'s in the order extract's error lists them.
 export const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
 export const BUNDLE_MODES = new Set(['none', 'ignore', 'add', 'replace', 'load', 'frozen'])
+export const FS_MODES = new Set(['sync', 'async'])
 
 export function memoized(fn, keyOf = (arg) => arg) {
   const cache = new Map()
@@ -154,7 +154,7 @@ export const valueFlagsOf = (options) => Object.entries(options).filter(([, { ty
   .flatMap(([name, { short }]) => (short === undefined ? [`--${name}`] : [`--${name}`, `-${short}`]))
 
 // Stops at the first positional, so `run`'s forwarded child argv survives.
-export function parseLeadingOptions(argv, options, { valueFlags = [], onError } = {}) {
+export function parseLeadingOptions(argv, options, { valueFlags = valueFlagsOf(options), onError } = {}) {
   const takesValue = new Set(valueFlags)
   const flags = []
   while (argv.length > 0 && (argv[0].startsWith('-') || takesValue.has(flags.at(-1)))) flags.push(argv.shift())
@@ -174,12 +174,11 @@ export function classifyExtension(filePath, resources) {
 // Resources with no `resources` entry: the toolchain versions a build reads and Bundler's settings, `.bundle/config`
 // keyed by its dir too, as a bare `config` is too common a name.
 const IMPLICIT_RESOURCE_NAMES = new Set(['.nvmrc', '.ruby-version'])
-function isImplicitResource(path) {
+export function inResources(path, resources) {
   const base = basename(path).toLowerCase()
-  return IMPLICIT_RESOURCE_NAMES.has(base) || (base === 'config' && basename(dirname(path)).toLowerCase() === '.bundle')
+  if (resources.has(pathExt(path) || base) || IMPLICIT_RESOURCE_NAMES.has(base)) return true
+  return base === 'config' && basename(dirname(path)).toLowerCase() === '.bundle'
 }
-
-export const inResources = (path, resources) => resources.has(pathExt(path) || basename(path).toLowerCase()) || isImplicitResource(path)
 
 // Non-deterministic across installs, so the native capture skips them; also matched on a dir (`*.framework`).
 const NATIVE_ARTIFACT_EXTS = new Set([
@@ -317,7 +316,7 @@ export function observeExecutable(abs, host = diskHost) {
 }
 
 // Windows reports no POSIX execute bits: "no bit" there is no evidence a POSIX capture's bit was removed.
-export const canObserveExecuteBits = ({ win32 = process.platform === 'win32' } = {}) => !win32
+export const canObserveExecuteBits = () => process.platform !== 'win32'
 
 // A crafted `link.sh -> /etc/passwd` must not pull an external file into an attestable bundle.
 export function assertRealPathWithinBase(realBase, baseDir, relPath, host = diskHost) {

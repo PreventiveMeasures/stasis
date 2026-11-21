@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { diskHost } from './host.js'
 import { POLICY_KEYS, parsePolicy } from './policy.js'
 import { canonicalizePath } from './state-util.js'
-import { BUNDLE_MODES, CONFIG_FILE, extSetsEqual, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
+import { BUNDLE_MODES, CONFIG_FILE, extSetsEqual, FS_MODES, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 
@@ -17,22 +17,47 @@ const envBool = (name, value) => {
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
 // `lockFile` and `bundle` are flag/env-only; `extra`, `entries`, `define`, TREE_FLAGS and `lockfiles` are file-only.
+// Config has a getter of each, `bundle`'s named bundleMode.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: SCOPES },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: LOCK_MODES },
+  // Exact lockfile path, bypassing `stasis.lock.json` discovery; bundler plugins can't set it.
   lockFile: { env: 'EXODUS_STASIS_LOCK_FILE', type: 'string' },
   bundle: { env: 'EXODUS_STASIS_BUNDLE', valid: BUNDLE_MODES },
   bundleFile: { env: 'EXODUS_STASIS_BUNDLE_FILE', type: 'string' },
+  // When set, resources go to this file and code-only to bundleFile; bundle=load reads both.
   resourcesBundleFile: { env: 'EXODUS_STASIS_RESOURCES_BUNDLE_FILE', type: 'string' },
   debug: { env: 'EXODUS_STASIS_DEBUG', parse: envBool, type: 'boolean' },
+  // A forked child writes a shard the root merges. Not attested.
   childProcess: { env: 'EXODUS_STASIS_CHILD_PROCESS', parse: envBool, type: 'boolean' },
+  // Opt-in: bundle every bundled module's package.json even if the run never reached it. Not attested.
   packageJSON: { env: 'EXODUS_STASIS_PACKAGE_JSON', parse: envBool, type: 'boolean' },
-  fs: { env: 'EXODUS_STASIS_FS', valid: new Set(['sync', 'async']) },
+  // Undefined leaves fs untouched. Not serialized.
+  fs: { env: 'EXODUS_STASIS_FS', valid: FS_MODES },
+  // undefined -> DEFAULT_BROTLI_QUALITY. Not serialized: output decompresses identically.
   brotliQuality: { env: 'EXODUS_STASIS_BROTLI_QUALITY', parse: parseBrotliQuality },
   // Compared as parsed sets, not raw strings: ['png','svg'] and 'svg,png' are the same allowlist.
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
+
+// Config's getters of what the options give: tests of the modes, and `values`, the config a lockfile or bundle records.
+const DERIVED = {
+  bundle: ({ bundle }) => bundle !== 'none' && bundle !== 'ignore',
+  ignoreBundle: ({ bundle }) => bundle === 'ignore',
+  writeBundle: ({ bundle }) => bundle === 'add' || bundle === 'replace',
+  replaceBundle: ({ bundle }) => bundle === 'replace',
+  loadBundle: ({ bundle }) => bundle === 'load',
+  // bundle=frozen: loaded, never rewritten, and disk is checked against it (load serves bytes instead).
+  frozenBundle: ({ bundle }) => bundle === 'frozen',
+  full: ({ scope }) => scope === 'full',
+  frozen: ({ lock }) => lock === 'frozen',
+  useLockfile: ({ lock }) => lock !== 'none' && lock !== 'ignore',
+  ignoreLockfile: ({ lock }) => lock === 'ignore',
+  writeLockfile: ({ lock }) => lock === 'add' || lock === 'replace',
+  replaceLockfile: ({ lock }) => lock === 'replace',
+  values: ({ scope }) => ({ scope }),
+}
 const TREE_FLAGS = ['installDevDependencies', 'lazyDependencies', 'generatePrisma']
 const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', 'define', ...TREE_FLAGS, 'lockfiles', ...POLICY_KEYS]
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes explicitly.
@@ -61,7 +86,6 @@ export class Config {
   #explicit
   #ownLock
   #opts
-  #shardSignalFlush
 
   // `ownLock`: a build's, which takes no lock mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
   constructor(options = {}) {
@@ -101,12 +125,13 @@ export class Config {
       fs: str('fs'),
       brotliQuality: this.#envValue('brotliQuality') ?? explicit.brotliQuality,
       resources: parseResourcesOption('resources', this.#env.resources !== undefined ? envList(this.#env.resources) : explicit.resources),
+      // Attested beside what a writing run reaches (State#includeExtra). Not serialized.
       extra: [],
+      // File-only, not serialized.
       policy: null,
+      // Env-only: a capturing child flushes its shard on SIGTERM (jest-worker force-kills Metro workers). Not attested.
+      shardSignalFlush: envBool('EXODUS_STASIS_SHARD_SIGNAL_FLUSH', env.EXODUS_STASIS_SHARD_SIGNAL_FLUSH ?? ''),
     }
-    const flush = env.EXODUS_STASIS_SHARD_SIGNAL_FLUSH
-    this.#shardSignalFlush = Boolean(flush) && envBool('EXODUS_STASIS_SHARD_SIGNAL_FLUSH', flush)
-
     this.#checkInvariants()
   }
 
@@ -116,9 +141,9 @@ export class Config {
     return raw === undefined || !parse ? raw : parse(env, raw)
   }
 
+  // Of a key the options set.
   #explicitValue(key) {
-    const value = this.#explicit[key]
-    return value !== undefined && OPTIONS[key].option ? OPTIONS[key].option(value) : value
+    return OPTIONS[key].option?.(this.#explicit[key]) ?? this.#explicit[key]
   }
 
   #checkInvariants() {
@@ -186,12 +211,12 @@ export class Config {
     this.#checkInvariants()
 
     // Explicit constructor options are as authoritative as the env: an on-disk config can't override --scope=full.
+    // The constructor held them to agree, so the env's, where set, stands for both.
     try {
       for (const key of CONFIG_FILE_KEYS) {
         if (this.#env[key] !== undefined) {
           assertSame(key, this.#opts[key], this.#envValue(key), 'resources in stasis.config.json must match EXODUS_STASIS_RESOURCES')
-        }
-        if (this.#explicit[key] !== undefined) {
+        } else if (this.#explicit[key] !== undefined) {
           assertSame(key, this.#opts[key], this.#explicitValue(key), 'resources in stasis.config.json must match the resources option')
         }
       }
@@ -200,126 +225,14 @@ export class Config {
     }
   }
 
-  get bundleFile() {
-    return this.#opts.bundleFile
-  }
-
-  // Exact lockfile path, bypassing `stasis.lock.json` discovery; bundler plugins can't set it.
-  get lockFile() {
-    return this.#opts.lockFile
-  }
-
-  // When set, resources go to this file and code-only to bundleFile; bundle=load reads both.
-  get resourcesBundleFile() {
-    return this.#opts.resourcesBundleFile
-  }
-
-  get resources() {
-    return this.#opts.resources
-  }
-
-  // Attested beside what a writing run reaches (State#includeExtra). Not serialized.
-  get extra() {
-    return this.#opts.extra
-  }
-
-  // File-only, not serialized.
-  get policy() {
-    return this.#opts.policy
-  }
-
-  get debug() {
-    return this.#opts.debug
-  }
-
-  // A forked child writes a shard the root merges. Not attested.
-  get childProcess() {
-    return this.#opts.childProcess
-  }
-
-  // Opt-in: bundle every bundled module's package.json even if the run never reached it. Not attested.
-  get packageJSON() {
-    return this.#opts.packageJSON
-  }
-
-  // Env-only: a capturing child flushes its shard on SIGTERM (jest-worker force-kills Metro workers). Not attested.
-  get shardSignalFlush() {
-    return this.#shardSignalFlush
-  }
-
-  // Undefined leaves fs untouched. Not serialized.
-  get fs() {
-    return this.#opts.fs
-  }
-
-  // undefined -> DEFAULT_BROTLI_QUALITY. Not serialized: output decompresses identically.
-  get brotliQuality() {
-    return this.#opts.brotliQuality
-  }
-
-  get values() {
-    return { scope: this.#opts.scope }
-  }
-
-  get bundle() {
-    return this.#opts.bundle !== 'none' && this.#opts.bundle !== 'ignore'
-  }
-
-  get bundleMode() {
-    return this.#opts.bundle
-  }
-
-  get ignoreBundle() {
-    return this.#opts.bundle === 'ignore'
-  }
-
-  get writeBundle() {
-    return this.#opts.bundle === 'add' || this.#opts.bundle === 'replace'
-  }
-
-  get replaceBundle() {
-    return this.#opts.bundle === 'replace'
-  }
-
-  get loadBundle() {
-    return this.#opts.bundle === 'load'
-  }
-
-  // bundle=frozen: loaded, never rewritten, and disk is checked against it (load serves bytes instead).
-  get frozenBundle() {
-    return this.#opts.bundle === 'frozen'
-  }
-
-  get full() {
-    return this.#opts.scope === 'full'
-  }
-
-  get frozen() {
-    return this.#opts.lock === 'frozen'
-  }
-
-  get useLockfile() {
-    return this.#opts.lock !== 'none' && this.#opts.lock !== 'ignore'
-  }
-
-  get ignoreLockfile() {
-    return this.#opts.lock === 'ignore'
-  }
-
-  get writeLockfile() {
-    return this.#opts.lock === 'add' || this.#opts.lock === 'replace'
-  }
-
-  get replaceLockfile() {
-    return this.#opts.lock === 'replace'
-  }
-
-  get scope() {
-    return this.#opts.scope
-  }
-
-  get lock() {
-    return this.#opts.lock
+  // Read-only: a getter of each value, and of each DERIVED of them.
+  static {
+    for (const key of [...OPTION_KEYS, 'extra', 'policy', 'shardSignalFlush']) {
+      Object.defineProperty(this.prototype, key === 'bundle' ? 'bundleMode' : key, { get() { return this.#opts[key] } })
+    }
+    for (const [name, derive] of Object.entries(DERIVED)) {
+      Object.defineProperty(this.prototype, name, { get() { return derive(this.#opts) } })
+    }
   }
 
   // As a stasis.config.json holds it: `lock` only where it is the one a file can pin, `bundle` never.
