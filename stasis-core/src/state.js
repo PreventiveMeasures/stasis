@@ -519,7 +519,7 @@ export class State {
   }
 
   assertEntry(url) {
-    // #loadCodeBundle already refuses a runnable code bundle that declares none.
+    // #loadBundleArtifacts already refuses a runnable code bundle that declares none.
     if (this.entries.size === 0) return
     const file = this.#canonicalFile(url)
     assert.ok(this.entries.has(file), `Unknown entry point: ${file}`)
@@ -737,8 +737,7 @@ export class State {
     if (nmRoot) assert.equal(dir, nmRoot)
     // Checked as the run reaches it, before it is recorded; a hashed file was checked when recorded or loaded.
     if (this.#policy !== null && (nmRoot || this.config.full) && !this.hashes.has(file)) this.#policy.assertPath(file, nmRoot ? { dir, name, version } : undefined, synthetic ? undefined : this.#links(file))
-    if (!this.modules.has(dir)) this.modules.set(dir, moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, files: Object.create(null) }))
-    const module = this.modules.get(dir)
+    const module = upsert(this.modules, dir, () => moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, files: Object.create(null) }))
     if (module.name !== name || module.version !== version) {
       // Message built only on failure: addFile is hot, and the mismatch is a migration/drift event.
       const hint = (module.version == null) === (version == null) ? '' : ' -- an artifact from an older stasis may record a ' +
@@ -764,7 +763,10 @@ export class State {
   #heldManifest(nmRoot, nmRel, closestAbsolute, closest) {
     if (closest.private !== true) return { file: this.relative(closestAbsolute), pkg: closest }
     const below = this.#manifestsBelow(nmRoot)
-    const found = namedManifestOf(nmRel, (sub) => (below(sub)?.private === true ? null : below(sub)))
+    const found = namedManifestOf(nmRel, (sub) => {
+      const pkg = below(sub)
+      return pkg?.private === true ? null : pkg
+    })
     return found && { file: this.relative(resolve(this.root, nmRoot, found.dir, 'package.json')), pkg: found.pkg }
   }
 
