@@ -131,8 +131,7 @@ export function linksOn(root, host = diskHost) {
     const rel = toPosix(relative(realRoot, real)) || '.'
     if (rel === path || relativeEscapes(rel)) return undefined
     const dir = splitNodeModulesPath(rel)?.dir
-    const pkg = dir === undefined ? undefined : manifestOf(dir)
-    return { real: rel, pkg: pkg && { ...pkg, via: path } }
+    return { real: rel, pkg: dir === undefined ? undefined : { ...manifestOf(dir), via: path } }
   })
 }
 
@@ -249,11 +248,6 @@ export const excludedText = ({ label, dir, pattern }) => `${label}: excludeModul
 export function moduleExcluder(policies, root, host = diskHost) {
   const excluding = policies.filter((policy) => policy?.excludesModules)
   if (excluding.length === 0) return null
-  const bases = [root]
-  try {
-    bases.push(host.realpath(root))
-  } catch { /* a missing root reaches nothing */ }
-  const fromRoot = (absolute) => bases.map((base) => toPosix(relative(base, absolute))).find((rel) => !relativeEscapes(rel))
   const realpath = (path) => {
     try {
       return host.realpath(path)
@@ -261,6 +255,9 @@ export function moduleExcluder(policies, root, host = diskHost) {
       return undefined
     }
   }
+  // A missing root reaches nothing.
+  const bases = [root, realpath(root)].filter((base) => base !== undefined)
+  const fromRoot = (absolute) => bases.map((base) => toPosix(relative(base, absolute))).find((rel) => !relativeEscapes(rel))
   const dirOf = (rel) => (rel === undefined ? undefined : (splitNodeModulesPath(rel) ?? packageDirOf(rel))?.dir)
   // A package's own directory, which a lazy tree reads without fetching it.
   const realDir = memoized((dir) => {

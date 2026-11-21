@@ -39,7 +39,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
   const brotliQuality = brotliQualityOption(values['brotli-quality'], fail)
   const imports = values.import ?? []
-  if (imports.some((s) => s === '')) fail('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
+  if (imports.includes('')) fail('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
   return {
     values,
     lock,
