@@ -18,7 +18,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { isPatchOf, localDirectory, nameAt, patchHashes, STORE_HASH, resolutionCommit } from './installed.js'
+import { isPatchOf, lfShebang, localDirectory, nameAt, patchHashes, STORE_HASH, resolutionCommit } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -577,7 +577,13 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     const elsewhere = patchFile === undefined ? undefined : dirs.map((dir) => pkg.patchFiles.get(dir)).find((file) => file !== undefined && file !== patchFile)
     if (elsewhere !== undefined) return fails('patch-file-mismatch', { at: elsewhere, patch: { ...patch, recorded: true } })
     const checksum = (file) => pkg.ecosystem === 'cargo' && file.rel === CARGO_CHECKSUM
-    const matches = (file, bytes, candidate) => (checksum(file) ? checksumOf(bytes, candidate) : candidate.has(file.rel) && isFile(file, candidate.get(file.rel)))
+    // A directory's bin with a CRLF `#!` line is copied with that CR dropped by pnpm before 12, as a build takes it.
+    const isCopy = (file, bytes) => {
+      if (isFile(file, bytes)) return true
+      const copied = fromDirectory ? lfShebang(bytes) : undefined
+      return copied !== undefined && isFile(file, copied)
+    }
+    const matches = (file, bytes, candidate) => (checksum(file) ? checksumOf(bytes, candidate) : candidate.has(file.rel) && isCopy(file, candidate.get(file.rel)))
     // Each installed copy apart, as one may be patched and another not.
     let missed = 0
     let asPatched = 0
@@ -890,7 +896,8 @@ export function lockedBy(lockfiles) {
     locks: (ecosystem) => by.has(ecosystem),
     // Each copy held to the innermost lockfile holding it alone; those none holds, to them all.
     split(pkg) {
-      const same = by.get(pkg.ecosystem) ?? []
+      // A package installed from a directory is held to the npm lockfile installing it, as any npm copy is.
+      const same = by.get(pkg.ecosystem === NPM_DIRECTORY ? 'npm' : pkg.ecosystem) ?? []
       if (same.length < 2) return undefined
       return [...Map.groupBy(pkg.files, (file) => innermost(same, file.dir))].map(([one, files]) => ({ pkg: { ...pkg, files }, locked: one === undefined ? this : aloneOf(one) }))
     },
@@ -1165,6 +1172,8 @@ function listedEntries(listed, dir = '') {
 
 export async function validateRepository(plan, { repository = null, commit, directory = '' }, { own = true, lockfile = true, listTree, strict = true, fetch, deadline, generated, attested, client } = {}) {
   const ecosystems = fetchedEcosystems(plan)
+  // Each of its packages installed from a directory is held to the repository's, read at the commit.
+  const fromDirectories = plan.packages.some((pkg) => pkg.ecosystem === NPM_DIRECTORY)
   const fromRepository = lockfile === true && ecosystems.size > 0
   const beside = [...new Set(plan.packages.map((pkg) => BESIDE.get(pkg.ecosystem)).filter(Boolean))]
   const readsBeside = lockfile === true && beside.length > 0 && repository !== null && commit !== undefined
@@ -1181,8 +1190,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
     }
     // At a commit of its own history alone, as GitHub serves a commit of any fork of it through its name too.
     const pinsSubmodules = plan.packages.some((pkg) => pkg.ecosystem === 'github')
-    const readsDirectories = plan.packages.some((pkg) => pkg.ecosystem === NPM_DIRECTORY)
-    ref = repository && commit !== undefined && (own || fromRepository || readsBeside || pinsSubmodules || readsDirectories || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
+    ref = repository && commit !== undefined && (own || fromRepository || readsBeside || pinsSubmodules || fromDirectories || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
     if (ref === null) {
       throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
     }
@@ -1240,8 +1248,8 @@ export async function validateRepository(plan, { repository = null, commit, dire
   })
   try {
     // A package installed from a directory is held to the npm lockfile installing it where one is there, none required.
-    const directoriesAlone = lockfile === true && !ecosystems.has('npm') && plan.packages.some((pkg) => pkg.ecosystem === NPM_DIRECTORY)
-    const needed = lockfile === true ? fromRepository || readsBeside || directoriesAlone : ecosystems.size > 0 || beside.length > 0
+    const directoriesAlone = lockfile === true && !ecosystems.has('npm') && fromDirectories
+    const needed = lockfile === true ? fromRepository || readsBeside || directoriesAlone : ecosystems.size > 0 || beside.length > 0 || fromDirectories
     const configured = lockfile === true && needed ? await configuredLockfiles({ directory, list, read: readRepository }) : undefined
     const readOf = (path) => readLockfileText(readRepository, path)
     const files = lockfile === false ? null : !needed ? [] : lockfile !== true ? lockfile.map((one) => ({ git, ...one }))

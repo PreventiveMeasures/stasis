@@ -275,13 +275,14 @@ export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash, 
   return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
 }
 
-// As pnpm before 12 copies a bin with a CRLF `#!` line: that line's CR dropped.
-function isCopyOf(copy, source) {
-  if (Buffer.compare(copy, source) === 0) return true
+// `source` as pnpm before 12 copies a bin with a CRLF `#!` line, that line's CR dropped; undefined for any other.
+export function lfShebang(source) {
   const lf = source.indexOf(0x0a)
-  if (source[0] !== 0x23 || source[1] !== 0x21 || lf < 2 || source[lf - 1] !== 0x0d || copy.length !== source.length - 1) return false
-  return Buffer.compare(copy.subarray(0, lf - 1), source.subarray(0, lf - 1)) === 0 && Buffer.compare(copy.subarray(lf - 1), source.subarray(lf)) === 0
+  if (source[0] !== 0x23 || source[1] !== 0x21 || lf < 2 || source[lf - 1] !== 0x0d) return undefined
+  return Buffer.concat([source.subarray(0, lf - 1), source.subarray(lf)])
 }
+
+const isCopyOf = (copy, source) => Buffer.compare(copy, source) === 0 || Buffer.compare(copy, lfShebang(source) ?? source) === 0
 
 // Each of `files` the copy at `real` holds is the one at `source` it was copied from, else the copy is stale: it was
 // edited apart from its source, or its source since (a hardlink pnpm made broken as an editor saves anew). Where no
