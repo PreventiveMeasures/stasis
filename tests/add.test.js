@@ -517,6 +517,12 @@ test('addCommand defaults a missing bundleFile to stasis.code.br', withTmp(async
   t.assert.equal(code.formats.get('src/a.js'), 'module')
 }))
 
+test('addCommand takes an empty bundleFile as unset, as stasis run does', withTmp(async (t, tmp) => {
+  seed(tmp, { bundleFile: '' })
+  addCommand({ cwd: tmp, entries: ['src/a.js'] })
+  t.assert.deepStrictEqual(packedFiles(tmp, 'stasis.code.br'), ['src/a.js'])
+}))
+
 test('addCommand without a resourcesBundleFile writes resources into bundleFile (non-split)', withTmp(async (t, tmp) => {
   seed(tmp, { bundleFile: 'dist/code.br', resources: ['svg', 'png'] }) // no resourcesBundleFile
   addCommand({ cwd: tmp, entries: ['src/a.js', 'src/icon.svg', 'src/logo.png'] })

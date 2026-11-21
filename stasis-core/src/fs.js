@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { realContained, realReadFileSync } from './state-util.js'
-import { isDotEnvFile, isPathWithin, isStasisArtifactName } from './util.js'
+import { isDotEnvFile, isPathWithin } from './util.js'
 
 const require = createRequire(import.meta.url)
 const fs = require('node:fs')
@@ -125,9 +125,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     if (realContained(state.root, abs) && !state.attestedBySidecar(url)) record(() => state.addFsFile(url, buf))
   }
   const captureDir = ({ state, abs, url }, names) => {
-    if (!realContained(state.root, abs)) return
-    // At the root, the RECORDED listing leaves out stasis's own artifacts, so an earlier run's don't matter.
-    record(() => state.addFsDir(url, isPathWithin(abs, state.root) ? names.filter((name) => !isStasisArtifactName(name)) : names))
+    if (realContained(state.root, abs)) record(() => state.addFsDir(url, names))
   }
   const captureStat = ({ state, abs, url }, stats) => {
     const isDir = stats.isDirectory()

@@ -1400,6 +1400,28 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.equal(load.stdout, 'world\n')
   }))
 
+  test('run --lock=frozen --bundle=load roundtrips a type:json import of a #imports alias of a JSON file', withTmp(async (t, tmp) => {
+    cpSync(jsonAttrFixture, tmp, { recursive: true })
+    const pkg = JSON.parse(readFileSync(join(tmp, 'package.json'), 'utf8'))
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ ...pkg, imports: { '#data': './src/data.json' } }))
+    writeFileSync(join(tmp, 'src/entry.js'), "import data from '#data' with { type: 'json' }\nconsole.log(data.who)\n")
+    const bundlePath = join(tmp, 'snapshot.br')
+
+    const save = await run(['run', '--lock=add', '--bundle=add', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+    t.assert.equal(save.status, 0, `save stderr: ${save.stderr}`)
+    t.assert.equal(save.stdout, 'world\n')
+
+    rmSync(join(tmp, 'src/data.json'))
+    const load = await run(['run', '--lock=frozen', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+    t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
+    t.assert.equal(load.stdout, 'world\n')
+
+    writeFileSync(join(tmp, 'src/other.js'), "import './entry.js' with { type: 'json' }\n")
+    const refused = await run(['run', '--lock=ignore', 'src/other.js'], { cwd: tmp })
+    t.assert.notEqual(refused.status, 0)
+    t.assert.match(refused.stderr, /ERR_ASSERTION/u)
+  }))
+
   test('run --lock=frozen --bundle=load reads non-node_modules sources from disk in node_modules scope', withTmp(async (t, tmp) => {
     cpSync(nmFixture, tmp, { recursive: true })
     const bundlePath = join(tmp, 'snapshot.br')

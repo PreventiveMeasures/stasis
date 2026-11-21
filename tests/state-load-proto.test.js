@@ -1,8 +1,11 @@
 import { test } from 'node:test'
+import { writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
+import { withTmp } from './tmp.helper.js'
 
 // The fixture lockfile contains literal `"__proto__"` JSON keys under both
 // modules['node_modules/widget'].files AND sources['.'].files. JSON.parse turns
@@ -58,3 +61,11 @@ test('state.hashes indexes both forged __proto__ entries under their joined path
   t.assert.equal(state.hashes.get('node_modules/widget/__proto__'), 'sha512-evil-mod')
   t.assert.equal(state.hashes.get('__proto__'), 'sha512-evil-src')
 })
+
+test('a recorded `__proto__` file is written into the bundle', withTmp((t, dir) => {
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+  writeFileSync(join(dir, '__proto__'), 'module.exports = 42\n')
+  const st = new State(dir, { lock: 'add', bundle: 'add' })
+  st.addFile(pathToFileURL(join(dir, '__proto__')).toString(), { format: 'commonjs' })
+  t.assert.equal(Bundle.parse(st.sourceData).modules.get('.').files.__proto__, 'module.exports = 42\n')
+}))
