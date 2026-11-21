@@ -1298,7 +1298,7 @@ export class State {
   #bundleModules(perFile) {
     const modules = new Map()
     for (const [dir, info] of this.modules) {
-      const files = {}
+      const files = Object.create(null)
       for (const rel of Object.keys(info.files)) {
         const content = perFile.get(moduleFileKey(dir, rel))
         if (content !== undefined) files[rel] = content
