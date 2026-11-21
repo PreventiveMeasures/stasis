@@ -16,7 +16,7 @@ would leave [broken at load](bundle.md#resolution) (`./b` from `a/c.ts`, for
 `a/b.ts`) is built with it. One that builds without it is unchanged.
 
 ```sh
-stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit [--branch=name]|--tag=name|--branch=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit [--branch=name]|--tag=name|--branch=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--format=(br|tgz)] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
@@ -33,6 +33,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | `--lockfile=path` | The [local lockfile](#local-lockfile) of a JS bundle, in place of the default name: written where it isn't there, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) writes one; where it is, the build is held to it and, under the default `frozen`, it is left as it is. |
 | `--lockfile-only` | Write the [local lockfile](#local-lockfile) alone, no bundle, as [`stasis bundle --lockfile-only`](bundle.md#companion-lockfile---lockfile) does: at `--lockfile`'s path, or without it the bundle's default name with `.stasis.lock.json` for `.stasis.code.br`. Where it is there, the build is held to it and, under the default `frozen`, nothing is written. Not with `--output` or `--brotli-quality`; refused before anything is fetched. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
+| `--format=(br\|tgz)` | Write a `stasis.code.br` (`br`) or a [`.stasis.tgz`](file-formats.md#stasistgz) (`tgz`), the default name's suffix too (see [Output](#output)). Default: the `--output`'s name's, `tgz` for one named `stasis.tgz` or `<name>.stasis.tgz`, else `br`. Refused where it disagrees with the `--output`'s name, with `--brotli-quality` for a tgz, or with `--lockfile-only`. |
 | [`stasis bundle`'s options](bundle.md) | For the entries: `--conditions`, `--mainFields`, `--metro --platforms`, `--jsx`, `--flow`, `--typescript`, `--tsconfig`, `--resources`, `--define`, `--package-json`, `--scope`, `--brotli-quality`, and `--mapping`/`--manifests` for Solidity. Not `--metro-resolver`, `--cargo*` or `--add`. |
 
 ```sh
@@ -401,7 +402,8 @@ By default the bundle is written to `owner-name.<commit's first 7>.stasis.code.b
 or `owner-name.<directory>.<commit's first 7>.stasis.code.br` with
 `--directory` (or the one `owner/name/path` gives), its `/` made `-`. Each character outside `[A-Za-z0-9._-]` is made
 `_`, and a directory too deep to fit the name in 255 characters is cut, with a
-hash of it appended. `--output=-` streams to stdout.
+hash of it appended. `--output=-` streams to stdout. With `--format=tgz` it is a
+[`.stasis.tgz`](file-formats.md#stasistgz), named `….stasis.tgz` alike.
 
 On stderr it says how many of the packages installed it unpacked, the files
 written and their size, and the tarballs fetched for them (pnpm and npm), then

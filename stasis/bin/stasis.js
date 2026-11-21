@@ -18,12 +18,12 @@ assert(basename(jsname) === 'stasis' || pathsEqual(jsname, fileURLToPath(import.
 
 const HELP = `Usage:
  stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/(bundle.br|name.stasis.tgz)] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
- stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
- stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
- stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
- stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
- stasis bundle [--deptree] [--babel] [--metro-resolver] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
- stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit [--branch=name]|--tag=name|--branch=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+ stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--brotli-quality=0..11] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+ stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/(file.sol|dir) ...
+ stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.rs ...
+ stasis bundle [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.(php|sh|bash) ...
+ stasis bundle [--deptree] [--babel] [--metro-resolver] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--brotli-quality=0..11] [--add] [--format=(br|tgz)] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
+ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit [--branch=name]|--tag=name|--branch=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--lockfile-only] [--format=(br|tgz)] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json|name.stasis.tgz) [entry]
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
@@ -167,6 +167,7 @@ if (command === '-v' || command === '--version') {
     mapping: { type: 'string' },
     manifests: { type: 'boolean' },
     output: { type: 'string', short: 'o' },
+    format: { type: 'string' },
     scope: { type: 'string' },
     lockfile: { type: 'string' },
     'lockfile-only': { type: 'boolean' },
@@ -207,9 +208,10 @@ if (command === '-v' || command === '--version') {
   if (values.generate !== undefined && values['no-generate']) fail('Error: github-bundle takes --generate or --no-generate, not both')
   const lockfileOnly = Boolean(values['lockfile-only'])
   // Before anything is fetched.
-  const { checkLockfileOnly } = await import('../src/cmd/output.js')
+  const { bundleFormat, checkLockfileOnly } = await import('../src/cmd/output.js')
   try {
-    checkLockfileOnly('github-bundle: ', { lockfileOnly, lockfile: values.lockfile, output: values.output, brotliQuality: values['brotli-quality'], named: true })
+    checkLockfileOnly('github-bundle: ', { lockfileOnly, lockfile: values.lockfile, output: values.output, brotliQuality: values['brotli-quality'], format: values.format, named: true })
+    bundleFormat('github-bundle: ', { format: values.format, output: values.output, brotliQuality: values['brotli-quality'] })
   } catch (cause) {
     fail(`Error: ${cause.message}`)
   }
@@ -244,6 +246,7 @@ if (command === '-v' || command === '--version') {
     mappingFile: values.mapping,
     manifests: Boolean(values.manifests),
     output: values.output,
+    format: values.format,
     lockfile: values.lockfile,
     lockfileOnly,
     scope: values.scope,
