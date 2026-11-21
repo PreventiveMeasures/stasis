@@ -1797,9 +1797,10 @@ anything else under its name, is refused. Its tar is read with
   gzip(1) reads it.
 
 A `stasis.lock.json` in a directory of it (npm's `package/`) is not at its top.
-A `directory` capture is a listing's hash in a lockfile, so a tgz holds no
-listing: its path is a directory of it or absent, never a file, and a run
-serves no `readdir` of it.
+Its lockfile may record a `stat:*` record (a path's kind alone, payload-free)
+but no `directory` capture, a listing, which a tar holds none of: one
+recording a directory capture (a `stasis run --fs` capture of a `readdir`) is
+refused, whatever the tar holds at its path.
 
 `@exodus/stasis-core/bundle` reads one as these rules say, given its tar
 unpacked, as `Bundle.parse` is given a bundle's text with its brotli undone:

@@ -52,11 +52,15 @@ test('Bundle.fromTar: refuses a tar other than exactly its stasis.lock.json\'s f
   const odd = (path, data, format) => {
     const lock2 = Object.assign(lockfileFromBundle(bundle), { repo: bundle.repo })
     lock2.modules.get('.').files[path] = integrityOf(data)
-    if (format) lock2.formats.set(path, format)
+    // Its own, not the bundle's, whose Map Lockfile.fromBundle shares.
+    if (format) lock2.formats = new Map([...lock2.formats, [path, format]])
     return [entry('stasis.lock.json', bytes(lock2.serialize())), ...files, entry(path, data)]
   }
   refused(odd('src/latin1.js', latin1), "stasis: src/latin1.js is recorded as 'code' but is not valid UTF-8")
   // Content for a payload-free stat record, a file no bundle carries: as Bundle.parse refuses a stasis.code.br of them.
   refused(odd('src/evil.js', bytes('evil\n'), 'stat:file'), "bundle: 'src/evil.js' is a payload-free 'stat:file' record, yet carries content")
   refused(odd('.npmrc', bytes('x\n')), 'bundle: .npmrc is a file no bundle may carry')
+  // A directory capture its lockfile records: a listing no tar holds, whether or not one is in it.
+  refused(odd('src', bytes('["main.js"]'), 'directory'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
+  refused(odd('src', bytes('["main.js"]'), 'directory').filter(({ name }) => name !== 'src'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
 })

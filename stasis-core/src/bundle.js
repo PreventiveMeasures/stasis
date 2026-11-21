@@ -235,7 +235,8 @@ export class Bundle {
   // The bundle of a .stasis.tgz's tar, unpacked (its entries `{ name, type, mode, data }`, as @preventive/archive's unpack
   // gives them; the caller gunzips and unpacks it, as it unbrotlis a stasis.code.br): fromLockfile's of the
   // stasis.lock.json at its top, which must attest exactly its files, each of the bytes and execute bit it attests,
-  // nothing else in it but directories. Throws naming what isn't.
+  // nothing else in it but directories, and record no directory capture (a listing, which a tar holds none of; a stat
+  // record, payload-free, it may). Throws naming what isn't.
   static fromTar(entries, { integrityOf }) {
     const files = new Map()
     for (const entry of entries) {
@@ -250,6 +251,7 @@ export class Bundle {
     } catch (cause) {
       throw new Error(`its ${LOCK_FILE} is no stasis lockfile${cause.message ? ` (${cause.message})` : ''}`, { cause })
     }
+    for (const [file, format] of lockfile.formats) assert(format !== 'directory', `its ${LOCK_FILE} records '${file}' as a directory capture, which a .stasis.tgz can't carry`)
     const read = new Set()
     const bundle = Bundle.fromLockfile(lockfile, {
       integrityOf,
