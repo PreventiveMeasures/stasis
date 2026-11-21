@@ -201,7 +201,7 @@ const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]
 // it gains one of its install, or loses one taken apart (State#absorbBundleRecord) until it is given back.
 const ecosystemOf = ({ ecosystem, directory }) => {
   if (directory !== undefined) return ecosystem === undefined || ecosystem === 'npm' ? NPM_DIRECTORY : ecosystem
-  return ecosystem === NPM_DIRECTORY ? 'npm' : ecosystem
+  return ecosystemFamily(ecosystem)
 }
 
 // Canonical key order; `ecosystem` and the metadata are omitted (not undefined) when absent.

@@ -31,7 +31,7 @@ const inAnyVendorDir = (rel) => VENDOR_DIR_LIST.some((dir) => rel.startsWith(`${
 
 export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
 
-const manifestIdentity = (pkg) => ({ name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) })
+export const manifestIdentity = (pkg) => ({ name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) })
 
 // `below`: whether any package.json under `vendorDir` covers the file at all.
 export function vendoredPackageOf(rel, vendorDir, read) {
@@ -214,7 +214,7 @@ export function normalizeEntries(entries, cwd) {
   return entries.map((e) => {
     const rel = toPosix(relative(baseDir, resolve(cwd, e)))
     if (relativeEscapes(rel)) throw new Error(`Entry escapes baseDir: ${e}`)
-    return rel.replace(/^\.\//u, '')
+    return rel
   })
 }
 
