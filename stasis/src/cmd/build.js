@@ -123,12 +123,9 @@ function selectEntry(entryArg, entries, { cwd, root, label }) {
 // A bundle-load State serving `bundle`, with no discovery on disk (no package.json, config or stray stasis.code.br).
 function loadStateForBundle(root, bundle) {
   const state = new State(root, { bundle: 'load', lock: 'ignore', scope: bundle.config.scope, skipDiscovery: true })
-  state.sources = new Map()
-  state.resources = new Map()
-  for (const [file, content] of bundle.sources) {
-    if (Bundle.isResourceFormat(bundle.formats.get(file))) state.resources.set(file, content)
-    else state.sources.set(file, content)
-  }
+  const served = Map.groupBy(bundle.sources, ([file]) => Bundle.isResourceFormat(bundle.formats.get(file)))
+  state.sources = new Map(served.get(false))
+  state.resources = new Map(served.get(true))
   state.formats = bundle.formats
   state.imports = bundle.imports
   state.entries = new Set(bundle.entries)
@@ -186,52 +183,48 @@ const chainTransforms = (first, second) => async (source, file) => {
 // `entry`'s options in the stasis.config.json the artifact carries that say how its code is built, or null.
 function configEntryOptions(state, entry) {
   if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return null
+  const carried = `stasis build: the artifact's ${CONFIG_FILE}`
   let config
   try {
     config = JSON.parse(readCarried(state, CONFIG_FILE).toString('utf8'))
   } catch (cause) {
-    throw new Error(`stasis build: the artifact's ${CONFIG_FILE} is not valid JSON`, { cause })
+    throw new Error(`${carried} is not valid JSON`, { cause })
   }
   const entries = config?.entries
   // The config's own `define` is every entry's, named in its entries or not, and no entry's own is beside it.
   const shared = config?.define !== undefined
-  if (entries !== undefined && !isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
+  if (entries !== undefined && !isPlainObject(entries)) throw new Error(`${carried}: entries must be an object`)
   // As `stasis bundle` names it: by its path, else by a glob pattern matching it, none of them in a node_modules.
-  const pathOf = (key) => toPosix(relative(state.root, resolve(state.root, key)))
-  const label = (key) => `stasis build: the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(key)}`
-  const matches = (key) => isGlobPattern(key) && !hasNodeModulesSegment(entry) && posix.matchesGlob(entry, entryGlob(label(key), key))
+  const what = (key) => `${carried}: entries ${JSON.stringify(key)}`
+  const matches = (key) => isGlobPattern(key) && !hasNodeModulesSegment(entry) && posix.matchesGlob(entry, entryGlob(what(key), key))
   const keys = Object.keys(entries ?? {})
-  const name = keys.find((key) => pathOf(key) === entry) ?? keys.find(matches)
+  const name = keys.find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry) ?? keys.find(matches)
   if (name === undefined && !shared) return null
-  const what = `the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(name)}`
   const options = name === undefined ? {} : entries[name]
-  if (!isPlainObject(options)) throw new Error(`stasis build: ${what} must be an object of options`)
+  const named = what(name)
+  if (!isPlainObject(options)) throw new Error(`${named} must be an object of options`)
   for (const flag of ['jsx', 'flow', 'metro']) {
-    if (options[flag] !== undefined && typeof options[flag] !== 'boolean') throw new Error(`stasis build: ${what}: ${flag} must be true or false`)
+    if (options[flag] !== undefined && typeof options[flag] !== 'boolean') throw new Error(`${named}: ${flag} must be true or false`)
   }
   const stringsOf = (value = [], whose) => {
     if (typeof value !== 'string' && !(Array.isArray(value) && value.every((v) => typeof v === 'string'))) {
-      throw new Error(`stasis build: ${whose} must be a string or an array of strings`)
+      throw new Error(`${whose} must be a string or an array of strings`)
     }
     return [value].flat()
   }
-  const strings = (flag) => stringsOf(options[flag], `${what}: ${flag}`)
-  const sharedWhat = `the artifact's ${CONFIG_FILE}: define`
-  if (shared) {
-    const own = keys.find((key) => isPlainObject(entries[key]) && Object.hasOwn(entries[key], 'define'))
-    if (own !== undefined) throw new Error(`stasis build: ${sharedWhat} can't be combined with entries ${JSON.stringify(own)}'s define`)
-  }
-  const defineWhat = shared ? sharedWhat : `${what}: define`
+  const defineWhat = shared ? `${carried}: define` : `${named}: define`
+  const own = shared ? keys.find((key) => isPlainObject(entries[key]) && Object.hasOwn(entries[key], 'define')) : undefined
+  if (own !== undefined) throw new Error(`${defineWhat} can't be combined with entries ${JSON.stringify(own)}'s define`)
   const define = {}
   for (const pair of stringsOf(shared ? config.define : options.define, defineWhat)) {
     const eq = pair.indexOf('=')
-    if (eq <= 0) throw new Error(`stasis build: ${defineWhat} must be KEY=VALUE (got '${pair}')`)
+    if (eq <= 0) throw new Error(`${defineWhat} must be KEY=VALUE (got '${pair}')`)
     define[pair.slice(0, eq)] = pair.slice(eq + 1)
   }
   let platforms
   if (options.metro === true) {
-    platforms = [...new Set(strings('platforms').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
-    if (platforms.length === 0) throw new Error(`stasis build: ${what} sets metro but names no platforms`)
+    platforms = [...new Set(stringsOf(options.platforms, `${named}: platforms`).flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
+    if (platforms.length === 0) throw new Error(`${named} sets metro but names no platforms`)
   }
   return { name, jsx: options.jsx === true, flow: options.flow === true, define, shared, platforms }
 }
@@ -282,12 +275,8 @@ export async function buildCommand({
       flow = true
       taken.push('--flow')
     }
-    const defined = []
-    for (const [key, value] of Object.entries(configured.define)) {
-      if (Object.hasOwn(define, key)) continue
-      define = { ...define, [key]: value }
-      defined.push(`--define=${key}=${value}`)
-    }
+    const defined = Object.entries(configured.define).filter(([key]) => !Object.hasOwn(define, key)).map(([key, value]) => `--define=${key}=${value}`)
+    define = { ...configured.define, ...define }
     if (!configured.shared) taken.push(...defined)
     const { platforms } = configured
     if (platforms !== undefined) {
@@ -308,9 +297,7 @@ export async function buildCommand({
   if (metro !== undefined) {
     if (loader['.js'] === undefined) loader = { ...loader, '.js': 'jsx' }
     if (!babel) flow = true
-    for (const [key, value] of Object.entries(METRO_RELEASE_DEFINE)) {
-      if (!Object.hasOwn(define, key)) define = { ...define, [key]: JSON.stringify(value) }
-    }
+    define = { ...Object.fromEntries(Object.entries(METRO_RELEASE_DEFINE).map(([key, value]) => [key, JSON.stringify(value)])), ...define }
   }
   if (assetsDest !== undefined && metro === undefined) {
     throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')
@@ -330,43 +317,38 @@ export async function buildCommand({
   // (corrupting a lockfile's hash), so it builds write:false and each output is checked before any is written.
   const attested = new Set([...state.sources.keys(), ...state.resources.keys()].map((f) => resolve(state.root, f)))
 
-  let result
-  try {
-    result = await esbuild.build({
-      entryPoints: [entryPoint],
-      absWorkingDir: state.root,
-      bundle: true,
-      write: false,
-      platform: hermes ? 'neutral' : platform,
-      format,
-      logLevel: 'silent',
-      ...(hermes ? { supported: HERMES_UNSUPPORTED } : {}),
-      ...(minify ? { minify: true } : {}),
-      ...(sourcemap ? { sourcemap: true } : {}),
-      ...(external.length > 0 ? { external } : {}),
-      ...(Object.keys(define).length > 0 ? { define } : {}),
-      ...(asFile ? { outfile: outAbs } : { outdir: outAbs }),
-      // Loaders go through the plugin: it serves every file, so esbuild's own `loader` option never sees them.
-      plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform, resource, platform: metro })],
-    })
-  } catch (err) {
+  const result = await esbuild.build({
+    entryPoints: [entryPoint],
+    absWorkingDir: state.root,
+    bundle: true,
+    write: false,
+    platform: hermes ? 'neutral' : platform,
+    format,
+    logLevel: 'silent',
+    supported: hermes ? HERMES_UNSUPPORTED : undefined,
+    minify: Boolean(minify),
+    sourcemap: Boolean(sourcemap),
+    external,
+    define,
+    ...(asFile ? { outfile: outAbs } : { outdir: outAbs }),
+    // Loaders go through the plugin: it serves every file, so esbuild's own `loader` option never sees them.
+    plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform, resource, platform: metro })],
+  }).catch(async (err) => {
     // Under logLevel:'silent' esbuild puts the real errors on err.errors.
-    if (Array.isArray(err?.errors) && err.errors.length > 0) {
-      for (const line of await esbuild.formatMessages(err.errors, { kind: 'error', color: false })) process.stderr.write(line)
-      const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
-      if (unloaded !== undefined) {
-        process.stderr.write(
-          `[stasis] Build a "${unloaded}" resource with --loader=${unloaded}:NAME (an esbuild loader: dataurl, file, text, ...), ` +
-          `or with --metro=PLATFORM as the asset module Metro builds of it\n`
-        )
-      }
-      if (metro === undefined && err.errors.some((e) => e.detail?.code === 'ERR_STASIS_PLATFORM_SPECIFIC')) {
-        process.stderr.write('[stasis] A --metro multi-platform bundle builds for one platform at a time: pass --metro=PLATFORM (e.g. --metro=ios)\n')
-      }
-      throw new Error(`stasis build failed: esbuild reported ${err.errors.length} error(s)`, { cause: err })
+    if (!Array.isArray(err?.errors) || err.errors.length === 0) throw err
+    for (const line of await esbuild.formatMessages(err.errors, { kind: 'error', color: false })) process.stderr.write(line)
+    const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
+    if (unloaded !== undefined) {
+      process.stderr.write(
+        `[stasis] Build a "${unloaded}" resource with --loader=${unloaded}:NAME (an esbuild loader: dataurl, file, text, ...), ` +
+        `or with --metro=PLATFORM as the asset module Metro builds of it\n`
+      )
     }
-    throw err
-  }
+    if (metro === undefined && err.errors.some((e) => e.detail?.code === 'ERR_STASIS_PLATFORM_SPECIFIC')) {
+      process.stderr.write('[stasis] A --metro multi-platform bundle builds for one platform at a time: pass --metro=PLATFORM (e.g. --metro=ios)\n')
+    }
+    throw new Error(`stasis build failed: esbuild reported ${err.errors.length} error(s)`, { cause: err })
+  })
 
   // As `react-native bundle --assets-dest` lays them out, in a stable order (esbuild loads in parallel).
   const assetFiles = assetsDest === undefined

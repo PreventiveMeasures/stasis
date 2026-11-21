@@ -97,26 +97,26 @@ function schemaEngines(near) {
     let panic
     const engine = commonjs(glue, { fs }, { global: { PRISMA_WASM_PANIC_REGISTRY: { set_message: (message) => { panic = message } } } })
     const { getDMMF } = getDmmf(engine)
-    const calling = (run) => (options) => {
+    const calling = (run) => (files) => {
       try {
-        return run(options)
+        return run(files)
       } catch (error) {
         throw panic === undefined ? error : new Error(`the schema engine panicked: ${panic}`, { cause: error })
       }
     }
     return {
       // Without resolving binaryTargets, which the generator never reads.
-      getConfig: calling(({ datamodel }) => {
-        const { config, errors } = JSON.parse(engine.get_config(JSON.stringify({ prismaSchema: datamodel })))
+      getConfig: calling((files) => {
+        const { config, errors } = JSON.parse(engine.get_config(JSON.stringify({ prismaSchema: files })))
         if (errors.length > 0) throw new Error(errors.map((error) => error.message).join('\n'))
         return config
       }),
-      getDMMF: calling((options) => {
-        const result = getDMMF(options)
+      getDMMF: calling((files) => {
+        const result = getDMMF({ datamodel: files })
         if ('error' in result) throw new Error(engineMessage(result.error.message), { cause: result.error })
         return result
       }),
-      mergeSchemas: calling(({ schemas }) => engine.merge_schemas(JSON.stringify({ schema: schemas }))),
+      mergeSchemas: calling((files) => engine.merge_schemas(JSON.stringify({ schema: files }))),
     }
   }
   // externalToInternalDmmf, the generator's, reads no schema: its get-dmmf has no engine.
@@ -349,20 +349,8 @@ function asVersion(text, path, version, extension) {
   return text
 }
 
-function generateClientFor({ schemaPath, datamodel, generator, dmmf, datasources, outputDir, prisma, host }) {
-  const client = { host, version: prisma.version, prismaDir: posix.dirname(prisma.file) }
-  const peer = loadGenerator().peer(client)
-  const options = generatorOptions(peer, host, generator.config, outputDir)
-  client.target = options.target
-  const built = peer.buildClient({
-    datamodel, schemaPath, runtimeBase: '@prisma/client/runtime', outputDir, generator, dmmf, datasources, binaryPaths: {},
-    engineVersion: ENGINES[GENERATOR_VERSION], clientVersion: GENERATOR_VERSION, activeProvider: datasources[0]?.activeProvider, tsNoCheckPreamble: true, ...options,
-  })
-  const denied = peer.validateDmmfAgainstDenylists(built.prismaClientDmmf)
-  if (denied) throw new Error(`prisma: ${schemaPath} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
-  const flat = (map, at) => Object.entries(map).flatMap(([name, content]) => (typeof content === 'string' || Buffer.isBuffer(content) ? [[at + name, content]] : flat(content, `${at}${name}/`)))
-  return new Map(flat(built.fileMap, '').map(([path, content]) => [path, asVersion(content, path, prisma.version, options.generatedFileExtension)]))
-}
+// The generator's nested map of files, by path.
+const flatFiles = (map, at = '') => Object.entries(map).flatMap(([name, content]) => (typeof content === 'string' || Buffer.isBuffer(content) ? [[at + name, content]] : flatFiles(content, `${at}${name}/`)))
 
 const readingSchema = (path, what) => Promise.try(what).catch((cause) => { throw new Error(`prisma: ${path}: ${cause.message}`, { cause }) })
 
@@ -458,14 +446,15 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
 async function generateSchema({ host, path, prisma, say, skip }) {
   const files = await readingSchema(path, () => schemaFilesAt(host, path))
   const engine = loadGenerator().schemaEngine()
-  const config = await readingSchema(path, () => engine.getConfig({ datamodel: files }))
+  const config = await readingSchema(path, () => engine.getConfig(files))
   const generators = config.generators.filter(ours)
   for (const other of config.generators.filter((generator) => !ours(generator) && !needsNoOutput(generator))) say?.(notGenerating(`${path}'s generator ${other.name}`, SKIPPED, committedOutput(host, other, path)))
   if (generators.length === 0) return []
   for (const warning of config.warnings) say?.(warning)
   if (config.datasources.length === 0) throw new Error(`prisma: ${path} defines no datasource`)
-  const dmmf = await readingSchema(path, () => engine.getDMMF({ datamodel: files }))
-  const datamodel = await readingSchema(path, () => engine.mergeSchemas({ schemas: files }))
+  const dmmf = await readingSchema(path, () => engine.getDMMF(files))
+  const datamodel = await readingSchema(path, () => engine.mergeSchemas(files))
+  const { datasources } = config
   const outputs = []
   for (const generator of generators) {
     if (generator.output === null) throw new Error(`prisma: ${path}: generator ${generator.name} names no output`)
@@ -475,8 +464,18 @@ async function generateSchema({ host, path, prisma, say, skip }) {
     }
     const outputDir = outputOf(generator, path)
     if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
-    const client = generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host })
-    outputs.push({ dir: outputDir, files: client, schema: path, generator: generator.name, prisma: prisma.version })
+    const client = { host, version: prisma.version, prismaDir: posix.dirname(prisma.file) }
+    const peer = loadGenerator().peer(client)
+    const options = generatorOptions(peer, host, generator.config, outputDir)
+    client.target = options.target
+    const built = peer.buildClient({
+      datamodel, schemaPath: path, runtimeBase: '@prisma/client/runtime', outputDir, generator, dmmf, datasources, binaryPaths: {},
+      engineVersion: ENGINES[GENERATOR_VERSION], clientVersion: GENERATOR_VERSION, activeProvider: datasources[0]?.activeProvider, tsNoCheckPreamble: true, ...options,
+    })
+    const denied = peer.validateDmmfAgainstDenylists(built.prismaClientDmmf)
+    if (denied) throw new Error(`prisma: ${path} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
+    const generated = new Map(flatFiles(built.fileMap).map(([file, content]) => [file, asVersion(content, file, prisma.version, options.generatedFileExtension)]))
+    outputs.push({ dir: outputDir, files: generated, schema: path, generator: generator.name, prisma: prisma.version })
   }
   return outputs
 }

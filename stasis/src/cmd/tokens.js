@@ -37,9 +37,7 @@ export function npmrcToken(home) {
     return undefined
   }
   if (!isUtf8(bytes)) throw new Error(`${file} is not valid UTF-8`)
-  let token
-  for (const line of bytes.toString('utf8').split('\n')) token = NPMRC_LINE.exec(line)?.[1] ?? token
-  return token
+  return bytes.toString('utf8').split('\n').map((line) => NPMRC_LINE.exec(line)?.[1]).findLast((token) => token !== undefined)
 }
 
 // `fn()` with STASIS_NPM_TOKEN auditTokens' or npmrcToken's where no NPM_TOKEN_VARS is set (each file only

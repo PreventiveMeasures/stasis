@@ -206,11 +206,12 @@ if (command === '-v' || command === '--version') {
   if (values.tag !== undefined && values.branch !== undefined) fail('Error: github-bundle takes --tag or --branch, not both')
   if (values.generate !== undefined && values['no-generate']) fail('Error: github-bundle takes --generate or --no-generate, not both')
   const lockfileOnly = Boolean(values['lockfile-only'])
-  if (lockfileOnly) {
-    // Before anything is fetched.
-    const { lockfileOnlyError } = await import('../src/cmd/output.js')
-    const refused = lockfileOnlyError({ lockfile: values.lockfile, output: values.output, brotliQuality: values['brotli-quality'], named: true })
-    if (refused !== null) fail(`Error: github-bundle: ${refused}`)
+  // Before anything is fetched.
+  const { checkLockfileOnly } = await import('../src/cmd/output.js')
+  try {
+    checkLockfileOnly('github-bundle: ', { lockfileOnly, lockfile: values.lockfile, output: values.output, brotliQuality: values['brotli-quality'], named: true })
+  } catch (cause) {
+    fail(`Error: ${cause.message}`)
   }
   // Whether each option applies to the entries is buildGitHubBundle's to say.
   const list = (value) => [value ?? []].flat().flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)

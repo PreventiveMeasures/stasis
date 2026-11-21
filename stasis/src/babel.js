@@ -31,7 +31,7 @@ const TRANSFORMABLE_LOADERS = new Set(['js', 'ts', 'jsx', 'tsx'])
 
 // On the main thread, so a missing install fails with instructions, not a worker crash mid-build. Absolute paths:
 // the worker loads @babel/core by path, and plugin paths bypass Babel's own name resolution (from the wrong dir).
-function resolveFromProject(projectDir, deps, flag, command = 'stasis build') {
+function resolveFromProject(projectDir, deps, flag, command) {
   const projectRequire = createRequire(join(projectDir, 'noop.js'))
   try {
     return deps.map((dep) => projectRequire.resolve(dep))
@@ -43,7 +43,7 @@ function resolveFromProject(projectDir, deps, flag, command = 'stasis build') {
 
 // In StasisEsbuild's load-mode `transform` hook shape: (source, { path, loader }) => { contents, loader } | undefined.
 export function createHermesTransform({ projectDir, esbuild }) {
-  const [babelPath, ...plugins] = resolveFromProject(projectDir, ['@babel/core', ...HERMES_BABEL_PLUGINS], '--platform=hermes')
+  const [babelPath, ...plugins] = resolveFromProject(projectDir, ['@babel/core', ...HERMES_BABEL_PLUGINS], '--platform=hermes', 'stasis build')
   const { transformAsync } = require('./babel-worker.cjs')
   return async (source, { path, loader }) => {
     if (!TRANSFORMABLE_LOADERS.has(loader)) return undefined
@@ -62,8 +62,7 @@ export function createHermesTransform({ projectDir, esbuild }) {
 
 // Its output must be esbuild-parseable js: a config that leaves TS/JSX in place is the project's to fix.
 export function createBabelConfigTransform({ projectDir }) {
-  const configFile = findBabelConfig(projectDir, 'stasis build')
-  const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel')
+  const { configFile, babelPath } = projectBabel(projectDir, 'stasis build')
   const { transformAsync } = require('./babel-worker.cjs')
   return async (source, { path, loader }) => {
     if (!TRANSFORMABLE_LOADERS.has(loader)) return undefined
@@ -73,18 +72,19 @@ export function createBabelConfigTransform({ projectDir }) {
   }
 }
 
-function findBabelConfig(projectDir, command) {
+// --babel's: the project's babel.config.* and @babel/core.
+function projectBabel(projectDir, command) {
   const configFile = ['babel.config.js', 'babel.config.cjs', 'babel.config.mjs', 'babel.config.json']
     .map((name) => join(projectDir, name))
     .find((file) => existsSync(file))
   if (!configFile) throw new Error(`${command}: --babel found no babel.config.(js|cjs|mjs|json) in ${projectDir}`)
-  return configFile
+  const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', command)
+  return { configFile, babelPath }
 }
 
 // Loaded as Metro's transformer loads it (its `metro` caller): the config is project code, run here.
 function projectBabelConfig({ projectDir, platform }, method) {
-  const configFile = findBabelConfig(projectDir, 'stasis bundle')
-  const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', 'stasis bundle')
+  const { configFile, babelPath } = projectBabel(projectDir, 'stasis bundle')
   const babel = require(babelPath)
   const caller = { name: 'metro', bundler: 'metro', platform }
   return memoized((file) => {
@@ -142,14 +142,13 @@ const toLocalPath = (path) => {
   const local = path.replace(/\/index$/u, '')
   return isRelativePath(local) ? local : `./${local}`
 }
-const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 
 // --babel-aliases: babel-plugin-module-resolver's `alias` option as data, mapped as the plugin maps it, the first key
 // matching winning. A `./` or `../` value is a path from `cwd`.
 export function createAliases(alias, cwd) {
   const matchers = Object.entries(alias).map(([key, value]) => {
     // As the plugin builds them: a key's own pattern, unflagged (`u` would refuse some it takes).
-    if (!key.startsWith('^') && !key.endsWith('$')) return [new RegExp(`^${escapeRegExp(key)}(/.*|)$`), ([, rest]) => `${value}${rest}`]
+    if (!key.startsWith('^') && !key.endsWith('$')) return [new RegExp(`^${RegExp.escape(key)}(/.*|)$`), ([, rest]) => `${value}${rest}`]
     const parts = value.split('\\\\')
     return [new RegExp(key), (groups) => parts.map((part) => part.replace(/\\\d+/gu, (n) => groups[n.slice(1)] || '')).join('\\')]
   })

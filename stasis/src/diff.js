@@ -33,28 +33,24 @@ export function normalizeArtifact(input, { hash } = {}) {
   return { scope: artifact.config?.scope ?? 'full', modules, executable: artifact.executable ?? new Set() }
 }
 
+// The keys only `b` has, only `a` has, and both have.
+function compareKeys(a, b) {
+  const keys = new Set(a.keys())
+  return { added: [...new Set(b.keys()).difference(a)], removed: [...keys.difference(b)], shared: [...keys.intersection(b)] }
+}
+
 // `left` the baseline. Files compare only within modules on BOTH sides (a one-sided module is reported once); a
 // name/version/repo change only where both sides record one. `imports: true` also diffs the resolution graphs.
 export function diffArtifacts(left, right, { imports = false, hash } = {}) {
   const L = normalizeArtifact(left, { hash })
   const R = normalizeArtifact(right, { hash })
 
-  const modulesAdded = []
-  const modulesRemoved = []
-  const modulesChanged = []
-  const filesAdded = []
-  const filesRemoved = []
-  const filesDiffering = []
-
-  const summary = (dir, m) => ({ dir, name: m.name, version: m.version, ecosystem: m.ecosystem, files: m.files.size })
-  for (const dir of new Set([...L.modules.keys(), ...R.modules.keys()])) {
+  const modules = compareKeys(L.modules, R.modules)
+  const changed = []
+  const files = { added: [], removed: [], differing: [] }
+  for (const dir of modules.shared) {
     const l = L.modules.get(dir)
     const r = R.modules.get(dir)
-    if (!l || !r) {
-      (l ? modulesRemoved : modulesAdded).push(summary(dir, l ?? r))
-      continue
-    }
-
     const changes = {}
     for (const field of ['version', 'name']) {
       if (l[field] !== null && r[field] !== null && l[field] !== r[field]) changes[`${field}Change`] = { from: l[field], to: r[field] }
@@ -64,40 +60,39 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
     for (const field of ATTESTED_METADATA) {
       if (!sameAttested(field, l[field], r[field])) changes[`${field}Change`] = { from: l[field], to: r[field] }
     }
-    if (Object.keys(changes).length > 0) modulesChanged.push({ dir, name: r.name ?? l.name, ...changes })
-
-    for (const rel of new Set([...l.files.keys(), ...r.files.keys()])) {
-      const lh = l.files.get(rel)
-      const rh = r.files.get(rel)
-      const path = moduleFileKey(dir, rel)
-      if (lh !== undefined && rh === undefined) filesRemoved.push(path)
-      else if (lh === undefined && rh !== undefined) filesAdded.push(path)
-      else if (lh !== rh) filesDiffering.push(path)
+    if (Object.keys(changes).length > 0) changed.push({ dir, name: r.name ?? l.name, ...changes })
+    const rels = compareKeys(l.files, r.files)
+    for (const rel of rels.added) files.added.push(moduleFileKey(dir, rel))
+    for (const rel of rels.removed) files.removed.push(moduleFileKey(dir, rel))
+    for (const rel of rels.shared) {
+      if (l.files.get(rel) !== r.files.get(rel)) files.differing.push(moduleFileKey(dir, rel))
     }
   }
 
-  const byDir = (a, b) => sortPaths(a.dir, b.dir)
-  // Of every path either side marks, not just files in shared modules.
-  const onlyIn = (a, b) => [...a.difference(b)].toSorted(sortPaths)
+  const sorted = (paths) => [...paths].toSorted(sortPaths)
+  const summaries = (dirs, { modules: side }) => sorted(dirs).map((dir) => {
+    const { name, version, ecosystem, files: { size } } = side.get(dir)
+    return { dir, name, version, ecosystem, files: size }
+  })
   const result = {
     scope: { left: L.scope, right: R.scope },
-    modules: { added: modulesAdded.toSorted(byDir), removed: modulesRemoved.toSorted(byDir), changed: modulesChanged.toSorted(byDir) },
-    files: { added: filesAdded.toSorted(sortPaths), removed: filesRemoved.toSorted(sortPaths), differing: filesDiffering.toSorted(sortPaths) },
-    executable: { added: onlyIn(R.executable, L.executable), removed: onlyIn(L.executable, R.executable) },
+    modules: { added: summaries(modules.added, R), removed: summaries(modules.removed, L), changed: changed.toSorted((a, b) => sortPaths(a.dir, b.dir)) },
+    files: { added: sorted(files.added), removed: sorted(files.removed), differing: sorted(files.differing) },
+    // Of every path either side marks, not just files in shared modules.
+    executable: { added: sorted(R.executable.difference(L.executable)), removed: sorted(L.executable.difference(R.executable)) },
   }
   if (imports) result.imports = diffImports(left, right)
   return result
 }
 
-// (parent, specifier) -> Set<target>, unioned over conditions: a static bundle keys every edge under "*", a runtime
-// lockfile by precise sets, and the two must agree. A `--metro` target may be a { platform: file } map.
+// JSON [parent, specifier] -> Set<target>, unioned over conditions: a static bundle keys every edge under "*", a
+// runtime lockfile by precise sets, and the two must agree. A `--metro` target may be a { platform: file } map.
 function resolutionsOf(imports) {
   const byPair = new Map()
   for (const [, byParent] of imports) {
     for (const [parent, specifiers] of byParent) {
       for (const [specifier, target] of specifiers) {
-        const key = JSON.stringify([parent, specifier])
-        const { targets } = upsert(byPair, key, () => ({ parent, specifier, targets: new Set() }))
+        const targets = upsert(byPair, JSON.stringify([parent, specifier]), () => new Set())
         for (const f of target instanceof Map ? target.values() : [target]) targets.add(f)
       }
     }
@@ -107,32 +102,27 @@ function resolutionsOf(imports) {
 
 const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const cmpPair = (a, b) => sortPaths(a.parent, b.parent) || cmpStr(a.specifier, b.specifier)
-const sortedTargets = (set) => [...set].toSorted(sortPaths)
 
 // Changed catches a redirect a byte diff can't see. A side attesting no imports (a lockfile predating attestation)
 // skips the diff, `attested` saying which, rather than reporting the other whole graph as added/removed.
 export function diffImports({ artifact: left }, { artifact: right }) {
-  const li = left.imports ?? null
-  const ri = right.imports ?? null
-  const attested = { left: li !== null, right: ri !== null }
-  if (li === null || ri === null) return { attested, added: [], removed: [], changed: [] }
+  const attested = { left: left.imports != null, right: right.imports != null }
+  if (!attested.left || !attested.right) return { attested, added: [], removed: [], changed: [] }
 
-  const L = resolutionsOf(li)
-  const R = resolutionsOf(ri)
-  const added = []
-  const removed = []
-  const changed = []
-  for (const key of new Set([...L.keys(), ...R.keys()])) {
-    const l = L.get(key)
-    const r = R.get(key)
-    if (l && !r) removed.push({ parent: l.parent, specifier: l.specifier, from: sortedTargets(l.targets) })
-    else if (!l && r) added.push({ parent: r.parent, specifier: r.specifier, to: sortedTargets(r.targets) })
-    else if (!extSetsEqual(l.targets, r.targets)) {
-      changed.push({ parent: l.parent, specifier: l.specifier, from: sortedTargets(l.targets), to: sortedTargets(r.targets) })
-    }
+  const L = resolutionsOf(left.imports)
+  const R = resolutionsOf(right.imports)
+  const { added, removed, shared } = compareKeys(L, R)
+  const sorted = (side, key) => [...side.get(key)].toSorted(sortPaths)
+  const edges = (keys, sidesOf) => keys.map((key) => {
+    const [parent, specifier] = JSON.parse(key)
+    return { parent, specifier, ...sidesOf(key) }
+  }).toSorted(cmpPair)
+  return {
+    attested,
+    added: edges(added, (key) => ({ to: sorted(R, key) })),
+    removed: edges(removed, (key) => ({ from: sorted(L, key) })),
+    changed: edges(shared.filter((key) => !extSetsEqual(L.get(key), R.get(key))), (key) => ({ from: sorted(L, key), to: sorted(R, key) })),
   }
-  for (const list of [added, removed, changed]) list.sort(cmpPair)
-  return { attested, added, removed, changed }
 }
 
 // Scope alone doesn't count. Only the opt-in `imports` is guarded: a guard on the others would make a renamed facet
@@ -171,12 +161,15 @@ function describeModuleChange({ name, versionChange, nameChange, repoChange, dir
   return `${name ? `${name} ` : ''}${segs.join(', ')}`
 }
 
-const moduleLine = (mark, x) => {
+const moduleText = (x) => {
   const id = ident(x)
-  return `  ${mark} ${x.dir}${id ? `  ${id}` : ''} (${x.files} file${plural(x.files)})`
+  return `${x.dir}${id ? `  ${id}` : ''} (${x.files} file${plural(x.files)})`
 }
 
-const edgeLabel = (e) => `${e.parent}  '${e.specifier}'`
+function edgeText(e, mark) {
+  const edge = `${e.parent}  '${e.specifier}'`
+  return mark === CHANGED ? `${edge}  ${e.from.join(', ')} -> ${e.to.join(', ')}` : `${edge} -> ${(e.from ?? e.to).join(', ')}`
+}
 
 // The `--stat` summary: what changed, not the text.
 export function formatDiffStat(diff, { left = '(left)', right = '(right)', leftKind, rightKind } = {}) {
@@ -187,43 +180,29 @@ export function formatDiffStat(diff, { left = '(left)', right = '(right)', leftK
     `  ${REMOVED} ${left} (${label(leftKind)}scope=${scope.left})`,
     `  ${ADDED} ${right} (${label(rightKind)}scope=${scope.right})`,
   ]
-  const paths = (mark, list) => {
-    for (const p of list) lines.push(`  ${mark} ${p}`)
-  }
   if (scope.left !== scope.right) {
     lines.push(`  note: scopes differ (${scope.left} vs ${scope.right}); files only the full-scope artifact records show as removed/added`)
   }
-
-  lines.push('', `Modules: ${m.added.length} added, ${m.removed.length} removed, ${m.changed.length} changed`)
-  for (const x of m.removed) lines.push(moduleLine(REMOVED, x))
-  for (const x of m.added) lines.push(moduleLine(ADDED, x))
-  for (const x of m.changed) lines.push(`  ${CHANGED} ${x.dir}  ${describeModuleChange(x)}`)
-
-  lines.push('', `Files (within shared modules): ${f.added.length} added, ${f.removed.length} removed, ${f.differing.length} differing`)
-  paths(REMOVED, f.removed)
-  paths(ADDED, f.added)
-  paths(CHANGED, f.differing)
-
-  // A permanent "0 added, 0 removed" line would be noise in every diff.
-  if (ex.added.length > 0 || ex.removed.length > 0) {
-    lines.push('', `Executable: ${ex.added.length} added, ${ex.removed.length} removed`)
-    paths(REMOVED, ex.removed)
-    paths(ADDED, ex.added)
+  // A facet's counts of its `[added, removed, changed]` lists, then their items, the removed first, each its mark and
+  // `text(item, mark)`.
+  const facet = (title, lists, text, kinds = ['added', 'removed', 'changed']) => {
+    lines.push('', `${title}: ${kinds.map((kind) => `${lists[kind].length} ${kind}`).join(', ')}`)
+    for (const [mark, kind] of [[REMOVED, kinds[1]], [ADDED, kinds[0]], [CHANGED, kinds[2]]]) {
+      for (const item of lists[kind] ?? []) lines.push(`  ${mark} ${text(item, mark)}`)
+    }
   }
 
-  if (im) {
-    lines.push('')
-    if (!im.attested.left || !im.attested.right) {
-      const which = !im.attested.left && !im.attested.right
-        ? 'neither artifact attests'
-        : `${im.attested.left ? right : left} does not attest`
-      lines.push(`Imports: ${which} resolutions; skipping import diff`)
-    } else {
-      lines.push(`Imports: ${im.added.length} added, ${im.removed.length} removed, ${im.changed.length} changed`)
-      for (const e of im.removed) lines.push(`  ${REMOVED} ${edgeLabel(e)} -> ${e.from.join(', ')}`)
-      for (const e of im.added) lines.push(`  ${ADDED} ${edgeLabel(e)} -> ${e.to.join(', ')}`)
-      for (const e of im.changed) lines.push(`  ${CHANGED} ${edgeLabel(e)}  ${e.from.join(', ')} -> ${e.to.join(', ')}`)
-    }
+  facet('Modules', m, (x, mark) => (mark === CHANGED ? `${x.dir}  ${describeModuleChange(x)}` : moduleText(x)))
+  facet('Files (within shared modules)', f, String, ['added', 'removed', 'differing'])
+  // A permanent "0 added, 0 removed" line would be noise in every diff.
+  if (ex.added.length > 0 || ex.removed.length > 0) facet('Executable', ex, String, ['added', 'removed'])
+  if (im && (!im.attested.left || !im.attested.right)) {
+    const which = !im.attested.left && !im.attested.right
+      ? 'neither artifact attests'
+      : `${im.attested.left ? right : left} does not attest`
+    lines.push('', `Imports: ${which} resolutions; skipping import diff`)
+  } else if (im) {
+    facet('Imports', im, edgeText)
   }
 
   lines.push('', hasDifferences(diff) ? 'Artifacts differ' : 'No differences')

@@ -4,8 +4,9 @@
 import { isAbsolute, join, posix, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
-import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
+import { collectFromDisk } from './bash.js'
 import {
   FOUNDRY_TOML,
   REMAPPINGS_TXT,
@@ -17,7 +18,7 @@ import {
   shownFrom,
   toSolcRemapping,
 } from './foundry.js'
-import { applyToDir, isDotRelative } from './paths.js'
+import { ancestors, applyToDir, isDotRelative } from './paths.js'
 import { decodeUtf8, projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
 
 // By char code: identifier start [A-Za-z_$], identifier part [\w$], digit, and a number literal's [\w.].
@@ -117,10 +118,7 @@ const toLoaderRemapping = ({ context, name, path }) => ({ context, prefix: name,
 // A foundry.toml's and, with `forge`, a remappings.txt's are slash-terminated as forge reads them; else (solc,
 // Hardhat) a remappings.txt applies as written.
 function readMapping(mappingFile, { env, forge, host, show }) {
-  if (mappingFile.endsWith('.toml')) {
-    const { remappings, files, profiled } = readFoundryTomlRemappings(mappingFile, foundryProfile(env), { show, host })
-    return { remappings: remappings.map(toSolcRemapping), files, profiled }
-  }
+  if (mappingFile.endsWith('.toml')) return readFoundryTomlRemappings(mappingFile, foundryProfile(env), { show, host })
   const name = show(mappingFile)
   const text = readUtf8OrNull(mappingFile, name, host)
   if (text === null) throw new Error(`${name}: no such file`)
@@ -188,13 +186,12 @@ function libraryFile(baseDir, spec, fromFile, libs, host) {
 function nodeModulesFile(baseDir, spec, fromFile, host) {
   const parts = spec.split('/')
   if (parts.length < (spec.startsWith('@') ? 3 : 2)) return null
-  for (let dir = posix.dirname(fromFile); ; dir = posix.dirname(dir)) {
-    if (posix.basename(dir) !== 'node_modules') {
-      const hit = projectFile(baseDir, dir === '.' ? `node_modules/${spec}` : `${dir}/node_modules/${spec}`, host)
-      if (hit) return hit
-    }
-    if (dir === '.' || dir === '/' || dir === '') return null
+  for (const dir of ancestors(posix.dirname(fromFile))) {
+    if (posix.basename(dir) === 'node_modules') continue
+    const hit = projectFile(baseDir, dir === '.' ? `node_modules/${spec}` : `${dir}/node_modules/${spec}`, host)
+    if (hit) return hit
   }
+  return null
 }
 
 // `{ reason: null }` for an import naming no file.
@@ -229,8 +226,15 @@ export const resolveSolImport = (specifier, fromFile, options = {}) => resolveIm
 export const SOLIDITY_ROOT_MANIFESTS = [FOUNDRY_TOML, REMAPPINGS_TXT, 'foundry.lock', 'soldeer.lock', '.gitmodules', 'package.json']
 export const SOLIDITY_PACKAGE_MANIFESTS = ['package.json', FOUNDRY_TOML, REMAPPINGS_TXT]
 
-const warnUnresolved = (spec, from, reason) =>
-  console.warn(`[loader.solidity] ${reason ? 'Refused' : 'Missing'} import: ${spec} from ${from}${reason ? ` (${reason})` : ''}`)
+// Each import, resolved (within `within`) or warned of; one naming no file but a `verbatim` key is that key.
+function importsOf(content, from, options, verbatim, within = null) {
+  return extractSolImports(content).map((spec) => {
+    const { path, reason } = resolveImport(spec, from, options)
+    const found = path && (within === null || within.has(path)) ? path : !reason && verbatim.has(spec) ? spec : null
+    if (!found) console.warn(`[loader.solidity] ${reason ? 'Refused' : 'Missing'} import: ${spec} from ${from}${reason ? ` (${reason})` : ''}`)
+    return { spec, path: found, reason }
+  })
+}
 
 // A specifier naming no file but a stored key verbatim resolves to it.
 export function buildSolidityTree(sources, { remappings = [], baseDir, libs = [], host = diskHost, ownership = baseDir && solidityOwnership(baseDir, { host }) } = {}) {
@@ -239,14 +243,9 @@ export function buildSolidityTree(sources, { remappings = [], baseDir, libs = []
   const options = { remappings, baseDir, libs, ownership, host }
   for (const [path, content] of sources) {
     const specMap = new Map()
-    for (const spec of extractSolImports(content)) {
-      const r = resolveImport(spec, path, options)
-      const resolved = r.path && sources.has(r.path) ? r.path : !r.reason && sources.has(spec) ? spec : null
+    for (const { spec, path: resolved, reason } of importsOf(content, path, options, sources, sources)) {
       if (resolved) specMap.set(spec, resolved)
-      else {
-        warnUnresolved(spec, path, r.reason)
-        missing.push(r.reason ? { spec, from: path, reason: r.reason } : { spec, from: path })
-      }
+      else missing.push(reason ? { spec, from: path, reason } : { spec, from: path })
     }
     resolutions.set(path, specMap)
   }
@@ -255,37 +254,11 @@ export function buildSolidityTree(sources, { remappings = [], baseDir, libs = []
 
 // Entries are taken as verbatim import targets naming no file too (Foundry-style `import "src/A.sol"`).
 export function collectSolidityFilesFromDisk(baseDir, entries, remappings, { libs = [], host = diskHost, ownership = solidityOwnership(baseDir, { host }) } = {}) {
-  const sources = new Map()
   const knownEntries = new Set(entries)
-  const realBase = host.realpath(baseDir)
   const options = { remappings, baseDir, libs, ownership, host }
   for (const entry of entries) ownership.assert(entry, 'entry ')
-  for (let wave = entries; wave.length > 0;) {
-    const reads = [...new Set(wave)].filter((p) => !sources.has(p)).map((relPath) => {
-      try {
-        assertRealPathWithinBase(realBase, baseDir, relPath, host)
-        return [relPath, decodeUtf8(host.readFile(join(baseDir, relPath)), relPath)]
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          console.warn(`[loader.solidity] Missing import: ${relPath}`)
-          return null
-        }
-        throw err
-      }
-    })
-    const next = []
-    for (const [relPath, content] of reads.filter(Boolean)) {
-      sources.set(relPath, content)
-      for (const spec of extractSolImports(content)) {
-        const r = resolveImport(spec, relPath, options)
-        const resolved = r.path ?? (!r.reason && knownEntries.has(spec) ? spec : null)
-        if (resolved) next.push(resolved)
-        else warnUnresolved(spec, relPath, r.reason)
-      }
-    }
-    wave = next
-  }
-  return sources
+  const files = { decode: decodeUtf8, skipped: { ENOENT: '[loader.solidity] Missing import' }, host }
+  return collectFromDisk(baseDir, entries, files, (relPath, content) => importsOf(content, relPath, options, knownEntries).map(({ path }) => path).filter(Boolean))
 }
 
 // Symlinks followed as forge's walkdir (`follow_links`) collects a source dir: a linked directory whose real

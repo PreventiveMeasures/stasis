@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 
+import { compressBundle } from '@exodus/stasis-core/brotli'
 import { BUNDLE_FILE, LOCK_FILE } from '@exodus/stasis-core/util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed, heldToLockfile } from './bundle.js'
 import { githubToken, withNpmToken } from './tokens.js'
-import { bundledSummary, heldSummary, lockedSummary, lockfileOnlyError, unpackedSummary, writeBundleOf, writeFile } from './output.js'
+import { bundledSummary, checkLockfileOnly, heldSummary, lockedSummary, unpackedSummary, writeFile, writeOutput } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
 const NAME_MAX = 255
@@ -32,8 +33,7 @@ export function githubBundleFile({ github, directory, commit }, suffix = BUNDLE_
 // build, and the repo it records the build's, and is left as it is. One not there is written, where `lockfile` or
 // `lockfileOnly` asks for it, recording the repo as the bundle does.
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
-  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, brotliQuality, named: true }) : null
-  if (lockfileOnlyRefused !== null) throw new Error(`githubBundleCommand: ${lockfileOnlyRefused}`)
+  checkLockfileOnly('githubBundleCommand: ', { lockfileOnly, lockfile, output, brotliQuality, named: true })
   const locks = lockfile !== undefined || lockfileOnly
   // The local lockfile's mode is the environment's alone: a repo's `lock: frozen` pins its own stasis.lock.json.
   const mode = env.EXODUS_STASIS_LOCK || 'frozen'
@@ -55,7 +55,7 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
   let dest
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   if (lockfileOnly) bundle.serializedBytes()
-  else dest = await debugTimed('Wrote the bundle', () => writeBundleOf(cwd, output ?? named(BUNDLE_FILE), bundle, brotliQuality))
+  else dest = await debugTimed('Wrote the bundle', () => writeOutput(cwd, output ?? named(BUNDLE_FILE), compressBundle(bundle, brotliQuality)))
   if (lockData !== undefined) writeFile(lockAbs, lockData)
   const from = `${options.github}@${bundle.repo.commit}${directory ? `/${directory}` : ''}`
   const summarized = (summary, to) => summary(bundle.sources.size, bundle.modules, from, to)

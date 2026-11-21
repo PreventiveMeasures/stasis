@@ -8,7 +8,7 @@ import { utf8toString } from '@exodus/bytes/utf8.js'
 import { LockfileError, parseGitmodules } from '@preventive/lockfile/foundry.js'
 import { NO_ENTRY, lexists, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment, memoized, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, memoized, relativeEscapes, upsert } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
 
 // Only Windows' separator: on POSIX a `\\` is part of a name, and must not read as a directory boundary.
@@ -92,25 +92,23 @@ const DROPPABLE = ['branch', 'url']
 // Each submodule's last `path`, `url` and `branch` read by the library alone, dropping its branch, then url,
 // until it reads; failing closed: every path given it a dependency, if unnamed.
 function gitmodulesLeniently(text) {
-  const sections = new Map() // a submodule's name -> Map<key, its entry>
-  const paths = new Map() // a submodule's name -> every `path` given it
+  const sections = new Map() // a submodule's name -> its entry of each key, every `path` given it
   const notes = []
   for (const { section, subsection, header, keys } of readGitConfig(text)) {
     const variable = subsection === undefined ? section : `${section}.${subsection}`
     if (!variable?.startsWith('submodule.')) continue
     const name = variable.slice('submodule.'.length)
     if (section !== 'submodule') notes.push(`${header}, a section git reads as [submodule "${name}"]; reading it as that`)
-    const kept = nestedMap(sections, name)
-    const given = upsert(paths, name, () => [])
+    const { kept, paths } = upsert(sections, name, () => ({ kept: new Map(), paths: [] }))
     for (const entry of keys) {
       if (!SUBMODULE_KEYS.has(entry.key)) continue
-      if (entry.key === 'path') given.push(entry.value)
+      if (entry.key === 'path') paths.push(entry.value)
       if (entry.key !== 'branch' && kept.has(entry.key) && entry.value?.startsWith('-')) continue
       kept.set(entry.key, entry)
     }
   }
   const submodules = []
-  for (const [name, kept] of sections) {
+  for (const [name, { kept, paths }] of sections) {
     const before = submodules.length
     const header = `[submodule "${name.replaceAll(/["\\]/gu, '\\$&')}"]`
     const read = () => Object.values(parseGitmodules([header, ...[...kept.values()].map((entry) => entry.text), ''].join('\n'), { checkUrls: false }))
@@ -141,7 +139,7 @@ function gitmodulesLeniently(text) {
       }
     }
     const taken = new Set(submodules.slice(before).map((s) => s.path))
-    for (const path of paths.get(name).map(normalSubmodulePath)) {
+    for (const path of paths.map(normalSubmodulePath)) {
       if (path === null || taken.has(path)) continue
       taken.add(path)
       submodules.push({ path, url: undefined, branch: undefined })

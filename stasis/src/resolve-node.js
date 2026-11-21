@@ -2,7 +2,7 @@ import Module, { isBuiltin } from 'node:module'
 import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { packageJSONStat, packageJSONText } from '@exodus/stasis-core/bundle-util'
+import { invalidPackageConfig, packageJSONStat, packageJSONText } from '@exodus/stasis-core/bundle-util'
 import { isPlainObject } from '@exodus/stasis-core/util'
 import { hostMemo } from './vfs-bundle/lazy.js'
 
@@ -98,7 +98,7 @@ export function createNodeResolver(host) {
     } catch (cause) {
       return codedError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}: ${cause.message}`)
     }
-    if (!isPlainObject(data)) return codedError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}.`)
+    if (!isPlainObject(data)) return invalidPackageConfig(pjsonPath)
     const string = (value) => (typeof value === 'string' ? value : undefined)
     const map = (value) => (typeof value === 'string' || (typeof value === 'object' && value !== null) ? value : undefined)
     return { exists: true, path: pjsonPath, name: string(data.name), main: string(data.main), exports: map(data.exports), imports: map(data.imports) }

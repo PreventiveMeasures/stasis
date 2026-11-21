@@ -51,19 +51,14 @@ function unaudited({ ecosystem, version, vendoredIn }) {
 // The dependencies whose real code `file` carries, `{ ecosystem, name, version, github }` (the repository recorded,
 // else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`.
 export function collectPackagesFromFile(file) {
-  const out = []
   const { kind, artifact } = parseFileWithKind(file)
-  for (const { name, version, ecosystem, repo, files, host, isEvidence } of auditedRecords(artifact.modules)) {
-    if (!Object.keys(files).some(isEvidence)) continue
-    if (host !== undefined) {
-      out.push({ ecosystem, name, version, vendoredIn: host })
-      continue
-    }
+  const records = auditedRecords(artifact.modules).filter(({ files, isEvidence }) => Object.keys(files).some(isEvidence))
+  return records.map(({ name, version, ecosystem, repo, files, host }) => {
+    if (host !== undefined) return { ecosystem, name, version, vendoredIn: host }
     let github = ecosystem === 'github' ? undefined : repo?.github
     if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
-    out.push({ ecosystem, name, version, ...(github === undefined ? {} : { github }) })
-  }
-  return out
+    return { ecosystem, name, version, ...(github === undefined ? {} : { github }) }
+  }).toArray()
 }
 
 // Each dependency of `modules` the audit may count: first-party code never reaches a public registry.
@@ -152,14 +147,10 @@ function reasonIndex(files) {
   return { byPkg, consumers }
 }
 
-const BUNDLE_METRO = 'bundle:metro'
-const METRO = 'metro'
-
 // `bundle:metro` named `metro` where none records `metro`, so it can't be taken for one.
 function namedIndex({ byPkg, consumers }) {
-  const name = consumers.has(BUNDLE_METRO) && !consumers.has(METRO)
-    ? (consumer) => (consumer === BUNDLE_METRO ? METRO : consumer)
-    : (consumer) => consumer
+  const renamed = consumers.has('bundle:metro') && !consumers.has('metro')
+  const name = (consumer) => (renamed && consumer === 'bundle:metro' ? 'metro' : consumer)
   return {
     byPkg: new Map([...byPkg].map(([key, set]) => [key, new Set([...set].map(name))])),
     consumers: new Set([...consumers].map(name)),
@@ -183,10 +174,7 @@ function reasonCell(adv, reasonsByPkg, whyByPkg, reasonFilter) {
   const parts = new Set(adv.versions.flatMap((v) => [...(source.get(keyOf(adv, v)) ?? [])]))
   if (chains) {
     // Grouping re-unites a consumer's lines split across versions; within a group collectWhy's order stands.
-    const byConsumer = Map.groupBy(parts, (line) => {
-      const i = line.indexOf(': ')
-      return i === -1 ? '' : line.slice(0, i)
-    })
+    const byConsumer = Map.groupBy(parts, (line) => /^(.*?): /su.exec(line)?.[1] ?? '')
     return [...byConsumer.keys()].toSorted(byConsumerOrder).flatMap((c) => byConsumer.get(c)).join('\n')
   }
   return [...parts].filter((c) => !reasonFilter || c === reasonFilter).toSorted(byConsumerOrder).join(', ')
@@ -242,10 +230,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   const all = collectPackages(files)
   const packages = reason ? all.filter((pkg) => indexed().byPkg.get(packageKey(pkg, pkg.vendoredIn?.[0]))?.has(reason)) : all
-  const skipped = packages.flatMap((pkg) => {
-    const because = unaudited(pkg)
-    return because === undefined ? [] : [{ ...pkg, because }]
-  })
+  const skipped = packages.map((pkg) => ({ ...pkg, because: unaudited(pkg) })).filter((pkg) => pkg.because !== undefined)
   const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
   // The npm packages --reason's consumer didn't record, and those `lockfile` locks alone, each once.
   const keyOfPkg = (pkg) => keyOf(pkg, pkg.version)
@@ -365,10 +350,9 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
     out.write(`${icons ? table.split('\n').map((line) => (line.includes('\x1bP') ? ROOM_BELOW + line : line)).join('\n') : table}\n`)
   }
   if (skipped.length > 0) {
-    const names = skipped.map((pkg) => `${pkg.ecosystem} ${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`}`)
-    const pad = Math.max(...names.map((name) => name.length))
-    const lines = skipped.map((pkg, i) => `  ${names[i].padEnd(pad)}  ${paintErr(DIM, pkg.because)}`)
-    err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines.join('\n')}\n`)
+    const named = (pkg) => `${pkg.ecosystem} ${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`}`
+    const lines = aligned(skipped.map((pkg) => [named(pkg), paintErr(DIM, pkg.because)]))
+    err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines}\n`)
   }
   err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr, coloredErr)}\n`)
   printMalware(npmMalware, err, paintErr, coloredErr)
@@ -377,9 +361,13 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
 function printMalware(rows, err, paint, colored) {
   if (rows.length === 0) return
   const packages = new Set(rows.map((row) => `${row.package}@${row.installed}`)).size
-  const names = rows.map((row) => `${row.package} ${row.installed}`)
-  const pad = (list) => Math.max(...list.map((text) => text.length))
-  const [nameWidth, idWidth, titleWidth] = [pad(names), pad(rows.map((row) => row.id)), pad(rows.map((row) => row.title))]
-  const lines = rows.map((row, i) => `  ${names[i].padEnd(nameWidth)}  ${row.id.padEnd(idWidth)}  ${row.reason ? `${row.title.padEnd(titleWidth)}  ${paint(DIM, row.reason)}` : row.title}`)
-  err.write(`\n${paint(SEVERITY_TONES.malware, badge('malware', 'malware', colored))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}:\n${lines.join('\n')}\n`)
+  const lines = aligned(rows.map((row) => [`${row.package} ${row.installed}`, row.id, row.title, ...(row.reason ? [paint(DIM, row.reason)] : [])]))
+  err.write(`\n${paint(SEVERITY_TONES.malware, badge('malware', 'malware', colored))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}:\n${lines}\n`)
+}
+
+// Rows of cells two spaces apart, indented two, all but a row's last padded to the widest of its column.
+function aligned(rows) {
+  const widths = []
+  for (const cells of rows) for (const [i, cell] of cells.entries()) widths[i] = Math.max(widths[i] ?? 0, cell.length)
+  return rows.map((cells) => `  ${cells.map((cell, i) => (i < cells.length - 1 ? cell.padEnd(widths[i]) : cell)).join('  ')}`).join('\n')
 }

@@ -12,10 +12,6 @@ const newUuid = () => globalThis.crypto.randomUUID()
 // the registry's package, which one installed from a directory (`npm:directory`) is not.
 const PURL_TYPES = new Set(['npm', 'composer', 'cargo', 'github'])
 
-// An artifact's ecosystem by its formats, PHP's Composer, any other npm: its untagged buckets', and every
-// bucket's in an artifact predating the per-dependency `ecosystem` field.
-const detectEcosystem = (artifact) => ([...(artifact.formats?.values?.() ?? [])].includes('php') ? 'composer' : 'npm')
-
 // For a pre-`ecosystem` artifact: a dir is first-party outside a `node_modules` segment (`foo_node_modules/x` is),
 // but in a Composer bundle, whose vendor packages live outside one.
 function classifyScope(ecosystem, dir) {
@@ -36,11 +32,7 @@ function splitName(ecosystem, name) {
 // scope -> `%40`), Composer and GitHub names lowercased, per the purl spec; with no version, a bare-name purl.
 export function buildPurl(ecosystem, rawName, version) {
   if (!PURL_TYPES.has(ecosystem)) return null
-  let { group, name } = splitName(ecosystem, rawName)
-  if (ecosystem === 'composer' || ecosystem === 'github') {
-    group = group?.toLowerCase()
-    name = name.toLowerCase()
-  }
+  const { group, name } = splitName(ecosystem, ecosystem === 'composer' || ecosystem === 'github' ? rawName.toLowerCase() : rawName)
   const namespace = group ? `${encodeURIComponent(group)}/` : ''
   const at = version == null ? '' : `@${encodeURIComponent(version)}`
   return `pkg:${ecosystem}/${namespace}${encodeURIComponent(name)}${at}`
@@ -66,19 +58,18 @@ export function collectComponents(artifacts) {
     const records = [...artifact.modules]
     // An artifact where no bucket carries `ecosystem` predates the field: classifyScope tells deps apart.
     const tagged = records.some(([, m]) => m.ecosystem !== undefined)
-    const fileEcosystem = detectEcosystem(artifact)
+    // Its ecosystem by its formats, PHP's Composer, any other npm: its untagged buckets', and every bucket's in an
+    // artifact predating the per-dependency `ecosystem` field.
+    const fileEcosystem = [...(artifact.formats?.values?.() ?? [])].includes('php') ? 'composer' : 'npm'
     for (const [dir, { name, version, ecosystem, vendored }] of records) {
       if (!name) continue
       const eco = ecosystem ?? fileEcosystem
       const scope = ecosystem !== undefined ? 'dependency' : tagged ? 'workspace' : classifyScope(fileEcosystem, dir)
       if (!version && scope !== 'workspace') continue
       const key = `${eco} ${name} ${version ?? ''}`
-      let component = seen.get(key)
-      if (component) {
-        if (scope === 'workspace') component.scope = 'workspace'
-      } else {
-        seen.set(key, component = { name, version: version ?? undefined, scope, ecosystem: eco, purl: buildPurl(eco, name, version) })
-      }
+      if (!seen.has(key)) seen.set(key, { name, version: version ?? undefined, scope, ecosystem: eco, purl: buildPurl(eco, name, version) })
+      const component = seen.get(key)
+      if (scope === 'workspace') component.scope = 'workspace'
       // Across artifacts, the union by directory; the first to list one names its package.
       for (const [sub, v] of Object.entries(vendored ?? {})) {
         component.vendored ??= new Map()
@@ -93,11 +84,11 @@ export function collectComponents(artifacts) {
   return [...seen.values()].toSorted(compareComponents)
 }
 
-// The component the SBOM is *about*: the lone workspace package, none with zero or several.
+// The component the SBOM is *about*: the lone workspace package, none with zero or several; the workspace packages too.
 function selectPrimary(components) {
   const workspace = components.filter((c) => c.scope === 'workspace')
   const primary = workspace.length === 1 ? workspace[0] : null
-  return { primary, rest: primary ? components.filter((c) => c !== primary) : components }
+  return { primary, rest: primary ? components.filter((c) => c !== primary) : components, workspace }
 }
 
 // RFC 3339 to whole seconds.
@@ -110,7 +101,7 @@ const bomRef = (c) => c.purl ?? `${c.ecosystem}:${c.name}${c.version == null ? '
 // packages, else every package. A package vendored into a dependency comes after the rest, CONTAINED by that
 // dependency, its directory there its `packageFileName`.
 export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
-  const { primary, rest } = selectPrimary(components)
+  const { primary, rest, workspace } = selectPrimary(components)
   const ordered = primary ? [primary, ...rest] : components
   const ids = new Map(ordered.map((c, i) => [c, `SPDXRef-Package-${i}`]))
 
@@ -136,7 +127,6 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
     relate('SPDXRef-DOCUMENT', ids.get(primary), 'DESCRIBES')
     for (const c of rest) if (c.scope === 'dependency') relate(ids.get(primary), ids.get(c), 'DEPENDS_ON')
   } else {
-    const workspace = ordered.filter((c) => c.scope === 'workspace')
     for (const c of workspace.length > 0 ? workspace : ordered) relate('SPDXRef-DOCUMENT', ids.get(c), 'DESCRIBES')
   }
   for (const { host, id } of vendored) relate(ids.get(host), id, 'CONTAINS')

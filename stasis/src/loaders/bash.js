@@ -3,10 +3,9 @@
 // commands, `$VAR` paths, absolute or escaping paths) is best-effort and dropped.
 
 import { isUtf8 } from 'node:buffer'
-import { realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { diskHost } from '@exodus/stasis-core/host'
 import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { applyToDir } from './paths.js'
@@ -79,35 +78,46 @@ export function buildBashTree(sources) {
   return { sources, resolutions, missing }
 }
 
-// A ref missing on disk warns and is skipped without aborting the walk.
-export async function collectBashFilesFromDisk(baseDir, entries) {
-  const sources = new Map()
-  const realBase = realpathSync(baseDir)
+// `bytes` of a `what` file as UTF-8: one that isn't is refused rather than carried with U+FFFD in it.
+export const utf8Of = (what) => (bytes, relPath) => {
+  if (!isUtf8(bytes)) throw new Error(`${what} is not valid UTF-8: ${relPath}`)
+  return bytes.toString('utf8')
+}
 
-  const read = async (relPath) => {
+// The files `entries` reach under `baseDir` through `host`, wave by wave, each `decode`d, `refsOf(relPath, content)`
+// the paths each one reaches in turn. One whose read fails with a code `skipped` has is warned of as it says and left
+// out without aborting the walk.
+export function collectFromDisk(baseDir, entries, { decode, skipped, host = diskHost }, refsOf) {
+  const sources = new Map()
+  const realBase = host.realpath(baseDir)
+  const read = (relPath) => {
     try {
-      assertRealPathWithinBase(realBase, baseDir, relPath)
-      const bytes = await readFile(join(baseDir, relPath))
-      if (!isUtf8(bytes)) throw new Error(`Shell script is not valid UTF-8: ${relPath}`)
-      return [relPath, bytes.toString('utf8')]
+      assertRealPathWithinBase(realBase, baseDir, relPath, host)
+      return [relPath, decode(host.readFile(join(baseDir, relPath)), relPath)]
     } catch (err) {
-      // A slash ref can resolve to a directory (`source ./lib`).
-      if (err.code !== 'ENOENT' && err.code !== 'EISDIR') throw err
-      console.warn(`[loader.bash] ${err.code === 'ENOENT' ? 'Missing file' : 'Skipping directory reference'}: ${relPath}`)
+      if (!Object.hasOwn(skipped, err.code)) throw err
+      console.warn(`${skipped[err.code]}: ${relPath}`)
       return null
     }
   }
-
-  const processWave = async (wave) => {
-    if (wave.size === 0) return
-    const next = new Set()
-    for (const [relPath, content] of (await Promise.all([...wave].map(read))).filter(Boolean)) {
+  for (let wave = entries; wave.length > 0;) {
+    const reads = [...new Set(wave)].filter((p) => !sources.has(p)).map(read)
+    wave = []
+    for (const [relPath, content] of reads.filter(Boolean)) {
       sources.set(relPath, content)
-      for (const ref of extractBashCalls(content)) next.add(resolveBashCall(ref, relPath, { baseDir }))
+      for (const ref of refsOf(relPath, content)) wave.push(ref)
     }
-    await processWave(new Set([...next].filter((p) => p && !sources.has(p))))
   }
-
-  await processWave(new Set(entries))
   return sources
+}
+
+// A slash ref can resolve to a directory (`source ./lib`).
+const BASH_FILES = {
+  decode: utf8Of('Shell script'),
+  skipped: { ENOENT: '[loader.bash] Missing file', EISDIR: '[loader.bash] Skipping directory reference' },
+}
+
+export async function collectBashFilesFromDisk(baseDir, entries) {
+  return collectFromDisk(baseDir, entries, BASH_FILES, (relPath, content) =>
+    extractBashCalls(content).map((ref) => resolveBashCall(ref, relPath, { baseDir })).filter(Boolean))
 }

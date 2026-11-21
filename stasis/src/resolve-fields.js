@@ -12,6 +12,7 @@ import {
   isSourceFile,
   locatePackage,
   nearestPackage,
+  outsideNodeModules,
   readManifest,
   resolveTypescriptFallback,
   tsconfigOutputsOf,
@@ -43,18 +44,16 @@ function mergeRedirectMap(pkg, mainFields) {
   return map
 }
 
+// Map keys are strings, so a miss gets undefined.
+const redirect = (map, candidates) => map.get(candidates.find((cand) => map.has(cand)))
+const matchRedirect = (map, relPath) => redirect(map, [relPath, `${relPath}.js`, `${relPath}.json`])
+
 // As esbuild maps the package entry: the extension-stripped bare spelling is no candidate, esbuild taking it as a
-// bare module name (an extensionless main's is `bare` itself, which it matches).
-function resolveEntryThroughMap(map, main) {
-  if (map.size === 0) return { entry: main }
+// bare module name (an extensionless main's is `bare` itself, which it matches). False where the map disables it.
+function entryThroughMap(map, main) {
   const bare = main.replace(/^\.\//u, '')
   const stripped = bare.replace(/\.(?:js|json)$/u, '')
-  for (const cand of [`./${bare}`, bare, `./${stripped}`, `./${stripped}.js`, `${stripped}.js`, `./${stripped}.json`, `${stripped}.json`]) {
-    const v = map.get(cand)
-    if (typeof v === 'string') return { entry: v }
-    if (v === false) return { empty: true }
-  }
-  return { entry: main }
+  return redirect(map, [`./${bare}`, bare, `./${stripped}`, `./${stripped}.js`, `${stripped}.js`, `./${stripped}.json`, `${stripped}.json`]) ?? main
 }
 
 // By real path, as Node, Metro and esbuild record a file: under pnpm a package's imports resolve only from where it lies.
@@ -66,17 +65,8 @@ function fileResolution(path, host) {
   }
 }
 
-// Map keys are strings, so a miss gets undefined.
-const matchRedirect = (map, relPath) => map.get([relPath, `${relPath}.js`, `${relPath}.json`].find((cand) => map.has(cand)))
-
 const isPathSpec = (spec) => spec.startsWith('.') || isAbsolute(spec)
 const pathFrom = (dir, spec) => (isAbsolute(spec) ? spec : resolvePath(dir, spec))
-
-// Each resolver reads its own manifests, so a build on the disk reads each as it is then.
-function manifestReader(host) {
-  const manifests = hostMemo(host)
-  return (path) => manifests(path, () => readManifest(path, host))
-}
 
 export const METRO_SOURCE_EXTS = metroDefaults.sourceExts
 export const METRO_ASSET_EXTS = new Set(metroDefaults.assetExts)
@@ -88,7 +78,7 @@ function typescriptView(view, { outputs, host }) {
   const sibling = (path) => typescriptSiblings(path).find((candidate) => view.isFile(candidate)) ?? null
   const source = (path) => {
     const pick = sibling(path) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : sibling(input)), { outputs, host })
-    return pick === null || inNodeModules(pick, host) ? null : pick
+    return outsideNodeModules(pick, host)
   }
   const substituted = (path) => (view.isFile(path) || view.isDirectory(path) ? null : source(path))
   return {
@@ -118,14 +108,8 @@ function resolveSourceFile(base, opts) {
     if (hit) return hit
   }
   // Not for a directory: resolveFileOrDir probes its index, which maps.
-  if (opts.typescript && !isDir(base, opts.host)) {
-    const source = (input) => {
-      const hit = resolveSourceFile(input, { ...opts, outputs: null })
-      return hit === null || inNodeModules(hit, opts.host) ? null : hit
-    }
-    return fromOutputSource(base, source, opts)
-  }
-  return null
+  if (!opts.typescript || isDir(base, opts.host)) return null
+  return fromOutputSource(base, (input) => outsideNodeModules(resolveSourceFile(input, { ...opts, outputs: null }), opts.host), opts)
 }
 
 // `exports` is not consulted: Node applies it only to bare package names.
@@ -136,17 +120,16 @@ function resolveFileOrDir(base, opts, tried) {
   if (isDir(base, opts.host)) {
     const dpkg = opts.read(join(base, 'package.json'))
     if (dpkg) {
-      const r = resolveEntryThroughMap(mergeRedirectMap(dpkg, opts.mainFields), packageEntry(dpkg, opts.mainFields))
-      if (r.empty) return { empty: true }
+      const entry = entryThroughMap(mergeRedirectMap(dpkg, opts.mainFields), packageEntry(dpkg, opts.mainFields))
+      if (entry === false) return { empty: true }
       // Node's LOAD_AS_DIRECTORY: `main` as a file, else as a directory index; a broken one falls back to the index.
-      const entryBase = join(base, r.entry)
+      const entryBase = join(base, entry)
       const entryOpts = { ...opts, pkgDir: base } // the package naming the entry, for its unbuilt output
       const inner = asResolution(resolveSourceFile(entryBase, entryOpts) ?? resolveSourceFile(join(entryBase, 'index'), entryOpts))
       if (inner) return inner
       tried.push(entryBase)
     }
-    const index = asResolution(resolveSourceFile(join(base, 'index'), opts))
-    if (index) return index
+    return asResolution(resolveSourceFile(join(base, 'index'), opts))
   }
   return null
 }
@@ -166,14 +149,15 @@ export function createFieldResolver({
   host = diskHost,
   kept,
 } = {}) {
-  const read = manifestReader(host)
+  // Each resolver reads its own manifests, so a build on the disk reads each as it is then.
+  const manifests = hostMemo(host)
+  const read = (path) => manifests(path, () => readManifest(path, host))
   const outputs = typescript ? typescriptPaths?.outputs ?? tsconfigOutputsOf({ host }) : null
   const opts = { platform, preferNative, sourceExts, mainFields, typescript, outputs, host, read }
   // An importer in node_modules gets no --typescript mapping, wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin, so a package named like one resolves through this, builtins off.
-  let packageResolver
-  const nodeResolver = () => (packageResolver ??= createNodeResolver(host))
+  const packageResolver = createNodeResolver(host)
   // --typescript resolves Metro's misses again over typescriptView, never from node_modules, so it never overrides Metro.
   const metroResolver = memoized(({ conditionNames, substituting }) => {
     const view = metroHost(host, mainFields)
@@ -190,10 +174,9 @@ export function createFieldResolver({
     }
     return scanResolution(resolution, resolution === null && isBuiltin(specifier) && !remapped())
   }
-  // `callConditions`: scan's, by the parent's format. What a miss tried goes in `tried`, the missTargets.
-  const resolve = function resolve(parentFile, specifier, callConditions, tried) {
+  // `conds`: scan's, by the parent's format. What a miss tried goes in `tried`, the missTargets.
+  const resolve = (parentFile, specifier, conds, tried) => {
     const fileOpts = typescript && inNodeModules(parentFile, host) ? fromNodeModules : opts
-    const conds = new Set(callConditions ?? conditions)
     const probe = (base) => {
       const hit = resolveFileOrDir(base, fileOpts, tried)
       if (hit === null) tried.push(base)
@@ -202,7 +185,7 @@ export function createFieldResolver({
     const viaNode = (spec) => {
       try {
         if (!isBuiltin(spec)) return fileResolution(host.resolve(parentFile, spec, conds), host)
-        return fileResolution(nodeResolver().resolve(parentFile, spec, conds, { builtins: false }), host)
+        return fileResolution(packageResolver.resolve(parentFile, spec, conds, { builtins: false }), host)
       } catch (error) {
         if (typeof error.target === 'string') tried.push(error.target)
         return null
@@ -240,11 +223,10 @@ export function createFieldResolver({
     return viaPackage(spec)
   }
   // --typescript: a miss of the whole field flow, and only a miss, gets the scanner's fallback too.
-  const resolveWithTypescriptFallback = (parentFile, specifier, callConditions, tried) => {
-    const resolved = resolve(parentFile, specifier, callConditions, tried)
+  const resolveWithTypescriptFallback = (parentFile, specifier, conds, tried) => {
+    const resolved = resolve(parentFile, specifier, conds, tried)
     // Under --metro an asset is Metro's asset rule's to resolve, as tsc never does.
     if (resolved || !typescript || (metro && isAssetFile(specifier, assetExts))) return resolved
-    const conds = new Set(callConditions ?? conditions)
     const hit = resolveTypescriptFallback(parentFile, specifier, { conditions: conds, paths: typescriptPaths, host })
     if (hit != null) return fileResolution(hit, host)
     const aliased = typescriptPaths !== null && !RELATIVE_REQUEST.test(specifier) && !isAbsolute(specifier) && !specifier.startsWith('#') && !inNodeModules(parentFile, host)
@@ -255,7 +237,7 @@ export function createFieldResolver({
   const resolutions = hostMemo(host, { across: kept })
   const of = (parentFile, specifier, callConditions) => resolutions(`${dirname(parentFile)}\0${specifier}\0${[...callConditions ?? conditions].join('\0')}`, () => {
     const tried = []
-    return { resolution: resolveWithTypescriptFallback(parentFile, specifier, callConditions, tried), tried }
+    return { resolution: resolveWithTypescriptFallback(parentFile, specifier, new Set(callConditions ?? conditions), tried), tried }
   })
   return Object.assign((parentFile, specifier, callConditions) => of(parentFile, specifier, callConditions).resolution, {
     missTargets: (parentFile, specifier, callConditions) => of(parentFile, specifier, callConditions).tried,
