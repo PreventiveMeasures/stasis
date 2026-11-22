@@ -1076,8 +1076,10 @@ bundle (`stasis bundle src/styles.css`).
 
 - Its imports are read off CSS's own tokens, so a comment, a string or an
   escape hides or spells one as it does for the loader: each `@import`, each
-  `url()`, the strings of an `image-set()`, and a CSS module's
-  `composes: … from` and `@value … from`.
+  `url()` and the strings of an `image-set()` in a declaration, and a CSS
+  module's `composes: … from` and `@value … from`. A `url()` in an at-rule's
+  prelude (`@supports (background: url(x.png))`, `@namespace`) loads nothing,
+  and is none, as css-loader takes an asset's URL from a declaration alone.
 - An `@import`, `composes` or `@value` resolves as css-loader's import resolver
   does: relative to the stylesheet first (`x.css` is `./x.css`), then as a
   package's (`@import "tailwindcss"`), by the `style` condition of its
@@ -1086,7 +1088,8 @@ bundle (`stasis bundle src/styles.css`).
   resolver does: the file as written, relative first, then a package's by the
   `asset` condition.
 - A URL's query and fragment are not the file's (`font.woff2?v=1#iefix`), and
-  it is URL-decoded. One that names no file is none of its imports: `data:`,
+  its path is URL-decoded, a reserved character too (`hash%23mark.svg` names
+  `hash#mark.svg`). One that names no file is none of its imports: `data:`,
   any other scheme (`https:`), `//cdn…`, `#id`, and a path from the site's root
   (`/grid.svg`), which Next serves from `public`: name that in
   [`extra`](file-formats.md#stasisconfigjson).

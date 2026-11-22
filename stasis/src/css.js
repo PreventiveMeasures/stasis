@@ -125,11 +125,16 @@ export function cssSpecifiers(source) {
   // An `@import`'s first token is its specifier; a `composes:` declaration's or an `@value` rule's `from` names one.
   let importing = false
   let fromRule = false
+  // In an at-rule's prelude, up to its block or `;`: a url() there (`@supports (background: url(x.png))`) loads
+  // nothing, as css-loader takes an asset's URL from a declaration alone.
+  let prelude = false
   // The last token, a name's text or a delimiter: a declaration's name follows a `{` or a `;`.
   let last = null
   let lastName = null
   const url = (spec) => {
-    if (spec !== null) specs.push({ kind: importing ? KINDS.import : KINDS.url, spec })
+    if (spec === null) return
+    if (importing) specs.push({ kind: KINDS.import, spec })
+    else if (!prelude) specs.push({ kind: KINDS.url, spec })
   }
 
   let i = 0
@@ -145,7 +150,7 @@ export function cssSpecifiers(source) {
       const fn = functions.at(-1)
       if (importing && functions.length === 0) specs.push({ kind: KINDS.import, spec: text })
       else if (fromRule && lastName === 'from') specs.push({ kind: KINDS.from, spec: text })
-      else if (fn === 'image-set' || fn === '-webkit-image-set') specs.push({ kind: KINDS.url, spec: text })
+      else if (!prelude && (fn === 'image-set' || fn === '-webkit-image-set')) specs.push({ kind: KINDS.url, spec: text })
       importing = false
       last = 'string'
       lastName = null
@@ -157,6 +162,7 @@ export function cssSpecifiers(source) {
       const at = name.toLowerCase()
       importing = at === 'import'
       fromRule = at === 'value'
+      prelude = true
       last = 'at'
       lastName = null
       continue
@@ -199,6 +205,7 @@ export function cssSpecifiers(source) {
     if (c === ';' || c === '{' || c === '}') {
       fromRule = false
       importing = false
+      prelude = false
       functions.length = 0
     } else if (c !== ':' && c !== ',') {
       importing = false
@@ -216,11 +223,12 @@ export function cssSpecifiers(source) {
 // root (`/images/x.png`), which Next serves from `public`.
 const isRequestable = (spec) => spec !== '' && !spec.startsWith('#') && !spec.startsWith('/') && !/^[A-Za-z][\d+.A-Za-z-]*:/u.test(spec)
 
-// As css-loader takes a URL: its query and fragment off (`font.woff2?v=1#iefix`), decoded.
+// A URL's file: its query and fragment off (`font.woff2?v=1#iefix`), then its path decoded, a reserved character
+// too (`hash%23mark.svg` names `hash#mark.svg`); as it is where it doesn't decode.
 function requestOf(spec) {
   const bare = spec.replace(/[?#].*$/su, '')
   try {
-    return decodeURI(bare)
+    return decodeURIComponent(bare)
   } catch {
     return bare
   }
@@ -230,9 +238,9 @@ function requestOf(spec) {
 // any other relative to the stylesheet first, then a package's (`@import 'tailwindcss'`). None for one it doesn't
 // resolve.
 export function cssRequests(spec) {
-  if (!isRequestable(spec)) return []
-  const request = requestOf(spec)
-  if (request === '') return []
+  // Decoded, it is held to the same rule: `%2Fetc%2Fpasswd` is a path from the root too.
+  const request = isRequestable(spec) ? requestOf(spec) : ''
+  if (!isRequestable(request)) return []
   if (request.startsWith('~')) return [request.slice(1)]
   if (/^\.\.?(?:\/|$)/u.test(request)) return [request]
   return [`./${request}`, request]

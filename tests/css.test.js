@@ -73,6 +73,21 @@ test('cssSpecifiers reads a stylesheet\'s imports off its tokens, as css-loader 
   ])
   // No import where the grammar has none: a selector, a property named like one, a string out of url()/image-set().
   t.assert.deepStrictEqual(cssSpecifiers('.composes:hover { x: "a.css" } .url { y: 1 } @media print { .z { composes: k; } }'), [])
+  // Nor an at-rule's prelude, where a url() tests a feature or names a namespace, loading nothing; its block's
+  // declarations do, nested ones too, as an @import's specifier and an @value's `from` are imports.
+  t.assert.deepStrictEqual(cssSpecifiers([
+    '@supports (background: url(missing.png)) { .x { background: url(kept.png); b: image-set("set.png" 1x) } }',
+    '@import url(a.css) supports(background: url(feature.png));',
+    '@namespace svg url(http://www.w3.org/2000/svg);',
+    '@value x from "./v.css";',
+    '.a { @media (min-width: 1px) { background: url(nested.png) } }',
+  ].join('\n')), [
+    { kind: 'css-url', spec: 'kept.png' },
+    { kind: 'css-url', spec: 'set.png' },
+    { kind: 'css-import', spec: 'a.css' },
+    { kind: 'css-composes', spec: './v.css' },
+    { kind: 'css-url', spec: 'nested.png' },
+  ])
 })
 
 test('cssRequests: what a URL requests, relative first, none for one naming no file', (t) => {
@@ -84,6 +99,10 @@ test('cssRequests: what a URL requests, relative first, none for one naming no f
     '~bootstrap/dist/css/bootstrap.css': ['bootstrap/dist/css/bootstrap.css'],
     'font.woff2?v=1#iefix': ['./font.woff2', 'font.woff2'],
     'a%20b.png': ['./a b.png', 'a b.png'],
+    // A reserved character decodes too; a request decoded to a path from the root is none.
+    'hash%23mark.svg': ['./hash#mark.svg', 'hash#mark.svg'],
+    '%2Fetc%2Fpasswd': [],
+    'bad%E0%A4%A.png': ['./bad%E0%A4%A.png', 'bad%E0%A4%A.png'],
     '/public.png': [],
     '//cdn.example.com/x.png': [],
     'https://example.com/x.png': [],
@@ -168,6 +187,16 @@ test('a stylesheet\'s miss breaks the build where it is linked eagerly, as an im
   writeTree(tmp, { ...app, 'src/entry.js': "export const load = () => import('./base.css')\n", 'src/base.css': '@import "./gone.css";\n' })
   const lazy = await buildBundle({ cwd: tmp, entries: ['src/entry.js'] })
   t.assert.deepStrictEqual([...lazy.formats.keys()].toSorted(), ['src/base.css', 'src/entry.js'])
+}))
+
+test('a url() names the file its decoded path does, and one testing a feature names none', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': json({ name: 'app', version: '1.0.0' }),
+    'entry.css': "@supports (background: url(missing.png)) { .x { background: url('./hash%23mark.svg') } }\n",
+    'hash#mark.svg': '<svg/>',
+  })
+  const bundle = await buildBundle({ cwd: tmp, entries: ['entry.css'], resources: ['svg', 'png'] })
+  t.assert.deepStrictEqual(edgesOf(bundle)['entry.css'], { './hash%23mark.svg': 'hash#mark.svg' })
 }))
 
 test('a stylesheet that is no UTF-8 text fails as one that doesn\'t parse', withTmp(async (t, tmp) => {
