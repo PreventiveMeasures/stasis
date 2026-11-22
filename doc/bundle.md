@@ -1104,7 +1104,8 @@ bundle (`stasis bundle src/styles.css`).
   `@plugin`, `@source` and `@reference`), naming files the plugin reads: name
   those in [`extra`](file-formats.md#stasisconfigjson).
 - `stasis build` builds a stylesheet an entry imports with esbuild's `css`
-  loader, and what its `url()`s name with the build's `--loader`s (see
+  loader, and what its `url()`s name with the build's `--loader`s, each URL's
+  query and fragment kept on the URL it emits (see
   [build](build.md#scope-and-language)).
 
 An older stasis carried a stylesheet as a `resource`, where `--resources` named

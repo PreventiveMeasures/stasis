@@ -1300,6 +1300,40 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.css'), 'utf-8'), captureCss)
   }))
 
+  // esbuild resolves a stylesheet's `url(./icons.svg#check)` to the file and keeps `#check` as the result's
+  // `suffix`, which the emitted URL carries. The edge records the URL as written, so a capture takes esbuild's
+  // suffix of it, and load mode gives it back from the specifier: the replayed CSS keeps it too.
+  test('a stylesheet URL\'s query and fragment survive capture and bundle=load', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    writeFileSync(join(capDir, 'src', 'entry.mjs'), "import './styles.css'\n")
+    writeFileSync(join(capDir, 'src', 'styles.css'), ".x { background: url('./icons.svg#check'), url(./f.woff2?v=2#iefix) }\n")
+    writeFileSync(join(capDir, 'src', 'icons.svg'), '<svg/>')
+    writeFileSync(join(capDir, 'src', 'f.woff2'), 'WOFF2')
+    const env = {
+      STASIS_TEST_ESBUILD_LOADER: JSON.stringify({ '.svg': 'file', '.woff2': 'file' }),
+      STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ resources: ['svg', 'woff2'] }),
+    }
+
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), env)
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    const plainCss = readFileSync(join(tmp, 'out-plain', 'entry.css'), 'utf-8')
+    t.assert.match(plainCss, /icons-[A-Z0-9]+\.svg#check"/u)
+    t.assert.match(plainCss, /f-[A-Z0-9]+\.woff2\?v=2#iefix"/u)
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), env) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-capture', 'entry.css'), 'utf-8'), plainCss)
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['src/styles.css'], { './icons.svg#check': 'src/icons.svg', './f.woff2?v=2#iefix': 'src/f.woff2' })
+
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), env) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.css'), 'utf-8'), plainCss)
+  }))
+
   // `browser` maps apply only under platform:'browser': on node the same package bundles the real
   // files and externalizes fs, and the plugin must attest them as usual.
   test('platform=node: `browser` field maps stay inert, as without the plugin', withTmp(async (t, tmp) => {

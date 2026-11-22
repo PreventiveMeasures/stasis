@@ -209,18 +209,21 @@ test('stasis build builds a bundle\'s stylesheets with esbuild\'s css loader, fr
   writeTree(tmp, {
     'package.json': json({ name: 'app', version: '1.0.0', type: 'module' }),
     'src/entry.js': "import './styles.css'\nconsole.log('hi')\n",
-    'src/styles.css': '@import "./base.css";\n.x { background: url(./img.png) }\n',
+    'src/styles.css': '@import "./base.css";\n.x { background: url(./img.png) }\n.y { mask: url(\'./icons.svg#check\') }\n',
     'src/base.css': '.base { margin: 0 }\n',
     'src/img.png': 'PNG',
+    'src/icons.svg': '<svg/>',
   })
-  let r = await runCli(['bundle', '--resources=png', 'src/entry.js'], tmp)
+  let r = await runCli(['bundle', '--resources=png,svg', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
   rmSync(join(tmp, 'src'), { recursive: true })
-  r = await runCli(['build', '--output=out/entry.js', '--loader=.png:file', 'stasis.code.br', 'src/entry.js'], tmp)
+  r = await runCli(['build', '--output=out/entry.js', '--loader=.png:file', '--loader=.svg:file', 'stasis.code.br', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
   const css = readFileSync(join(tmp, 'out', 'entry.css'), 'utf8')
   t.assert.match(css, /\.base \{\n {2}margin: 0;\n\}/u)
   t.assert.match(css, /background: url\("\.\/img-[A-Z0-9]+\.png"\)/u)
+  // A URL's fragment, which the scan resolves the file without, is the emitted URL's still.
+  t.assert.match(css, /mask: url\("\.\/icons-[A-Z0-9]+\.svg#check"\)/u)
 }))
 
 test('github-bundle follows a stylesheet into a workspace package through its link', async (t) => {
