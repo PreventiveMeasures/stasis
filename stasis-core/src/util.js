@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { ARCHIVE_ALGORITHM, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, isLockfileName } from './artifact-util.js'
+import { ARCHIVE_ALGORITHM, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, STYLESHEET_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 export * from './artifact-util.js'
@@ -180,7 +180,8 @@ export function parseLeadingOptions(argv, options, { valueFlags = valueFlagsOf(o
 
 export function classifyExtension(filePath, resources) {
   const format = classifyFormat(filePath)
-  if (format === null || NODE_FORMATS.has(format)) return 'code'
+  // A stylesheet is code a bundler's graph reaches, `css` in `resources` or not.
+  if (format === null || NODE_FORMATS.has(format) || STYLESHEET_FORMATS.has(format)) return 'code'
   return inResources(filePath, resources) ? 'resource' : 'unknown'
 }
 
@@ -214,6 +215,7 @@ const CODE_EXT_FORMATS = new Map([
   ['sh', 'shell'], ['bash', 'shell'],
   ['rs', 'rust'],
   ['teal', 'teal'],
+  ['css', 'css'],
   ['patch', 'patch'],
   ['java', 'java'],
   ['kt', 'kotlin'], ['kts', 'kotlin'],
@@ -314,6 +316,12 @@ export function classifyFormat(name, { content } = {}) {
   // A Node extension gives its format only as Node spells it (nodeExtFormat), else the loader decides.
   if (CODE_EXTENSIONS.has(ext)) return nodeExtFormat(name) ?? null
   return CODE_EXT_FORMATS.get(ext) ?? (ext === '' && isShellShebang(content) ? 'shell' : undefined)
+}
+
+// `css` for a stylesheet's name, else undefined.
+export const stylesheetFormat = (name) => {
+  const format = classifyFormat(name)
+  return STYLESHEET_FORMATS.has(format) ? format : undefined
 }
 
 export const extSetsEqual = (a, b) => a.size === b.size && a.isSubsetOf(b)

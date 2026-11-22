@@ -471,7 +471,9 @@ build still leaves it out.
   native build-input (`java`, `kotlin`, `gradle`, `objc`, `objcpp`, `swift`, `c`,
   `cpp`, `c-header`, `cpp-header`, `ruby`, `python`, `cmake`, `podspec`, `podfile`,
   `podfile-lock`, `gemfile`, `gemfile-lock`, `template`, `xml`, `env`, `fastlane`,
-  `pbxproj`); Metro's (`generic-javascript`, `generic-typescript`); `patch` (a
+  `pbxproj`); Metro's (`generic-javascript`, `generic-typescript`); `css` (a
+  stylesheet, whose imports a bundler's CSS loader follows, not runnable by
+  Node: see [Stylesheets](bundle.md#stylesheets-css)); `patch` (a
   `.patch` unified diff — e.g. pnpm `patchedDependencies`, patch-package — a
   UTF-8 text build input applied by a patch step, not runnable by Node); `resource`
   (raw UTF-8) / `resource:base64` (binary); and the filesystem-capture tags

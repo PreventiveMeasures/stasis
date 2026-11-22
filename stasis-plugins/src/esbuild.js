@@ -62,10 +62,10 @@ export class StasisEsbuild {
     this.#platform = platform
   }
 
-  // A configured override, else from the extension (.cjs/.mjs/.cts/.mts drop their module letter).
+  // A configured override, else from the extension (.cjs/.mjs/.cts/.mts drop their module letter, .css keeps it).
   #loaderFor(path) {
     const ext = extname(path)
-    return this.#loaders.get(ext) ?? ext.replace(/^\.[cm]?/u, '')
+    return this.#loaders.get(ext) ?? ext.slice(1).replace(/^[cm](?=[jt]s$)/u, '')
   }
 
   // dir -> Promise<[{ dir, keys }]>: every directory from `dir` up whose `browser` map disables something, nearest

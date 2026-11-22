@@ -10,7 +10,7 @@ import { State } from './state.js'
 import { excludedText } from './policy.js'
 import { installFsHooks } from './fs.js'
 import { inScope, sha512integrity } from './state-util.js'
-import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap, upsert } from './util.js'
+import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, STYLESHEET_FORMATS, erasedTypeScriptFormat, nestedMap, upsert } from './util.js'
 
 // Snapshot off the namespace so `--fs` can't redirect stasis's own capture/shard reads.
 const { mkdtempSync, opendirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = fs
@@ -24,6 +24,9 @@ function assertNodeFormat(format, url) {
   }
   if (NATIVE_BUILD_FORMATS.has(format)) {
     throw new Error(`[stasis] cannot execute a '${format}' file: native build inputs (podspec/gradle/Java/Kotlin/ObjC++/...) are attested for the CocoaPods/Gradle toolchain, not executable by Node (${url})`)
+  }
+  if (STYLESHEET_FORMATS.has(format)) {
+    throw new Error(`[stasis] cannot import a stylesheet ('${format}'): CSS is for a bundler's CSS loader (webpack's css-loader, Next.js, esbuild), not executable by Node (${url})`)
   }
   if (RESOURCE_FORMATS.has(format)) {
     throw new Error(`[stasis] cannot import a resource file ('${format}'): asset content is not executable JavaScript. Read it with fs (or your bundler's asset loader) instead (${url})`)

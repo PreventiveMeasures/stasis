@@ -40,6 +40,7 @@
     "src/babel-worker.cjs",
     "src/bundle.js",
     "src/bundle-reader.js",
+    "src/css.js",
     "src/cmd/bundle.js",
     "src/cmd/bundle-options.js",
     "src/cmd/cache-dir.js",

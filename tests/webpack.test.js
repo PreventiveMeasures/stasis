@@ -679,9 +679,9 @@ describe('StasisWebpack (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
 
   test('unknown extension throws unless it is in the resources allowlist', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    writeFileSync(join(tmp, 'src', 'styles.css'), '/* fake css */\n')
+    writeFileSync(join(tmp, 'src', 'notes.txt'), '/* notes */\n')
     writeFileSync(join(tmp, 'src', 'entry.js'),
-      "require('./hello').greet('world')\nrequire('./styles.css')\n")
+      "require('./hello').greet('world')\nrequire('./notes.txt')\n")
     rmSync(join(tmp, 'stasis.lock.json'))
 
     const r = await run('src/entry.js', { cwd: tmp, env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' } })
@@ -691,16 +691,16 @@ describe('StasisWebpack (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
 
   test('resources allowlist attests opted-in extensions', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    writeFileSync(join(tmp, 'src', 'styles.css'), '/* fake css */\n')
+    writeFileSync(join(tmp, 'src', 'notes.txt'), '/* notes */\n')
     writeFileSync(join(tmp, 'src', 'entry.js'),
-      "require('./hello').greet('world')\nrequire('./styles.css')\n")
+      "require('./hello').greet('world')\nrequire('./notes.txt')\n")
     rmSync(join(tmp, 'stasis.lock.json'))
 
-    const r = await run('src/entry.js', { cwd: tmp, env: withOpts({ lock: 'add', resources: ['css'] }) })
+    const r = await run('src/entry.js', { cwd: tmp, env: withOpts({ lock: 'add', resources: ['txt'] }) })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
-    t.assert.ok(lock.sources['.'].files['src/styles.css'].startsWith('sha512-'),
+    t.assert.ok(lock.sources['.'].files['src/notes.txt'].startsWith('sha512-'),
       'allowlisted resource is hash-attested')
   }))
 

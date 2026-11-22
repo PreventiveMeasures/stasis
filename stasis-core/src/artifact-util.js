@@ -8,6 +8,8 @@ export const NATIVE_BUILD_FORMATS = new Set([
 ])
 // JS and TS whose module type no Node load decides: the code Metro builds from source, which is Metro's to load.
 export const GENERIC_FORMATS = new Set(['generic-javascript', 'generic-typescript'])
+// Stylesheets, whose imports a bundler's CSS loader follows (webpack's css-loader, Next.js, esbuild), never Node.
+export const STYLESHEET_FORMATS = new Set(['css'])
 export const RESOURCE_FORMATS = new Set(['resource', 'resource:base64'])
 export const STAT_FORMATS = new Set(['stat:file', 'stat:directory'])
 export const KNOWN_FORMATS = new Set([
@@ -15,6 +17,7 @@ export const KNOWN_FORMATS = new Set([
   ...SOURCE_LANGUAGE_FORMATS,
   ...NATIVE_BUILD_FORMATS,
   ...GENERIC_FORMATS,
+  ...STYLESHEET_FORMATS,
   ...RESOURCE_FORMATS,
   'patch', // a `.patch` unified diff (pnpm patchedDependencies, patch-package): UTF-8 text applied by a patch step
   'directory',
