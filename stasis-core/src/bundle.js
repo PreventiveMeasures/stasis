@@ -110,14 +110,15 @@ const parsedRepo = (repo) => {
 
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
-// fromLockfile's and fromTar's alone, with the web's globals, so the rest loads in a runtime without them: UTF-8 as it is,
-// a byte order mark kept as text; and base64, in chunks a call's arguments hold.
+// fromLockfile's, fromTar's and toTar's alone, with the web's globals, so the rest loads in a runtime without them: UTF-8
+// as it is, a byte order mark kept as text; and base64, in chunks a call's arguments hold.
 const utf8 = () => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 function base64(bytes) {
   let binary = ''
   for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000))
   return btoa(binary)
 }
+const fromBase64 = (text) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0))
 
 const mergePackage = (a, b) =>
   fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => [ecosystem, agreed(a?.[ecosystem], b?.[ecosystem], 'name', Object.is)]))
@@ -268,6 +269,25 @@ export class Bundle {
       assert(((mode & EXECUTE_BITS) !== 0) === lockfile.executable.has(path), `${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
     }
     return bundle
+  }
+
+  // What fromTar takes back: the bundle's tar, to pack (its entries `{ name, mode, data }`, as @preventive/archive's pack
+  // takes them; the caller packs and gzips it, as it brotlis a stasis.code.br). The stasis.lock.json of its files at its
+  // top, each file's digest `integrityOf(bytes)`'s, of the repository the bundle records; then each file by its path,
+  // an executable one 0o755. A bundle recording a directory capture (a `--fs` run's listing, which a tar holds none
+  // of) is refused; a stat record, payload-free, is its lockfile's; `reason` and `package`, which a lockfile records
+  // none of, are left out.
+  toTar({ integrityOf }) {
+    for (const [file, format] of this.formats) assert(format !== 'directory', `bundle: '${file}' is a directory capture, which a .stasis.tgz can't carry`)
+    const text = new TextEncoder()
+    const data = new Map([...this.sources].map(([file, content]) => [file, this.formats.get(file) === 'resource:base64' ? fromBase64(content) : text.encode(content)]))
+    const lockfile = Lockfile.fromBundle(this, (file) => integrityOf(data.get(file)))
+    lockfile.repo = this.repo
+    const files = sortedByPath(data.keys())
+    return [
+      { name: LOCK_FILE, mode: 0o644, data: text.encode(lockfile.serialize()) },
+      ...files.map((name) => ({ name, mode: this.executable.has(name) ? 0o755 : 0o644, data: data.get(name) })),
+    ]
   }
 
   // The `sources` key of the file whose contents sit at JSON key path `path`, else undefined; throws if non-canonical.

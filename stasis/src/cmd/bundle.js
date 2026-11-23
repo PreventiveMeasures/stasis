@@ -52,7 +52,7 @@ import {
   loadComposerPackages,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
-import { bundledSummary, checkLockfileOnly, lockedSummary, packagesLabel, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundledSummary, bundleFileOf, bundleFormat, checkLockfileOnly, lockedSummary, packagesLabel, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
 import { LANGUAGE_FLAGS, OPTION_FLAGS, checkCombinations, configuredBuilds, nonEmpty, withConfigDefine } from './bundle-options.js'
 import { withNpmToken } from './tokens.js'
 
@@ -1896,14 +1896,15 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, ...g
 }
 
 // Run `stasis bundle` (doc/bundle.md).
-export async function bundleCommand({ cwd = process.cwd(), output, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
+export async function bundleCommand({ cwd = process.cwd(), output, format: asked, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
   if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
-  checkLockfileOnly('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality })
-  const built = await buildOfCommand({ ...options, cwd, output, lockfile })
+  checkLockfileOnly('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality, format: asked })
+  const format = bundleFormat('bundleCommand: ', { format: asked, output, brotliQuality })
+  const built = await buildOfCommand({ ...options, cwd, output, format, lockfile })
   const { root } = built
   // By default at the root, where `stasis run --bundle=load` discovers it: in cwd below the root it would root
   // the next run and `stasis bundle` there, out of the files above it.
-  const target = output ?? relative(resolve(cwd), join(root, BUNDLE_FILE))
+  const target = output ?? relative(resolve(cwd), join(root, bundleFileOf(format)))
 
   let { bundle } = built
   // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
@@ -1928,7 +1929,9 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   // What the bundle on disk carried; undefined where nothing is merged.
   let mergedFrom
   if (add && existsSync(outAbs)) {
-    const existing = existingAt('bundle', target, outAbs, parseBundleBytes)
+    // A .stasis.tgz's reader imported for one alone, as its tar's is.
+    const { readStasisTgz } = format === 'tgz' ? await import('../parse.js') : {}
+    const existing = existingAt('bundle', target, outAbs, format === 'tgz' ? (bytes) => readStasisTgz(bytes, target).artifact : parseBundleBytes)
     // What the bundle and lockfile on disk carry is written again, so held to the config's Policy too.
     const policy = parsePolicy(CONFIG_FILE, readConfigFile('bundleCommand', root))
     const links = linksOn(root)
@@ -1972,11 +1975,12 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   const serialized = bundle.serialize()
-  built.held?.loads(bundle, { text: serialized, at: outAbs })
+  // As a run loads it beside the lockfile: a .stasis.tgz's, by its content, as a stasis.code.br at the root.
+  built.held?.loads(bundle, { text: serialized, at: format === 'tgz' ? undefined : outAbs })
   const files = [...bundle.sources.keys()]
   const modules = bundle.modules
 
-  const dest = lockfileOnly ? undefined : writeOutput(cwd, target, compressBundleText(serialized, brotliQuality))
+  const dest = lockfileOnly ? undefined : writeOutput(cwd, target, format === 'tgz' ? await stasisTgzOf(bundle) : compressBundleText(serialized, brotliQuality))
   if (lockData) writeFile(lockAbs, lockData)
   // The bundle's paths are relative to its root; shown relative to cwd, as `dest` is.
   const fromDir = posix.join(toPosix(relative(resolve(cwd), root)), outermostDir(files, root))
@@ -2104,7 +2108,7 @@ export async function buildCommandBundle(options = {}) {
 }
 
 // bundleCommand's build, not written; `extra` never takes in `output` and `lockfile`, where it would write.
-async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, builds, deptree, ...given } = {}) {
+async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, output, format, lockfile, builds, deptree, ...given } = {}) {
   const options = entryOptionsOf(given)
   if (builds !== undefined) {
     if (!nonEmpty(builds)) throw new TypeError('bundleCommand: builds must be a non-empty array')
@@ -2114,7 +2118,7 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, ou
   // Each build's options, those given where it leaves one out.
   const plans = (builds ?? [{}]).map((build) => ({ ...entryOptionsOf({ ...options, ...build }), policy: build.policy, cwd, env }))
   const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
-  const outputsAt = (root) => [output ?? join(root, BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
+  const outputsAt = (root) => [output ?? join(root, bundleFileOf(format)), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
   // With `builds`, `extra` is the bundle's, not any build's: added to their union.
   const bundleExtra = builds !== undefined
   let union, root

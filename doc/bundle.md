@@ -7,9 +7,9 @@ counterpart of `stasis run --bundle=add`, for code that can't or shouldn't run
 to be captured (a React Native app, a library's entry points).
 
 ```sh
-stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx|css) ...
-stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx|css) ...
-stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
+stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx|css) ...
+stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx|css) ...
+stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--format=(br|tgz)] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles, and the stylesheets they import (see
@@ -30,6 +30,7 @@ one misses, as one of a package that is not installed does, see
 | - | - |
 | `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, or in the cwd with `--mainFields`/`--metro`, see [Output](#output). `-` streams to stdout. |
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
+| `--format=(br\|tgz)` | Write a `stasis.code.br` (`br`) or a [`.stasis.tgz`](file-formats.md#stasistgz) (`tgz`, default name `stasis.tgz`). Default: the `--output`'s name's, `tgz` for one named `stasis.tgz` or `<name>.stasis.tgz`, else `br`. Refused where it disagrees with the `--output`'s name, with `--brotli-quality` for a tgz, or with `--lockfile-only`. |
 | `--deptree` | Lay out the dependencies in memory from the lockfile instead of reading the installed ones, with nothing installed: see [Dependencies from the lockfile](#dependencies-from-the-lockfile---deptree). JS and Solidity. |
 | `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--lockfile-only` | With `--lockfile`: write that lockfile alone, no bundle. Not with `--output`, `--add` or `--brotli-quality`. See [Companion lockfile](#companion-lockfile---lockfile). |
@@ -61,6 +62,14 @@ the next `stasis bundle` there too, out of the files above it. With
 instead, and so the default `stasis.code.br` is the cwd's: run it from the
 package's directory. `--output` names another path (relative to the cwd), and
 `--output=-` streams the bundle to stdout, the summary going to stderr.
+
+A `--output` named `stasis.tgz` or `<name>.stasis.tgz`, or `--format=tgz`
+(written to `stasis.tgz` where the `stasis.code.br` would be, without
+`--output`), writes a [`.stasis.tgz`](file-formats.md#stasistgz) in its place:
+the lockfile of the bundle's files and each file, which every command that
+reads a bundle reads as that bundle. It records no `reason` (what `stasis
+audit --reason` and `--why` read), as a lockfile records none. `--add` merges
+into one as into a `stasis.code.br`.
 
 `--add` unions the fresh build into the bundle already on disk at `--output`,
 to merge more entries and their import graph into one bundle; a file both
@@ -1156,11 +1165,11 @@ lays out both trees where `stasis.config.json`'s
 [`lockfiles`](github-bundle.md#several-lockfiles-lockfiles) names them.
 
 ```sh
-stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
-stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
-stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
-stasis bundle [--add] [--output=(path|-)] path/to/file.teal ...
-stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
+stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/(file.sol|dir) ...
+stasis bundle [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.php ...
+stasis bundle [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.(sh|bash) ...
+stasis bundle [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.teal ...
+stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--format=(br|tgz)] [--output=(path|-)] path/to/file.rs ...
 ```
 
 A Solidity directory entry stands for every `.sol` file under it (a missing or

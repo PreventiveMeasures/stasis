@@ -64,3 +64,15 @@ test('Bundle.fromTar: refuses a tar other than exactly its stasis.lock.json\'s f
   refused(odd('src', bytes('["main.js"]'), 'directory'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
   refused(odd('src', bytes('["main.js"]'), 'directory').filter(({ name }) => name !== 'src'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
 })
+
+test('bundle.toTar: what Bundle.fromTar takes back, the lockfile of its files at its top, each file by its path, an executable one 0o755, a stat record its lockfile\'s; a directory capture, a listing a tar can\'t carry, refused', (t) => {
+  const entries = bundle.toTar({ integrityOf })
+  t.assert.deepStrictEqual(entries.map(({ name, mode }) => [name, mode]), [['stasis.lock.json', 0o644], ['assets/logo.png', 0o644], ['bin/run.sh', 0o755], ['src/main.js', 0o644]])
+  const back = (one) => Bundle.fromTar(one.toTar({ integrityOf }).map((packed) => ({ ...packed, type: 'file' })), { integrityOf })
+  t.assert.equal(back(bundle).serialize(), bundle.serialize())
+  // As a `--fs` run records them: a path's kind alone, and a listing.
+  const recording = (formats, files = {}) => new Bundle({ ...bundle, repo: bundle.repo, formats: new Map([...bundle.formats, ...formats]), modules: new Map([['.', { ...bundle.modules.get('.'), files: { ...bundle.modules.get('.').files, ...files } }]]) })
+  const stats = recording([['src/gone.js', 'stat:file'], ['lib', 'stat:directory']])
+  t.assert.equal(back(stats).serialize(), stats.serialize(), 'stat records, payload-free, carried')
+  t.assert.throws(() => recording([['src', 'directory']], { src: '["main.js"]' }).toTar({ integrityOf }), { message: "bundle: 'src' is a directory capture, which a .stasis.tgz can't carry" })
+})
