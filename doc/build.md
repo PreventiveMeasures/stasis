@@ -264,9 +264,11 @@ held to its `sha512`, as the tgz is read, before the build starts.
 `stasis build` requires a **full-scope** artifact — a `node_modules`-scope one
 omits the entry and the workspace's own code.
 
-Only JavaScript/TypeScript is supported. The entry being built may be
-`.js`/`.cjs`/`.mjs`/`.ts`/`.cts`/`.mts`/`.jsx`/`.tsx`, loader chosen from the
-extension. JSX compiles to esbuild's default classic runtime
+Only JavaScript/TypeScript is supported, with the stylesheets it imports
+(`css`, esbuild's `css` loader, their `url()`s each by the loader of its
+extension: see [Stylesheets](bundle.md#stylesheets-css)). The entry being built
+may be `.js`/`.cjs`/`.mjs`/`.ts`/`.cts`/`.mts`/`.jsx`/`.tsx`, loader chosen
+from the extension. JSX compiles to esbuild's default classic runtime
 (`React.createElement`), overridable per file with a `/** @jsx ... */` pragma;
 esbuild's `jsx`/`jsxFactory` options are not exposed and `--platform` does not
 affect the JSX runtime. Solidity/PHP/Bash/Rust entries are rejected.

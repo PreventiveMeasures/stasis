@@ -83,13 +83,13 @@ const jsonShim = {
 }
 
 // STASIS_TEST_ROLLUP_ASSETS=1 -- add an @rollup/plugin-url-style asset loader for
-// png/svg/css: reads the file from DISK itself (the behavior that makes attested replay
+// png/svg/css/txt: reads the file from DISK itself (the behavior that makes attested replay
 // impossible under bundle=load) and exports a deterministic content-derived string.
 const assetShim = {
   name: 'test-assets',
   load(id) {
     const ext = extname(id)
-    if (ext !== '.png' && ext !== '.svg' && ext !== '.css') return null
+    if (ext !== '.png' && ext !== '.svg' && ext !== '.css' && ext !== '.txt') return null
     const bytes = readFileSync(id)
     return `export default ${JSON.stringify(`asset:${basename(id)}:${bytes.length}`)}`
   },

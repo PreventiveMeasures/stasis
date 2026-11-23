@@ -7,12 +7,13 @@ counterpart of `stasis run --bundle=add`, for code that can't or shouldn't run
 to be captured (a React Native app, a library's entry points).
 
 ```sh
-stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx|css) ...
+stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx|css) ...
 stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
-This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash,
+This page covers JS/TS bundles, and the stylesheets they import (see
+[Stylesheets](#stylesheets-css)). `stasis bundle` also builds Solidity, PHP, Bash,
 Rust and TEAL bundles, see [Other languages](#other-languages).
 
 Files the graph never reaches, but which are to be bundled anyway, are named in
@@ -322,7 +323,7 @@ as Next 16 finds them, and each is an entry of the bundle beside it, built
 with its options:
 
 ```sh
-stasis bundle --typescript --resources=css,svg,woff2 apps/web/next.config.ts
+stasis bundle --typescript --resources=svg,woff2 apps/web/next.config.ts
 ```
 
 - The app's `app` directory, and its `pages` directory, are each the one in
@@ -362,8 +363,9 @@ stasis bundle --typescript --resources=css,svg,woff2 apps/web/next.config.ts
 The import graph is resolved as the build's options resolve it, not as Next's
 compiler does: not through its aliases (an `app`'s React is Next's own copy)
 nor under the `react-server` condition its server components take. A Next app
-imports CSS, images and fonts, which [`--resources`](#resources-and-manifests)
-carries, and resolves `@/` by its `tsconfig.json` `paths`, which
+imports stylesheets, followed as code (see [Stylesheets](#stylesheets-css)),
+and images and fonts, which [`--resources`](#resources-and-manifests) carries,
+and resolves `@/` by its `tsconfig.json` `paths`, which
 [`--typescript`](#typescript---typescript) honors. Next inlines
 `process.env.NODE_ENV` and `process.env.NEXT_RUNTIME` (`"nodejs"` on the
 server) as it builds, which [`--define`](#defines---define) gives.
@@ -374,7 +376,7 @@ the app's directory roots the build there, below the `node_modules` its
 dependencies are installed in.
 
 ```json
-{ "entries": { "apps/web/next.config.ts": { "typescript": true, "resources": ["css", "svg", "woff2"] } } }
+{ "entries": { "apps/web/next.config.ts": { "typescript": true, "resources": ["svg", "woff2"] } } }
 ```
 
 ## Resolution
@@ -1057,9 +1059,63 @@ they don't hold (a dev build against a bundle built for release, or
 `stasis run --bundle=load` under another `NODE_ENV`), an import of a file it
 left out fails, as an import of any file the bundle doesn't carry does.
 
+## Stylesheets (CSS)
+
+A `.css` file is code, of format `css`, as a JS file is: one an entry imports
+is carried with no `--resources` entry (`css` there changes nothing), and its
+own imports are followed as webpack's css-loader, which Next.js builds a
+stylesheet with, follows them. A `.css` file may be an entry too, of a JS
+bundle (`stasis bundle src/styles.css`).
+
+```css
+@import "tailwindcss";               /* the package's `style` export: its index.css */
+@import "./theme.css" layer(theme);
+.logo { background: url(./logo.svg); }
+.button { composes: base from "./base.module.css"; }
+```
+
+- Its imports are read off CSS's own tokens, so a comment, a string or an
+  escape hides or spells one as it does for the loader: each `@import`, each
+  `url()` and the strings of an `image-set()` in a declaration, and a CSS
+  module's `composes: … from` and `@value … from`. A `url()` in an at-rule's
+  prelude (`@supports (background: url(x.png))`, `@namespace`) loads nothing,
+  and is none, as css-loader takes an asset's URL from a declaration alone.
+- An `@import`, `composes` or `@value` resolves as css-loader's import resolver
+  does: relative to the stylesheet first (`x.css` is `./x.css`), then as a
+  package's (`@import "tailwindcss"`), by the `style` condition of its
+  `exports`, else its `css`, `style` or `main` field, `.css` tried after the
+  name; `~pkg/x.css` is the package's alone. A `url()` resolves as its URL
+  resolver does: the file as written, relative first, then a package's by the
+  `asset` condition.
+- A URL's query and fragment are not the file's (`font.woff2?v=1#iefix`), and
+  its path is URL-decoded, a reserved character too (`hash%23mark.svg` names
+  `hash#mark.svg`). One that names no file is none of its imports: `data:`,
+  any other scheme (`https:`), `//cdn…`, `#id`, and a path from the site's root
+  (`/grid.svg`), which Next serves from `public`: name that in
+  [`extra`](file-formats.md#stasisconfigjson).
+- Its edges are static, as an `import`'s are: a miss, or an image or font it
+  names that no `--resources` entry carries, breaks the build where the
+  stylesheet is linked eagerly, as it breaks css-loader's (see
+  [Resolution](#resolution)); reached past an `import()`, it is a warning.
+- A stylesheet that is no UTF-8 text fails as a file that doesn't parse.
+- Only CSS is: a preprocessor's stylesheet (`.scss`, `.less`) is no code,
+  carried as a resource where `--resources` names it, its imports not
+  followed. Nor are a PostCSS plugin's own at-rules (Tailwind's `@config`,
+  `@plugin`, `@source` and `@reference`), naming files the plugin reads: name
+  those in [`extra`](file-formats.md#stasisconfigjson).
+- `stasis build` builds a stylesheet an entry imports with esbuild's `css`
+  loader, and what its `url()`s name with the build's `--loader`s, each URL's
+  query and fragment kept on the URL it emits (see
+  [build](build.md#scope-and-language)).
+
+An older stasis carried a stylesheet as a `resource`, where `--resources` named
+`css`: a lockfile or bundle it wrote records that format, which a `frozen` run
+or build is held to, so it is written anew.
+
 ## Resources and manifests
 
-A reached file that is not code (an imported `.png`, `.svg` or font) fails the
+A reached file that is not code (an imported `.png`, `.svg` or font; a
+stylesheet is code, see [Stylesheets](#stylesheets-css)) fails the
 build by default. `--resources=png,svg,ttf` carries the allowlisted ones (by
 bare extension, or extensionless filename such as `LICENSE`) as resources, with
 their import edges recorded: see [build](build.md#non-code-assets---resources)

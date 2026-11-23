@@ -14,6 +14,7 @@ import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFie
 import { discoverTsconfig, isDir, isFile, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { withNextEntries } from '../next-entries.js'
+import { CSS_KINDS } from '../css.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
@@ -21,7 +22,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, ecosystemFamily, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
+import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, ecosystemFamily, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, stylesheetFormat, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, moduleExcluder, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { compressBundleText, parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -255,7 +256,7 @@ export function directoryEntryError(entries, cwd = process.cwd(), host = diskHos
 const KINDS = {
   sol: { is: isSolidityEntry, build: buildSolidityBundle },
   php: { what: '.php file', is: (e) => e.endsWith('.php'), build: buildPhpBundle },
-  js: { what: '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', is: (e) => JS_EXTENSIONS.has(extname(e)) },
+  js: { what: '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx/.css file', is: (e) => JS_EXTENSIONS.has(extname(e)) || stylesheetFormat(e) !== undefined },
   bash: { what: '.sh/.bash file', is: (e) => ['.sh', '.bash'].includes(extname(e)), build: buildBashBundle },
   rust: { what: '.rs file', is: (e) => extname(e) === '.rs', build: buildRustBundle },
   teal: { what: '.teal file', is: (e) => e.endsWith('.teal'), build: buildTealBundle },
@@ -396,7 +397,8 @@ function describeUnresolved(u, show) {
 }
 
 // Static ESM edges load before user code, so a failure there is uncatchable, unlike one past a require()/import().
-const STATIC_KINDS = new Set(['import', 'export-from'])
+// A stylesheet's are static too: its loader resolves each as it builds it, and fails the build on a miss.
+const STATIC_KINDS = new Set(['import', 'export-from', ...CSS_KINDS])
 
 function linkedThrough(scanner, roots, follows) {
   const linked = new Set(roots)
@@ -509,7 +511,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // Through a State, the graph scanned statically: no user code runs. `memo` keeps scans across a lazy tree's rounds.
 // `policy`: the entries' own, beside the config's.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated, policy = null } = {}) {
-  assertEntries('buildJsBundle', entries, 'js', 'JS/TS file')
+  assertEntries('buildJsBundle', entries, 'js', 'JS/TS/CSS file')
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const scanConditions = cleanConditions(conditions)
@@ -1116,7 +1118,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       for (const [url, info] of scanner.files) {
         const abs = pathOf(url)
         // Under --metro a code file has the format Metro builds it in, as the Metro plugin records it.
-        const rel = reach(abs, info.resource, metro ? metroFormat(abs) : info.format)
+        const rel = reach(abs, info.resource, metro ? metroFormat(abs) ?? info.format : info.format)
         if (restrict !== null && !isTransformInput(abs, info)) metroTaken.add(abs)
         for (const e of info.edges) {
           if (e.builtin || e.dynamic) continue
@@ -1135,7 +1137,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // --metro: and what Babel and Metro add, scanned in turn; one above the root passed over, as the Metro plugin does.
     if (metro) {
       const metroAt = performance.now()
-      const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => pathOf(url))
+      // A stylesheet is none of the code Babel builds.
+      const code = [...scanner.files].filter(([, info]) => !info.resource && info.format !== 'css').map(([url]) => pathOf(url))
       const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(pathOf(url), info)).map(([url]) => pathOf(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
@@ -1463,7 +1466,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   if (dirError !== null) throw new Error(`${name}: ${dirError}`)
   const kind = Object.keys(KINDS).find((key) => entries.every((e) => KINDS[key].is(e, cwd, host)))
   if (kind === undefined) {
-    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
+    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx/.css, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
   // Each entry flag, whether it is on; `define` parsed (checked) whatever the kind.
   const on = {

@@ -853,11 +853,11 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
   test('unknown extension throws unless it is in the resources allowlist', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     // The plugin must refuse rather than silently widen lockfile coverage to a file the
-    // Node loader could never serve back.
-    writeFileSync(join(tmp, 'src', 'styles.css'), '.x { color: red }\n')
+    // Node loader could never serve back (a stylesheet is code: a .txt is neither).
+    writeFileSync(join(tmp, 'src', 'notes.txt'), 'notes\n')
     writeFileSync(
       join(tmp, 'src', 'entry.js'),
-      "import './styles.css'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
+      "import './notes.txt'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
     )
     rmSync(join(tmp, 'stasis.lock.json'))
 
@@ -868,19 +868,37 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
 
   test("resources allowlist attests opted-in extensions", withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    writeFileSync(join(tmp, 'src', 'styles.css'), '.x { color: red }\n')
+    writeFileSync(join(tmp, 'src', 'notes.txt'), 'notes\n')
+    writeFileSync(
+      join(tmp, 'src', 'entry.js'),
+      "import './notes.txt'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
+    )
+    rmSync(join(tmp, 'stasis.lock.json'))
+
+    const r = await run(['src/entry.js'], { cwd: tmp, env: withOpts({ lock: 'add', resources: ['txt'] }) })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
+    t.assert.ok(lock.sources['.'].files['src/notes.txt'].startsWith('sha512-'),
+      'allowlisted resource is hash-attested')
+  }))
+
+  test('a stylesheet is code, attested as css with its @import, no resources entry needed', withTmp(async (t, tmp) => {
+    cpSync(fullFixture, tmp, { recursive: true })
+    writeFileSync(join(tmp, 'src', 'styles.css'), '@import "./base.css";\n.x { color: red }\n')
+    writeFileSync(join(tmp, 'src', 'base.css'), '.base { margin: 0 }\n')
     writeFileSync(
       join(tmp, 'src', 'entry.js'),
       "import './styles.css'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
     )
     rmSync(join(tmp, 'stasis.lock.json'))
 
-    const r = await run(['src/entry.js'], { cwd: tmp, env: withOpts({ lock: 'add', resources: ['css'] }) })
+    const r = await run(['src/entry.js'], { cwd: tmp, env: withOpts({ lock: 'add' }) })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
-    t.assert.ok(lock.sources['.'].files['src/styles.css'].startsWith('sha512-'),
-      'allowlisted resource is hash-attested')
+    t.assert.equal(lock.formats['src/styles.css'], 'css')
+    t.assert.equal(lock.formats['src/base.css'], 'css')
+    t.assert.equal(lock.imports['*']['src/styles.css']['./base.css'], 'src/base.css')
   }))
 
   test("resources rejects code extensions and malformed entries", withTmp(async (t, tmp) => {
@@ -1257,7 +1275,8 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const css = {
       ...BROWSER,
       STASIS_TEST_ESBUILD_LOADER: JSON.stringify({ '.css': 'css', '.png': 'file' }),
-      STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ resources: ['css', 'png'] }),
+      // A stylesheet is code: only the png it names is a resource.
+      STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ resources: ['png'] }),
     }
 
     const plain = await plainBuild(capDir, join(tmp, 'out-plain'), css)
@@ -1279,6 +1298,40 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), css) })
     t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
     t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.css'), 'utf-8'), captureCss)
+  }))
+
+  // esbuild resolves a stylesheet's `url(./icons.svg#check)` to the file and keeps `#check` as the result's
+  // `suffix`, which the emitted URL carries. The edge records the URL as written, so a capture takes esbuild's
+  // suffix of it, and load mode gives it back from the specifier: the replayed CSS keeps it too.
+  test('a stylesheet URL\'s query and fragment survive capture and bundle=load', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    writeFileSync(join(capDir, 'src', 'entry.mjs'), "import './styles.css'\n")
+    writeFileSync(join(capDir, 'src', 'styles.css'), ".x { background: url('./icons.svg#check'), url(./f.woff2?v=2#iefix) }\n")
+    writeFileSync(join(capDir, 'src', 'icons.svg'), '<svg/>')
+    writeFileSync(join(capDir, 'src', 'f.woff2'), 'WOFF2')
+    const env = {
+      STASIS_TEST_ESBUILD_LOADER: JSON.stringify({ '.svg': 'file', '.woff2': 'file' }),
+      STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ resources: ['svg', 'woff2'] }),
+    }
+
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), env)
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    const plainCss = readFileSync(join(tmp, 'out-plain', 'entry.css'), 'utf-8')
+    t.assert.match(plainCss, /icons-[A-Z0-9]+\.svg#check"/u)
+    t.assert.match(plainCss, /f-[A-Z0-9]+\.woff2\?v=2#iefix"/u)
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), env) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-capture', 'entry.css'), 'utf-8'), plainCss)
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['src/styles.css'], { './icons.svg#check': 'src/icons.svg', './f.woff2?v=2#iefix': 'src/f.woff2' })
+
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), env) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.css'), 'utf-8'), plainCss)
   }))
 
   // `browser` maps apply only under platform:'browser': on node the same package bundles the real

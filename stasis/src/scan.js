@@ -3,9 +3,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
 import assert from 'node:assert/strict'
+import { isUtf8 } from 'node:buffer'
 import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
 import { excludedText } from '@exodus/stasis-core/policy'
-import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, stylesheetFormat, upsert } from '@exodus/stasis-core/util'
+import { CSS_KINDS, createCssResolver, cssRequests, cssSpecifiers } from './css.js'
 import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
@@ -24,6 +26,9 @@ const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
 
 const EXCLUDED_REASON = 'excluded by excludeModules'
+// The conditions a stylesheet's edge is keyed by: those of the css-loader resolver resolving it.
+const CSS_IMPORT_CONDITIONS = new Set(['style'])
+const CSS_URL_CONDITIONS = new Set(['asset'])
 
 // Raw transfer reserves 6 GiB for the parser's buffer, of which a parse writes only what it takes. Linux refuses one
 // mapping past its RAM and swap, so on a smaller machine (a 4 GiB function) that buffer can't be had: a RangeError on
@@ -214,6 +219,13 @@ export class Scan {
 
   // The native addons a require() names by a path spelled in part, resources with no `resources` entry.
   #natives = new Set()
+
+  // css.js's, once a stylesheet is reached.
+  #cssResolver
+  #resolveCss(file, kind, spec) {
+    this.#cssResolver ??= createCssResolver({ host: this.host })
+    return this.#cssResolver(file, kind, spec)
+  }
 
   // The specifiers of the files there that `pattern` (nativePattern's) spells, each expression of it any run of
   // characters within one name: never a `/`, so the files are those of the directories it spells.
@@ -458,11 +470,20 @@ export class Scan {
     return { format, parsed, errors, source, strippedSource }
   }
 
+  // A stylesheet as its loader reads it: its specifiers, or a crash where it is no UTF-8 text.
+  #parseStylesheet(file, format) {
+    const buf = this.host.readFile(file)
+    if (!isUtf8(buf)) return { declared: format, crash: 'not UTF-8 text' }
+    return { format, errors: [], specs: cssSpecifiers(buf.toString('utf8')) }
+  }
+
   #scanFile(url, queue) {
     const file = fileURLToPath(url)
     const ext = extname(file)
+    const stylesheet = stylesheetFormat(file)
     // `resource: true` is what both bundle builders key off; they derive its format from its bytes.
-    const leaf = ext === '.json' ? { format: 'json', edges: [] }
+    const leaf = stylesheet !== undefined ? null
+      : ext === '.json' ? { format: 'json', edges: [] }
       : this.#isResource(file) || this.#natives.has(url) ? { format: null, edges: [], resource: true }
       : JS_EXTENSIONS.has(ext) ? null
       : { format: null, edges: [] }
@@ -471,7 +492,7 @@ export class Scan {
       return
     }
 
-    const result = this.#reparse ?? this.parseFile(file)
+    const result = this.#reparse ?? (stylesheet === undefined ? this.parseFile(file) : this.#parseStylesheet(file, stylesheet))
     this.#parse = result
     if (result.crash !== undefined) {
       this.#recordParseError(url, result.declared, result.crash, false)
@@ -518,7 +539,7 @@ export class Scan {
       edges.push({ ...s, child: childURL })
       nestedMap(specMaps, [...conditions].join(', ')).set(s.spec, childURL)
       if (s.native) this.#natives.add(childURL)
-      if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
+      if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || stylesheetFormat(childPath) !== undefined || this.#isResource(childPath)) queue.push(childURL)
     }
     // Each native addon there that a path spelled in part names is an edge of the specifier spelling it, as a run
     // records the one it loads. Only as Node resolves: a browser or React Native target loads no native addon.
@@ -547,6 +568,18 @@ export class Scan {
     }
 
     for (const s of specs) {
+      // A stylesheet's edge, as its loader resolves it (css.js), whatever resolves the JS: a static one, so a miss
+      // breaks the build as it breaks the loader's. One naming no file (`data:`, `https:`, `/public.png`) is none.
+      if (CSS_KINDS.has(s.kind)) {
+        const conditions = s.kind === 'css-url' ? CSS_URL_CONDITIONS : CSS_IMPORT_CONDITIONS
+        const hit = this.#resolveCss(file, s.kind, s.spec)
+        if (hit !== null) addChild(s, conditions, hit.url, fileURLToPath(hit.url))
+        else if (cssRequests(s.spec).length > 0) {
+          edges.push({ ...s, error: 'MODULE_NOT_FOUND' })
+          this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason: 'MODULE_NOT_FOUND' })
+        }
+        continue
+      }
       if (s.dynamic) {
         if (addNatives(s)) continue
         edges.push({ kind: s.kind, dynamic: true })

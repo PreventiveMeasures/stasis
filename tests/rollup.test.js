@@ -749,11 +749,11 @@ describe('StasisRollup (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
   test('unknown extension throws unless it is in the resources allowlist', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     // The plugin must refuse rather than silently widen lockfile coverage to a file the
-    // Node loader could never serve back.
-    writeFileSync(join(tmp, 'src', 'styles.css'), '.x { color: red }\n')
+    // Node loader could never serve back (a stylesheet is code: a .txt is neither).
+    writeFileSync(join(tmp, 'src', 'notes.txt'), 'notes\n')
     writeFileSync(
       join(tmp, 'src', 'entry.js'),
-      "import './styles.css'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
+      "import './notes.txt'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
     )
     rmSync(join(tmp, 'stasis.lock.json'))
 
@@ -764,25 +764,25 @@ describe('StasisRollup (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
 
   test('resources allowlist attests opted-in extensions', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    writeFileSync(join(tmp, 'src', 'styles.css'), '.x { color: red }\n')
+    writeFileSync(join(tmp, 'src', 'notes.txt'), 'notes\n')
     writeFileSync(
       join(tmp, 'src', 'entry.js'),
-      "import './styles.css'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
+      "import './notes.txt'\nimport { greet } from './hello.js'\nconsole.log(greet('world'))\n"
     )
     rmSync(join(tmp, 'stasis.lock.json'))
 
-    // The asset shim stands in for the user's css-loading plugin (rollup core can't
-    // parse css); the stasis plugin still attests the raw bytes before deferring to it.
+    // The asset shim stands in for the user's text-loading plugin (rollup core can't
+    // parse text); the stasis plugin still attests the raw bytes before deferring to it.
     const r = await run(['src/entry.js'], {
       cwd: tmp,
-      env: withOpts({ lock: 'add', resources: ['css'] }, { STASIS_TEST_ROLLUP_ASSETS: '1' }),
+      env: withOpts({ lock: 'add', resources: ['txt'] }, { STASIS_TEST_ROLLUP_ASSETS: '1' }),
     })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
-    t.assert.ok(lock.sources['.'].files['src/styles.css'].startsWith('sha512-'),
+    t.assert.ok(lock.sources['.'].files['src/notes.txt'].startsWith('sha512-'),
       'allowlisted resource is hash-attested')
-    t.assert.equal(lock.formats['src/styles.css'], 'resource')
+    t.assert.equal(lock.formats['src/notes.txt'], 'resource')
   }))
 
   test('resources rejects code extensions and malformed entries', withTmp(async (t, tmp) => {

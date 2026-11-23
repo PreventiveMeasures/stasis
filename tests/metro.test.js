@@ -1088,7 +1088,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     // un-allowlisted extension) must leave the bundle file untouched.
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
-    writeFileSync(join(tmp, 'src', 'styles.css'), '.x { color: red }\n')
+    writeFileSync(join(tmp, 'src', 'notes.txt'), 'notes\n')
     const bundlePath = join(tmp, 'standalone.br')
 
     const r = await run('src/entry.js', {
@@ -1096,9 +1096,9 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       env: standalone(withOpts({ lock: 'ignore', bundle: 'add', bundleFile: bundlePath })),
       graph: {
         modules: [
-          { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./styles.css', 'src/styles.css']] },
+          { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./notes.txt', 'src/notes.txt']] },
           { path: 'src/hello.js', deps: [] },
-          { path: 'src/styles.css', deps: [] },
+          { path: 'src/notes.txt', deps: [] },
         ],
       },
     })
@@ -1130,7 +1130,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
 
   test('unknown extension throws unless it is in the resources allowlist', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
-    writeFileSync(join(tmp, 'src', 'styles.css'), '.x { color: red }\n')
+    writeFileSync(join(tmp, 'src', 'notes.txt'), 'notes\n')
     rmSync(join(tmp, 'stasis.lock.json'))
 
     const r = await run('src/entry.js', {
@@ -1138,9 +1138,9 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' },
       graph: {
         modules: [
-          { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./styles.css', 'src/styles.css']] },
+          { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./notes.txt', 'src/notes.txt']] },
           { path: 'src/hello.js', deps: [] },
-          { path: 'src/styles.css', deps: [] },
+          { path: 'src/notes.txt', deps: [] },
         ],
       },
     })

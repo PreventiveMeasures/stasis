@@ -13,6 +13,13 @@ import { EMPTY_MODULE_PATH, classifyExtension, isPlainObject, memoized } from '@
 const RESOLVE_OPTIONS = ['absWorkingDir', 'alias', 'conditions', 'external', 'mainFields', 'nodePaths',
   'packages', 'platform', 'preserveSymlinks', 'resolveExtensions', 'tsconfig', 'tsconfigRaw']
 
+// A stylesheet's imports, whose URL's query and fragment (`./icons.svg#check`) esbuild keeps as the result's suffix.
+const CSS_RESOLVE_KINDS = new Set(['import-rule', 'composes-from', 'url-token'])
+const urlSuffix = (specifier) => {
+  const at = specifier.search(/[?#]/u)
+  return at === -1 ? '' : specifier.slice(at)
+}
+
 // One import of `specifier` as `kind` would issue it, as the probe's stdin.
 function probeSource(specifier, kind) {
   const quoted = JSON.stringify(specifier)
@@ -62,10 +69,10 @@ export class StasisEsbuild {
     this.#platform = platform
   }
 
-  // A configured override, else from the extension (.cjs/.mjs/.cts/.mts drop their module letter).
+  // A configured override, else from the extension (.cjs/.mjs/.cts/.mts drop their module letter, .css keeps it).
   #loaderFor(path) {
     const ext = extname(path)
-    return this.#loaders.get(ext) ?? ext.replace(/^\.[cm]?/u, '')
+    return this.#loaders.get(ext) ?? ext.slice(1).replace(/^[cm](?=[jt]s$)/u, '')
   }
 
   // dir -> Promise<[{ dir, keys }]>: every directory from `dir` up whose `browser` map disables something, nearest
@@ -164,7 +171,9 @@ export class StasisEsbuild {
         }
         const format = state.getFormat(url)
         const kind = url === emptyModuleURL ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
-        return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
+        // A stylesheet URL's query and fragment, which the emitted URL carries, as esbuild's own resolution keeps them.
+        const suffix = CSS_RESOLVE_KINDS.has(resolveKind) ? urlSuffix(specifier) : ''
+        return { path: fileURLToPath(url), namespace: 'file', ...(suffix && { suffix }), pluginData: { isEntry, kind } }
       })
     }
 
@@ -182,7 +191,8 @@ export class StasisEsbuild {
         }
         return undefined
       }
-      assert.equal(res.suffix, '',
+      // But a stylesheet URL's own query and fragment, esbuild's suffix of it, which load mode reads off the specifier.
+      assert.ok(res.suffix === '' || (CSS_RESOLVE_KINDS.has(args.kind) && res.suffix === urlSuffix(specifier)),
         `StasisEsbuild: a sibling plugin set res.suffix='${res.suffix}' on '${specifier}'; ` +
         `stasis can't persist suffixes to the bundle. Disable that plugin or drop suffix from its resolve result.`)
 

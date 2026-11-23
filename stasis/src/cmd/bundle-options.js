@@ -2,7 +2,7 @@ import { basename, isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
-import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, sortedByPath, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, sortedByPath, stylesheetFormat, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
@@ -116,7 +116,8 @@ function prefixed(prefix, fn) {
   }
 }
 
-const isJsEntry = (entry) => JS_EXTENSIONS.values().some((ext) => entry.endsWith(ext))
+// A stylesheet is an entry of a JS bundle, whose graph reaches stylesheets.
+const isJsEntry = (entry) => JS_EXTENSIONS.values().some((ext) => entry.endsWith(ext)) || stylesheetFormat(entry) !== undefined
 
 // Which language `entries` all are in, by KINDS key, or `jsAndSol` for JS and Solidity entries together, each built apart.
 function entriesLanguage(entries, cwd, host = diskHost) {
@@ -133,7 +134,7 @@ function entriesLanguage(entries, cwd, host = diskHost) {
   }
   if (Object.values(lang).some(Boolean)) return lang
   if (entries.every((f) => isJsEntry(f) || isSolidityEntry(f, cwd, host))) return { ...lang, jsAndSol: true }
-  throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx and .sol together')
+  throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx/.css, all be .sh/.bash, all be .rs, or all be .teal, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx/.css and .sol together')
 }
 
 // The entry flags of `values` as buildBundle's options, each checked: first that `lang`'s bundles take it.

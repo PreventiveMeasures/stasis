@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ARCHIVED, ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isGzip, isTgzName, misnamedTgz, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS } from './util.js'
+import { ARCHIVED, ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isGzip, isTgzName, misnamedTgz, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS, stylesheetFormat } from './util.js'
 import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, manifestIdentity, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { classifiedFiles, expandExtra, fileKind } from './add.js'
 import { linksOn, moduleExcluder } from './policy.js'
@@ -766,7 +766,8 @@ export class State {
 
     // A generic format is Metro's, which decides the module type itself.
     if (!asResource && inferFormat && !GENERIC_FORMATS.has(format)) {
-      const inferredFormat = nodeExtFormat(file) ?? TYPED_FORMATS[ext]?.[closestType]
+      // A stylesheet's by its name, as a bundler plugin captures one with no format.
+      const inferredFormat = nodeExtFormat(file) ?? TYPED_FORMATS[ext]?.[closestType] ?? stylesheetFormat(file)
       if (inferredFormat !== undefined) {
         // A transforming preload (`--import tsx`) loads TypeScript as its post-erasure family: attest the on-disk one.
         if (format == null || format === erasedTypeScriptFormat(inferredFormat)) format = inferredFormat
