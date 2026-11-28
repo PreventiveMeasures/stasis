@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { posix } from 'node:path'
 
-import { upsert } from '@exodus/stasis-core/util'
+import { memoized, upsert } from '@exodus/stasis-core/util'
 
 // Node 24.22.2's and 26.13.0's fs.globSync (internal/fs/glob.js, without `followSymlinks`, `maxDepth` or an array
 // `exclude`) and path.matchesGlob over a `host`. Matching never folds case: git's names may differ by case alone.
@@ -13,9 +13,8 @@ const MINIMATCH = 'minimatch'
 const MINIMATCH_MAJOR = '10'
 const OPTIONS = { nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true, optimizationLevel: 2, platform: 'linux', nocaseMagicOnly: true }
 
-let minimatch
-export function loadMinimatch(what) {
-  if (minimatch) return minimatch
+// Loaded once for every caller: `what` names the one asking where it can't be.
+export const loadMinimatch = memoized((what) => {
   const needs = `${what} needs the optional '${MINIMATCH}' ${MINIMATCH_MAJOR} dependency`
   let version
   try {
@@ -25,9 +24,8 @@ export function loadMinimatch(what) {
   }
   // Another package's, found where the optional one isn't installed.
   if (version.split('.')[0] !== MINIMATCH_MAJOR) throw new Error(`${needs}, not ${version}`)
-  minimatch = require(MINIMATCH)
-  return minimatch
-}
+  return require(MINIMATCH)
+}, () => MINIMATCH)
 
 const lazyMinimatch = () => loadMinimatch("A glob over a Vfs (stasis.config.json's extra, or a pattern in its entries)")
 

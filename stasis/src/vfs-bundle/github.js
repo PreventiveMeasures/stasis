@@ -7,9 +7,9 @@ import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle, configuredLockfiles, debugTimed, prismaClientsOf } from '../cmd/bundle.js'
+import { ancestors } from '../loaders/paths.js'
 import { checkAhead, defaultEntries, entryPattern, expandEntries } from './entries.js'
 import { checkNonEmpty, checkTree, detectPackageManager, listsFile, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
-import { YARNCLEAN } from './yarnclean.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
@@ -42,25 +42,11 @@ function refersAbove(entries, lockfile) {
   const text = (entry) => new TextDecoder().decode(entry.data)
   return entries.some((entry) => entry.type === 'file' && (entry.name === lockfile
     ? LOCKFILE_ESCAPE.test(text(entry))
-    : TSCONFIG.test(entry.name) && [...text(entry).matchAll(/"(\.\.?\/[^"]*)"/gu)].some(([, path]) => resolvesOutside(entry.name, path))))
+    : TSCONFIG.test(entry.name) && text(entry).matchAll(/"(\.\.?\/[^"]*)"/gu).some(([, path]) => resolvesOutside(entry.name, path))))
 }
 
 // The repo's root (undefined) last.
-function ancestorsOf(directory) {
-  const out = []
-  for (let dir = posix.dirname(directory); dir !== '.'; dir = posix.dirname(dir)) out.push(dir)
-  return [...out, undefined]
-}
-
-// Upstream refuses symlinks above the tarball's root (its top directory) unless told how far they may climb: to the repo's.
-async function treeFiles(client, { github, tree, directory, where }) {
-  try {
-    return await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where, { subtree: true })
-  } catch (error) {
-    if (error instanceof ArchiveError) return null // e.g. a symlink out of the subtree
-    throw error
-  }
-}
+const ancestorsOf = (directory) => [...ancestors(posix.dirname(directory)).filter((dir) => dir !== '.'), undefined]
 
 // Checked as the Bundle checks them, before anything is fetched; a `path` as a `directory`, but for a pattern's `*`.
 function checkRepo(name, { github, sha, tag, branch, directory, path }) {
@@ -124,10 +110,17 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   const above = ancestorsOf(directory)
   const aboveNames = () => Promise.all(above.map(names))
   if (!(await pm.alone(listing.map((entry) => entry.path), aboveNames))) return null
-  if (pm.kind === 'js' && (await aboveNames()).some((dir) => dir.includes(YARNCLEAN))) return null
   // Its tree id, as the listing above it holds it, held to that directory's own.
   const tree = (await list(above[0])).find((entry) => entry.path === posix.basename(directory) && entry.type === 'tree')?.sha
-  const files = tree === undefined ? null : await treeFiles(client, { github, tree, directory, where })
+  if (tree === undefined) return null
+  let files
+  try {
+    // Upstream refuses symlinks above the tarball's root (its top directory) unless told how far they may climb: to the repo's.
+    files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where, { subtree: true })
+  } catch (error) {
+    if (error instanceof ArchiveError) return null // e.g. a symlink out of the subtree
+    throw error
+  }
   return files === null || refersAbove(files, pm.lockfile) ? null : files
 }
 
@@ -213,8 +206,6 @@ export async function buildGitHubBundle({ github, sha, tag, branch, directory, p
   // The lockfile records the repo too, as the bundle does: a GitHub build's alone does.
   const { get } = Object.getOwnPropertyDescriptor(built, 'lockfile')
   Object.defineProperty(built, 'lockfile', {
-    enumerable: true,
-    configurable: true,
     get() {
       const lockfile = get.call(this)
       if (lockfile !== undefined) lockfile.repo = built.bundle.repo

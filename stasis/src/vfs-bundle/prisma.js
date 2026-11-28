@@ -127,12 +127,10 @@ function schemaEngines(near) {
 const EXPORTS = ['buildClient', 'validateDmmfAgainstDenylists', 'parseRuntimeTargetFromUnknown', 'parseGeneratedFileExtension', 'parseImportFileExtension', 'inferImportFileExtension', 'parseModuleFormatFromUnknown', 'inferModuleFormat', 'parseCompilerBuildFromUnknown']
 const PARAMETERS = ['readSourceFile', 'inferModuleFormatFromNearestPackageJson', 'debug', 'buildTypedSql']
 const REQUIRES = ['@prisma/client-common', '@prisma/dmmf', '@prisma/param-graph-builder', 'indent-string', 'klona', 'pluralize', 'ts-pattern']
-let loaded
 
 // The peer exports none of EXPORTS, so its bundle is compiled to return them (stripping is cleanup, not a sandbox).
 // @prisma/internals is never loaded (it reads the host's npm and yarn config, and patches fs and process.cwd).
-export function loadGenerator() {
-  if (loaded) return loaded
+export const loadGenerator = memoized(() => {
   let main
   try { main = require.resolve(GENERATOR) } catch (cause) { throw new Error(`--generate=prisma needs the optional '${GENERATOR}' ${GENERATOR_VERSION} dependency; install it`, { cause }) }
   const own = createRequire(main)
@@ -149,9 +147,8 @@ export function loadGenerator() {
   const given = { ...Object.fromEntries(REQUIRES.map((id) => [id, own(id)])), '@prisma/internals': internals, '@prisma/ts-builders': commonjs(own.resolve('@prisma/ts-builders'), { '@prisma/internals': internals }) }
   const run = compiled(main, EXPORTS, PARAMETERS, given)
   const { loadSchemaFiles } = compiled(near.resolve('@prisma/schema-files-loader'), ['loadSchemaFiles'], ['realFsResolver'], { 'node:path': posix })()
-  loaded = { peer: (at) => run(readQueryCompiler(at), packageFormat(at), () => {}), schemaEngine, loadSchemaFiles }
-  return loaded
-}
+  return { peer: (at) => run(readQueryCompiler(at), packageFormat(at), () => {}), schemaEngine, loadSchemaFiles }
+})
 
 const nearestFile = (host, dir, name) => {
   const at = nearest(dir, holding(host, name))
@@ -401,7 +398,7 @@ function generatorBlocks(host, path) {
       const found = body.match(new RegExp(`^\\s*${key}\\s*=\\s*(?:"([^"]*)"|env\\(\\s*"([^"]*)"\\s*\\))`, 'mu'))
       return found === null ? null : { value: found[1] ?? null, fromEnvVar: found[2] ?? null }
     }
-    return { name, provider: field('provider') ?? { value: null, fromEnvVar: null }, output: field('output'), sourceFilePath: file, config: {} }
+    return { name, provider: field('provider') ?? { value: null, fromEnvVar: null }, output: field('output'), sourceFilePath: file }
   }))
 }
 
