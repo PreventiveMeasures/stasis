@@ -89,7 +89,7 @@ export function takesColors(stream) {
 // Dimmed text's format: CI's logs show gray, not faint.
 export const DIM = process.env.CI ? 'gray' : 'dim'
 
-// `paint(format, text)`: `text` in util.styleText's `format` where `colors`, else as it is.
+// `paint(format, text)`: `text` in util.styleText's `format` where `paint.colors`, else as it is.
 export function painter(stream, colors = takesColors(stream)) {
-  return (format, text) => (colors && format && text !== '' ? styleText(format, text, { validateStream: false }) : text)
+  return Object.assign((format, text) => (colors && format && text !== '' ? styleText(format, text, { validateStream: false }) : text), { colors })
 }

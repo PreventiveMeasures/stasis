@@ -1,4 +1,4 @@
-import { diskHost } from '@exodus/stasis-core/host'
+import { withoutBom } from '@exodus/stasis-core/util'
 import { createFieldResolver } from './resolve-fields.js'
 
 // A stylesheet's imports, as webpack's css-loader (Next.js's) takes them: its `@import`s, each `url()` and string of
@@ -71,18 +71,15 @@ function readString(src, i) {
   let text = ''
   while (i < src.length && src[i] !== quote) {
     if (isNewline(src[i])) return [text, i]
-    if (src[i] !== '\\') {
-      text += src[i++]
-      continue
-    }
-    // A backslash before a newline continues the string; one at the end of the file spells nothing.
-    if (i + 1 >= src.length) i += 1
-    else if (src[i + 1] === '\r') i += src[i + 2] === '\n' ? 3 : 2
-    else if (isNewline(src[i + 1])) i += 2
-    else {
+    if (startsEscape(src, i)) {
       const [escaped, next] = escapeAt(src, i)
       text += escaped
       i = next
+    } else if (src[i] === '\\') {
+      // A backslash before a newline continues the string; one at the end of the file spells nothing.
+      i += src.startsWith('\r\n', i + 1) ? 3 : 2
+    } else {
+      text += src[i++]
     }
   }
   return [text, i + 1]
@@ -94,11 +91,15 @@ const pastClose = (src, i) => {
   return close === -1 ? src.length : close + 1
 }
 
-// An unquoted `url(`'s URL, up to its `)`: past whitespace anything but the `)`, and a quote or `(` in it, make it a
-// bad url, which spells none (null).
+// A `url(`'s URL, up to its `)`: a string's, what follows it skipped; else the unquoted token, which past whitespace
+// anything but the `)`, and a quote or `(` in it, make a bad url, which spells none (null).
 function readUrl(src, i) {
   let url = ''
   i = skipSpace(src, i)
+  if (src[i] === '"' || src[i] === "'") {
+    const [text, end] = readString(src, i)
+    return [text, pastClose(src, end)]
+  }
   while (i < src.length && src[i] !== ')') {
     if (isSpace(src[i])) {
       const end = skipSpace(src, i)
@@ -116,9 +117,33 @@ function readUrl(src, i) {
   return [url, i + 1]
 }
 
+// The token at `i`, [type, value, end]: a `string`, an `at`-keyword, an `ident`, a `function` or a `url` (a name's
+// value lowercased), else a `delim`, one character.
+function tokenAt(src, i) {
+  const c = src[i]
+  if (c === '"' || c === "'") {
+    const [text, end] = readString(src, i)
+    return ['string', text, end]
+  }
+  const at = c === '@' && startsName(src, i + 1)
+  if (!at && !startsName(src, i)) return ['delim', c, i + 1]
+  const [name, end] = readName(src, at ? i + 1 : i)
+  const lower = name.toLowerCase()
+  if (at) return ['at', lower, end]
+  if (src[end] !== '(') return ['ident', lower, end]
+  // `url("…")` is a function of a string, the string its URL; else the token is the URL itself.
+  if (lower === 'url') {
+    const [url, past] = readUrl(src, end + 1)
+    return ['url', url, past]
+  }
+  return ['function', lower, end + 1]
+}
+
+const IMAGE_SETS = new Set(['image-set', '-webkit-image-set'])
+
 // The specifiers `source` imports, in its order: [{ kind, spec }], `kind` one of CSS_KINDS.
 export function cssSpecifiers(source) {
-  const src = source.startsWith('﻿') ? source.slice(1) : source
+  const src = withoutBom(source)
   const specs = []
   // The open functions' names (`image-set`, whose strings are URLs too), innermost last.
   const functions = []
@@ -128,92 +153,40 @@ export function cssSpecifiers(source) {
   // In an at-rule's prelude, up to its block or `;`: a url() there (`@supports (background: url(x.png))`) loads
   // nothing, as css-loader takes an asset's URL from a declaration alone.
   let prelude = false
-  // The last token, a name's text or a delimiter: a declaration's name follows a `{` or a `;`.
-  let last = null
+  // Whether the last token is a `{` or a `;`, which a declaration's name follows; the last name read.
+  let declares = false
   let lastName = null
-  const url = (spec) => {
-    if (spec === null) return
-    if (importing) specs.push({ kind: KINDS.import, spec })
-    else if (!prelude) specs.push({ kind: KINDS.url, spec })
-  }
-
-  let i = 0
+  let i = skipSpace(src, 0)
   while (i < src.length) {
-    const c = src[i]
-    if (isSpace(c) || src.startsWith('/*', i)) {
-      i = skipSpace(src, i)
-      continue
-    }
-    if (c === '"' || c === "'") {
-      const [text, next] = readString(src, i)
-      i = next
-      const fn = functions.at(-1)
-      if (importing && functions.length === 0) specs.push({ kind: KINDS.import, spec: text })
-      else if (fromRule && lastName === 'from') specs.push({ kind: KINDS.from, spec: text })
-      else if (!prelude && (fn === 'image-set' || fn === '-webkit-image-set')) specs.push({ kind: KINDS.url, spec: text })
-      importing = false
-      last = 'string'
-      lastName = null
-      continue
-    }
-    if (c === '@' && startsName(src, i + 1)) {
-      const [name, next] = readName(src, i + 1)
-      i = next
-      const at = name.toLowerCase()
-      importing = at === 'import'
-      fromRule = at === 'value'
+    const [type, value, end] = tokenAt(src, i)
+    i = skipSpace(src, end)
+    if (type === 'string') {
+      if (importing && functions.length === 0) specs.push({ kind: KINDS.import, spec: value })
+      else if (fromRule && lastName === 'from') specs.push({ kind: KINDS.from, spec: value })
+      else if (!prelude && IMAGE_SETS.has(functions.at(-1))) specs.push({ kind: KINDS.url, spec: value })
+    } else if (type === 'url') {
+      if (value !== null && (importing || !prelude)) specs.push({ kind: importing ? KINDS.import : KINDS.url, spec: value })
+    } else if (type === 'at') {
+      fromRule = value === 'value'
       prelude = true
-      last = 'at'
-      lastName = null
-      continue
-    }
-    if (startsName(src, i)) {
-      const [name, next] = readName(src, i)
-      i = next
-      const lower = name.toLowerCase()
-      if (src[i] === '(' && lower === 'url') {
-        // `url("…")` is a function of a string, the string its URL; else the token is the URL itself.
-        const at = skipSpace(src, i + 1)
-        if (src[at] === '"' || src[at] === "'") {
-          const [text, after] = readString(src, at)
-          url(text)
-          i = pastClose(src, after)
-        } else {
-          const [spec, after] = readUrl(src, i + 1)
-          url(spec)
-          i = after
-        }
-        importing = false
-        last = 'url'
-        lastName = null
-      } else if (src[i] === '(') {
-        functions.push(lower)
-        i++
-        importing = false
-        last = 'function'
-        lastName = null
-      } else {
-        if (lower === 'composes' && (last === '{' || last === ';') && src[skipSpace(src, i)] === ':') fromRule = true
-        importing = false
-        last = 'name'
-        lastName = lower
-      }
-      continue
-    }
-    if (c === '(') functions.push('')
-    else if (c === ')') functions.pop()
-    if (c === ';' || c === '{' || c === '}') {
+    } else if (type === 'function') {
+      functions.push(value)
+    } else if (type === 'ident') {
+      if (value === 'composes' && declares && src[i] === ':') fromRule = true
+    } else if (value === '(') {
+      functions.push('')
+    } else if (value === ')') {
+      functions.pop()
+    } else if (value === ';' || value === '{' || value === '}') {
       fromRule = false
-      importing = false
       prelude = false
       functions.length = 0
-    } else if (c !== ':' && c !== ',') {
-      importing = false
     }
-    // `composes: a, b from …` keeps the name before its `:` and `,`.
-    if (c !== ':' && c !== ',') lastName = null
-    last = c
-    i++
+    // `composes: a, b from …` keeps the name before its `:` and `,`, as `@import` keeps its specifier to come.
+    const keeps = type === 'delim' && (value === ':' || value === ',')
+    if (!keeps) lastName = type === 'ident' ? value : null
+    importing = type === 'at' ? value === 'import' : importing && keeps
+    declares = type === 'delim' && (value === '{' || value === ';')
   }
   return specs
 }
@@ -249,9 +222,9 @@ export function cssRequests(spec) {
 // What css-loader's two resolvers resolve: an import (`@import`, `composes`, `@value`) by the `style` condition, the
 // `css`, `style` and `main` fields and a `.css` extension; a url() by the `asset` condition and field, as written.
 // -> (parentFile, kind, spec) -> { url } of the first of cssRequests' that resolves, or null
-export function createCssResolver({ host = diskHost, kept } = {}) {
-  const imports = createFieldResolver({ conditions: ['style'], mainFields: ['css', 'style', 'main'], sourceExts: ['css'], host, kept })
-  const urls = createFieldResolver({ conditions: ['asset'], mainFields: ['asset'], sourceExts: [], host, kept })
+export function createCssResolver({ host }) {
+  const imports = createFieldResolver({ conditions: ['style'], mainFields: ['css', 'style', 'main'], sourceExts: ['css'], host })
+  const urls = createFieldResolver({ conditions: ['asset'], mainFields: ['asset'], sourceExts: [], host })
   return (parentFile, kind, spec) => {
     const resolver = kind === KINDS.url ? urls : imports
     for (const request of cssRequests(spec)) {

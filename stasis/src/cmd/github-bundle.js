@@ -8,7 +8,7 @@ import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed, heldToLockfile } from './bundle.js'
 import { githubToken, withNpmToken } from './tokens.js'
-import { bundledSummary, bundleFileOf, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundleFileOf, bundleFormat, stasisTgzOf, summarize, unpackedSummary, writeFile, writeOutput } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
 const NAME_MAX = 255
@@ -33,8 +33,7 @@ export function githubBundleFile({ github, directory, commit }, suffix = BUNDLE_
 // build, and the repo it records the build's, and is left as it is. One not there is written, where `lockfile` or
 // `lockfileOnly` asks for it, recording the repo as the bundle does.
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, format: asked, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
-  checkLockfileOnly('githubBundleCommand: ', { lockfileOnly, lockfile, output, brotliQuality, format: asked, named: true })
-  const format = bundleFormat('githubBundleCommand: ', { format: asked, output, brotliQuality })
+  const format = bundleFormat('githubBundleCommand: ', { lockfileOnly, lockfile, output, brotliQuality, format: asked })
   const locks = lockfile !== undefined || lockfileOnly
   // The local lockfile's mode is the environment's alone: a repo's `lock: frozen` pins its own stasis.lock.json.
   const mode = env.EXODUS_STASIS_LOCK || 'frozen'
@@ -59,9 +58,6 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
   else dest = await debugTimed('Wrote the bundle', async () => writeOutput(cwd, output ?? named(bundleFileOf(format)), format === 'tgz' ? await stasisTgzOf(bundle) : compressBundle(bundle, brotliQuality)))
   if (lockData !== undefined) writeFile(lockAbs, lockData)
   const from = `${options.github}@${bundle.repo.commit}${directory ? `/${directory}` : ''}`
-  const summarized = (summary, to) => summary(bundle.sources.size, bundle.modules, from, to)
   console.warn(unpackedSummary(built.stats))
-  if (held) console.warn(summarized(heldSummary, label))
-  if (!lockfileOnly) console.warn(summarized(bundledSummary, dest))
-  else if (writes) console.warn(summarized(lockedSummary, lockTarget))
+  summarize(bundle.sources.size, bundle.modules, from, { held: held ? label : undefined, dest, locked: writes ? lockTarget : undefined })
 }

@@ -1,5 +1,6 @@
 import { basename, dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 
+import { readText } from '@exodus/stasis-core/bundle-util'
 import { isTypeDeclaration, memoized, relativeEscapes, withoutBom } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { RELATIVE_REQUEST } from './resolve-node.js'
@@ -25,11 +26,11 @@ export function typescriptSiblings(name) {
 // Never completed by appending `.ts`; any other extension (`./x.service`) is, as tsc's candidate list has it.
 const NO_COMPLETION_EXTS = new Set([...TS_SIBLING_EXTS.keys(), '.ts', '.tsx', '.mts', '.cts', '.json'])
 
-function realpathOr(path, host) {
+export function realpathOr(path, host, fallback = path) {
   try {
     return host.realpath(path)
   } catch {
-    return path
+    return fallback
   }
 }
 
@@ -37,12 +38,8 @@ export const isFile = (p, host = diskHost) => host.stat(p)?.isFile() ?? false
 export const isDir = (p, host = diskHost) => host.stat(p)?.isDirectory() ?? false
 
 export function readManifest(file, host = diskHost) {
-  let text
-  try {
-    text = host.readFile(file).toString('utf8')
-  } catch {
-    return null
-  }
+  const text = readText(host, file)
+  if (text === null) return null
   // A manifest that exists but is malformed fails closed, as Node throws rather than resolving past it.
   try {
     return JSON.parse(text)
@@ -84,10 +81,8 @@ function* packageDirs(dir) {
 // A `.d.ts` is types-only, erased at runtime: no resolution lands on one.
 export const isSourceFile = (path, host = diskHost) => !isTypeDeclaration(path) && isFile(path, host)
 const firstSource = (candidates, host) => candidates.find((path) => isSourceFile(path, host)) ?? null
-
-// tsc's tryAddingExtensions order; `.js`/`.jsx` only with `js`, for a path Node never probed (a tsconfig paths target).
-// Exports and imports targets name exact files, so they take none.
-const completionExts = (js) => (js ? ['.ts', '.tsx', '.js', '.jsx'] : ['.ts', '.tsx'])
+// tsc's pick for a JS output, the first of its TS siblings on disk: null for none.
+export const typescriptSource = (output, host) => firstSource(typescriptSiblings(output), host)
 
 function probeFile(base, exts, host) {
   const completed = NO_COMPLETION_EXTS.has(extname(base)) ? [] : exts.map((ext) => `${base}${ext}`)
@@ -98,7 +93,8 @@ const probeIndex = (dir, exts, host) => firstSource(exts.map((ext) => join(dir, 
 
 // `dirOnly` skips the file rules ('.', '..', a trailing '/'). An unbuilt output's source is probed without `outputs`.
 function probeTypescriptTarget(base, { js = false, dirOnly = false, outputs, host }) {
-  const exts = completionExts(js)
+  // tsc's tryAddingExtensions order; `.js`/`.jsx` only with `js`, for a path Node never probed (a tsconfig paths target).
+  const exts = js ? ['.ts', '.tsx', '.js', '.jsx'] : ['.ts', '.tsx']
   const fromMain = (path) => probeFile(path, exts, host) ?? probeIndex(path, exts, host)
   const probe = (path, mapping) => {
     const file = dirOnly ? null : probeFile(path, exts, host)
@@ -124,18 +120,23 @@ function leniently(lenient, read) {
   }
 }
 
+// dir -> the compiler options of its tsconfig.json, each loaded once: null where it has none. `lenient` is for builds
+// that only hint: a tsconfig.json that doesn't load maps nothing rather than failing them.
+function tsconfigsOf(host, lenient) {
+  const configs = hostMemo(host)
+  return (dir) => configs(dir, () => {
+    const file = join(dir, 'tsconfig.json')
+    return isFile(file, host) ? leniently(lenient, () => loadTsconfigCompilerOptions(file, host)) : null
+  })
+}
+
 // Without `rootDir` the root is the tsconfig's dir, as TypeScript 6 takes it (an older tsc infers it from its inputs).
-// `lenient` is for builds that only hint: a tsconfig.json that doesn't load maps nothing rather than failing them.
-export function tsconfigOutputsOf({ host = diskHost, lenient = false } = {}) {
-  const layouts = hostMemo(host)
+export function tsconfigOutputsOf({ host = diskHost, configs = tsconfigsOf(host, false) } = {}) {
   return (pkgDir) => {
     const dir = realpathOr(pkgDir, host)
-    const file = join(dir, 'tsconfig.json')
-    return layouts(dir, () => leniently(lenient, () => {
-      if (IN_NODE_MODULES.test(dir) || !isFile(file, host)) return null
-      const { outDir, rootDir } = loadTsconfigCompilerOptions(file, host)
-      return typeof outDir === 'string' ? { dir, outDir, rootDir: typeof rootDir === 'string' ? rootDir : dir } : null
-    }))
+    const options = IN_NODE_MODULES.test(dir) ? null : configs(dir)
+    if (typeof options?.outDir !== 'string') return null
+    return { dir, outDir: options.outDir, rootDir: typeof options.rootDir === 'string' ? options.rootDir : dir }
   }
 }
 
@@ -273,9 +274,10 @@ export function loadTsconfigCompilerOptions(file, host = diskHost) {
   return options
 }
 
+export const loadTsconfigPaths = (file, host = diskHost) => pathsMatcher(loadTsconfigCompilerOptions(file, host), file)
+
 // Only the one best key's targets: tsc tries no other when they miss. A malformed shape fails closed.
-export function loadTsconfigPaths(file, host = diskHost) {
-  const { paths, pathsBasePath, baseUrl } = loadTsconfigCompilerOptions(file, host)
+function pathsMatcher({ paths, pathsBasePath, baseUrl }, file) {
   if (paths == null || typeof paths !== 'object' || Object.keys(paths).length === 0) return null
   for (const [key, targets] of Object.entries(paths)) {
     if (!Array.isArray(targets) || targets.some((t) => typeof t !== 'string')) {
@@ -323,16 +325,18 @@ export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, pr
     if (workspaceRoot === null) return projectPackage
     return packageDirs(dirname(realpathOr(parentFile, host))).find((dir) => dir === workspaceRoot || holdsNamedPackage(dir, host)) ?? null
   }
+  // A package's tsconfig.json is loaded once, for its `paths` and its outputs alike.
+  const configs = tsconfigsOf(host, lenient)
   const matcherOf = memoized((dir) => {
-    const file = join(dir, 'tsconfig.json')
-    return isFile(file, host) ? leniently(lenient, () => loadTsconfigPaths(file, host)) : null
+    const options = configs(dir)
+    return options === null ? null : leniently(lenient, () => pathsMatcher(options, join(dir, 'tsconfig.json')))
   })
   return {
     matchPaths(spec, parentFile) {
       const dir = packageOf(parentFile)
       return dir === null ? [] : (matcherOf(dir)?.matchPaths(spec) ?? [])
     },
-    outputs: tsconfigOutputsOf({ host, lenient }),
+    outputs: tsconfigOutputsOf({ host, configs }),
   }
 }
 
@@ -344,6 +348,15 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules(?:[\\/]|$)/u
 export const inNodeModules = (file, host = diskHost) => IN_NODE_MODULES.test(realpathOr(file, host))
 // `path` (null for none) where it lies outside node_modules, else null.
 export const outsideNodeModules = (path, host) => (path == null || inNodeModules(path, host) ? null : path)
+
+// A specifier naming a path: relative, as Node takes one, or absolute.
+export const isPathRequest = (spec) => RELATIVE_REQUEST.test(spec) || isAbsolute(spec)
+
+// Where a tsconfig `paths` alias points a bare specifier imported from outside node_modules.
+export function typescriptAliasTargets(parentFile, spec, paths, host) {
+  if (paths === null || isPathRequest(spec) || spec.startsWith('#') || inNodeModules(parentFile, host)) return []
+  return paths.matchPaths(spec, parentFile)
+}
 
 // Always null from or into node_modules. `paths`: a tsconfig paths matcher, whose `outputs` map unbuilt outputs.
 export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), paths = null, host = diskHost } = {}) {
@@ -357,7 +370,7 @@ function typescriptTarget(parentFile, spec, { conditions, paths, host }) {
     const scope = nearestPackage(parentFile, host)
     return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, outputs, host }) : null
   }
-  if (RELATIVE_REQUEST.test(spec) || isAbsolute(spec)) {
+  if (isPathRequest(spec)) {
     const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
     return probeTypescriptTarget(base, { dirOnly: DIR_ONLY_SPEC.test(spec), outputs, host })
   }

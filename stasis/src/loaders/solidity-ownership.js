@@ -8,7 +8,7 @@ import { utf8toString } from '@exodus/bytes/utf8.js'
 import { LockfileError, parseGitmodules } from '@preventive/lockfile/foundry.js'
 import { NO_ENTRY, lexists, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment, memoized, relativeEscapes, upsert } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, memoized, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
 
 // Only Windows' separator: on POSIX a `\\` is part of a name, and must not read as a directory boundary.
@@ -25,7 +25,29 @@ export function realpathOrNull(p, host = diskHost) {
   }
 }
 
+export function canonicalize(p, host) {
+  const real = realpathOrNull(p, host)
+  return real === null ? null : toPosix(real)
+}
+
 const inRoot = (rel) => !relativeEscapes(rel)
+
+// POSIX paths compared by component, as Rust compares `Path`s.
+export const isAbs = (p) => p.startsWith('/')
+export const normalComps = (p) => p.split('/').filter((c) => c !== '' && c !== '.')
+// `Path::strip_prefix`: the remaining components, or null.
+export function stripPrefix(p, base) {
+  if (isAbs(p) !== isAbs(base)) return null
+  const a = normalComps(p)
+  const b = normalComps(base)
+  if (b.length > a.length || !b.every((c, i) => a[i] === c)) return null
+  return a.slice(b.length).join('/')
+}
+
+// How messages name a file of the project at `root`: from the root, by its lexical or its canonical path.
+export function shownFrom(root, host = diskHost, canonicalRoot = canonicalize(root, host) ?? root) {
+  return (abs) => stripPrefix(abs, root) || stripPrefix(abs, canonicalRoot) || abs
+}
 
 // As spelled inside `root` with no `..` to resolve, else by real paths. One with no real path is never normalized,
 // which could name another file: it keeps its `..`s, for solidityOwnership to refuse.
@@ -35,14 +57,8 @@ export function projectRelative(root, abs, host = diskHost) {
   const real = realpathOrNull(abs, host)
   const realRoot = realpathOrNull(root, host)
   if (real !== null) return toSlashes(relative(realRoot ?? root, real))
-  return below(resolve(root), abs) ?? (realRoot === null ? null : below(realRoot, abs)) ?? toSlashes(abs)
-}
-
-function below(dir, abs) {
-  const parts = (p) => toSlashes(p).split('/').filter((c) => c !== '' && c !== '.')
-  const d = parts(dir)
-  const a = parts(abs)
-  return d.length < a.length && d.every((c, i) => a[i] === c) ? a.slice(d.length).join('/') : null
+  const lexicalRoot = toSlashes(resolve(root))
+  return shownFrom(lexicalRoot, host, realRoot === null ? lexicalRoot : toSlashes(realRoot))(toSlashes(abs))
 }
 
 // `missing` only when nothing is there at all: the OS may fail to resolve what is there (past PATH_MAX, a loop,
@@ -290,9 +306,10 @@ function readGitConfig(text) {
   }
 }
 
-const readdirOrEmpty = (dir, host) => {
+// In the filesystem's own order where the host has one; none where the directory can't be read.
+export function dirEntries(dir, host) {
   try {
-    return host.readdir(dir)
+    return host.readdirUnsorted ? host.readdirUnsorted(dir) : host.readdir(dir)
   } catch {
     return []
   }
@@ -330,7 +347,7 @@ export function solidityOwnership(baseDir, { dirs = [], packages = [], host = di
     if (posix.basename(d) === 'node_modules') continue // a package's own rule, below
     holders.add(d)
     addReal(holders, d)
-    for (const e of readdirOrEmpty(join(baseDir, d), host)) if (e.isSymbolicLink() && isDir(join(baseDir, d, e.name), host)) addReal(roots, `${d}/${e.name}`)
+    for (const e of dirEntries(join(baseDir, d), host)) if (e.isSymbolicLink() && isDir(join(baseDir, d, e.name), host)) addReal(roots, `${d}/${e.name}`)
   }
   for (const p of packages.map(clean).filter(inside)) {
     roots.add(p)

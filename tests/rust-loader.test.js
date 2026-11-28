@@ -551,7 +551,7 @@ test('scanRustItems records include macros with a literal path and bare macro in
     'pub fn dead() {}',
   ].join('\n'), { features: new Set() })
   t.assert.deepStrictEqual(attrs.includes.map((inc) => inc.path), ['../README.md', 'docs/live.md'])
-  t.assert.deepStrictEqual([...items.invocations].toSorted(), ['concat', 'env', 'include', 'include_bytes', 'include_str', 'println', 'ready']) // `a != b` is no invocation
+  t.assert.deepStrictEqual([...items.calls.keys()].toSorted(), ['concat', 'env', 'include', 'include_bytes', 'include_str', 'println', 'ready']) // `a != b` is no invocation
   t.assert.deepStrictEqual(items.mods.map((m) => m.name), ['live']) // the inline module's inner cfg can't hold: emptied
   t.assert.deepStrictEqual(items.refs.map((r) => r.spec), [])
   // At the top of a file such an inner cfg empties the whole file.
@@ -1267,7 +1267,7 @@ test('scanRustItems skips the else branches of a dead `if`, and takes a bare mac
     '}',
   ].join('\n'), { features: new Set() })
   t.assert.deepStrictEqual(items.refs.map((r) => r.spec), [])
-  t.assert.deepStrictEqual([...items.invocations].toSorted(), ['helper', 'other'])
+  t.assert.deepStrictEqual([...items.calls.keys()].toSorted(), ['helper', 'other'])
 })
 
 test('buildRustTree resolves through several globs of one module, and through each import under its own cfg', (t) => {

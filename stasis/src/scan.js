@@ -1,4 +1,4 @@
-import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, relative } from 'node:path'
+import { basename, dirname, extname, join, resolve as resolvePath, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import { totalmem } from 'node:os'
@@ -8,7 +8,8 @@ import { packageType, readJson } from '@exodus/stasis-core/bundle-util'
 import { excludedText } from '@exodus/stasis-core/policy'
 import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes, stylesheetFormat, upsert } from '@exodus/stasis-core/util'
 import { CSS_KINDS, createCssResolver, cssRequests, cssSpecifiers } from './css.js'
-import { inNodeModules, isSourceFile, locatePackage, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { resolveConditions } from './resolve-fields.js'
+import { inNodeModules, isPathRequest, locatePackage, outsideNodeModules, realpathOr, resolveTypescriptFallback, typescriptAliasTargets, typescriptSiblings, typescriptSource } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -170,10 +171,7 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
     }
   }
   // tsc's pick, the first TS source on disk, as the resolver maps it: none where it lies in node_modules.
-  const mapsTo = (target) => {
-    const pick = typescriptSiblings(target).find((file) => isSourceFile(file, host))
-    return pick !== undefined && !inNodeModules(pick, host)
-  }
+  const mapsTo = (target) => outsideNodeModules(typescriptSource(target, host), host) !== null
   return targets.length > 0 && targets.every((target) => host.stat(target) === null && mapsTo(target))
 }
 
@@ -187,7 +185,7 @@ function listsTypesOnly(node, { source, strippedSource }) {
   return strippedSource !== null && source.slice(node.start, node.end) !== strippedSource.slice(node.start, node.end)
 }
 
-// What a build is reported by (EXODUS_STASIS_DEBUG); see #scanKept.
+// What a build is reported by (EXODUS_STASIS_DEBUG); see #scanFile and #scanKept.
 export const scanCounts = { parsed: 0, resolved: 0, replayed: 0 }
 
 export class Scan {
@@ -222,10 +220,6 @@ export class Scan {
 
   // css.js's, once a stylesheet is reached.
   #cssResolver
-  #resolveCss(file, kind, spec) {
-    this.#cssResolver ??= createCssResolver({ host: this.host })
-    return this.#cssResolver(file, kind, spec)
-  }
 
   // The specifiers of the files there that `pattern` (nativePattern's) spells, each expression of it any run of
   // characters within one name: never a `/`, so the files are those of the directories it spells.
@@ -266,37 +260,32 @@ export class Scan {
     for (let head = 0; head < queue.length; head++) {
       const url = queue[head]
       if (this.files.has(url)) continue
-      if (this.memo === null) {
-        scanCounts.parsed++
-        this.#scanFile(url, queue)
-      } else {
-        this.#scanKept(url, queue)
-      }
+      this.#takeIn(url, this.memo === null ? this.#scanFile(url) : this.#scanKept(url), queue)
     }
     return this
   }
 
-  // The parse of the file being scanned a scan before kept, and the parse of it made here.
-  #reparse
-  #parse
+  // A file's scan (#scanFile's), made here or kept: its record, the targets of its edges to scan, and what it missed.
+  #takeIn(url, { file, imports, unresolved, parseErrors, queued }, queue) {
+    this.files.set(url, file)
+    for (const e of file.edges) if (e.native && e.child) this.#natives.add(e.child)
+    for (const [key, specMap] of imports) nestedMap(this.imports, key).set(url, specMap)
+    this.parseErrors.push(...parseErrors)
+    // One by one: a file's edges are as many as it holds, past what a call takes as arguments.
+    for (const miss of unresolved) this.unresolved.push(miss)
+    for (const child of queued) queue.push(child)
+  }
 
   // `memo`: url -> what a scan read of it, kept across a lazy tree's rounds. A file is kept whole where reading it
   // touched no package not unpacked yet (`host.touches()`); else its parse alone, so the next scan parses it no more.
-  #scanKept(url, queue) {
+  #scanKept(url) {
     const kept = this.memo.get(url)
-    scanCounts[kept?.queued !== undefined ? 'replayed' : kept?.parse === undefined ? 'parsed' : 'resolved'] += 1
-    if (kept?.queued !== undefined) {
-      this.files.set(url, kept.file)
-      for (const e of kept.file.edges) if (e.native && e.child) this.#natives.add(e.child)
-      for (const [key, specMap] of kept.imports) nestedMap(this.imports, key).set(url, specMap)
-      this.unresolved.push(...kept.unresolved)
-      this.parseErrors.push(...kept.parseErrors)
-      queue.push(...kept.queued)
+    if (kept?.file !== undefined) {
+      scanCounts.replayed++
       for (const args of kept.warnings) console.warn(...args)
-      return
+      return kept
     }
     const touches = this.host.touches()
-    const at = { unresolved: this.unresolved.length, parseErrors: this.parseErrors.length, queue: queue.length }
     // The scan of a file is synchronous: what console.warn is given meanwhile is the file's.
     const warnings = []
     const warn = console.warn
@@ -304,52 +293,30 @@ export class Scan {
       warnings.push(args)
       warn.apply(console, args)
     }
-    this.#reparse = kept?.parse
-    this.#parse = undefined
+    let scanned
     try {
-      this.#scanFile(url, queue)
+      scanned = this.#scanFile(url, kept?.parse)
     } finally {
       console.warn = warn
-      this.#reparse = undefined
     }
-    if (this.host.touches() !== touches) {
-      if (this.#parse !== undefined) this.memo.set(url, { parse: this.#parse })
-      return
-    }
-    this.memo.set(url, {
-      file: this.files.get(url),
-      imports: [...this.imports].filter(([, byParent]) => byParent.has(url)).map(([key, byParent]) => [key, byParent.get(url)]),
-      unresolved: this.unresolved.slice(at.unresolved),
-      parseErrors: this.parseErrors.slice(at.parseErrors),
-      queued: queue.slice(at.queue),
-      warnings,
-    })
+    const { parse, ...whole } = scanned
+    if (this.host.touches() === touches) this.memo.set(url, { ...whole, warnings })
+    else if (parse !== undefined) this.memo.set(url, { parse })
+    return scanned
   }
 
-  // Node's: the runtime resolver's conditions in its order (the recorded key must equal the runtime hooks' string).
-  // A custom resolver's: what esbuild, webpack and Metro assert (resolve-fields.js's resolveConditions).
-  #conditionSet(context) {
-    if (this.customResolve) return new Set([context, 'default', ...this.extraConditions])
-    return context === 'import'
-      ? new Set(['node', 'import', 'module-sync', 'node-addons', ...this.extraConditions])
-      : new Set(['require', 'node', 'node-addons', ...this.extraConditions, 'module-sync'])
-  }
-
-  // `recovered`: false where the parser crashed; true where oxc's partial module records were discarded.
-  #recordParseError(url, format, message, recovered) {
-    this.files.set(url, { format, edges: [], parseError: message })
-    this.parseErrors.push({ url, format, message, recovered })
+  // Node's, by an edge's kind: the runtime resolver's conditions in its order (the recorded key must equal the runtime
+  // hooks' string).
+  #nodeConditions(kind) {
+    return kind === 'require'
+      ? new Set(['require', 'node', 'node-addons', ...this.extraConditions, 'module-sync'])
+      : new Set(['node', 'import', 'module-sync', 'node-addons', ...this.extraConditions])
   }
 
   // Only once Node's resolution missed, so it never rewrites a successful one; realpathed, as every edge is.
   #typescriptResolve(parentFile, spec, conditions) {
     const hit = resolveTypescriptFallback(parentFile, spec, { conditions, paths: this.typescriptPaths, host: this.host })
-    if (hit == null) return null
-    try {
-      return this.host.realpath(hit)
-    } catch {
-      return null
-    }
+    return hit == null ? null : realpathOr(hit, this.host, null)
   }
 
   // The file: URL a miss would resolve to under --typescript: a hint for the unresolved report only, never an edge.
@@ -361,27 +328,21 @@ export class Scan {
   }
 
   // Where a miss would have landed, for vfs-bundle/prisma.js to match to generator outputs: a path's file, the
-  // resolver's `target` (a custom one's missTargets), and under --typescript where a tsconfig alias points.
+  // resolver's `target` (a path, or a custom one's missTargets), and under --typescript where a tsconfig alias points.
   #missTargets(parentFile, spec, target) {
-    const path = RELATIVE_REQUEST.test(spec) || isAbsolute(spec)
-    const aliased = !path && !spec.startsWith('#') && this.typescript && this.typescriptPaths !== null && !inNodeModules(parentFile, this.host)
-    return [
-      ...(path ? [resolvePath(dirname(parentFile), spec)] : []),
-      ...(typeof target === 'string' ? [target] : Array.isArray(target) ? target : []),
-      ...(aliased ? this.typescriptPaths.matchPaths(spec, parentFile) : []),
-    ].map((at) => this.#realTarget(at))
+    const path = isPathRequest(spec) ? [resolvePath(dirname(parentFile), spec)] : []
+    const aliased = this.typescript ? typescriptAliasTargets(parentFile, spec, this.typescriptPaths, this.host) : []
+    return [...path, ...[].concat(target ?? []), ...aliased].map((at) => this.#realTarget(at))
   }
 
   // A missing file by its deepest ancestor that is there, realpathed (a package reached through node_modules is a link).
   #realTarget(path) {
     const rest = []
     for (let at = path; ; at = dirname(at)) {
-      try {
-        return join(this.host.realpath(at), ...rest)
-      } catch {
-        if (dirname(at) === at) return path
-        rest.unshift(basename(at))
-      }
+      const real = realpathOr(at, this.host, null)
+      if (real !== null) return join(real, ...rest)
+      if (dirname(at) === at) return path
+      rest.unshift(basename(at))
     }
   }
 
@@ -391,7 +352,7 @@ export class Scan {
   // Before Node's resolution reads the package (a lazy tree fetches it), by the directory it is installed in; but for
   // a package's reference to itself, which resolves through its own exports first.
   #excludedPackage(parentFile, spec) {
-    if (this.excludes === null || RELATIVE_REQUEST.test(spec) || isAbsolute(spec) || spec.startsWith('#')) return undefined
+    if (this.excludes === null || isPathRequest(spec) || spec.startsWith('#')) return undefined
     const name = spec.split('/', spec.startsWith('@') ? 2 : 1).join('/')
     const dir = dirname(parentFile)
     const excluded = upsert(this.#excludedPackages, `${dir}\0${name}`, () => {
@@ -477,39 +438,41 @@ export class Scan {
     return { format, errors: [], specs: cssSpecifiers(buf.toString('utf8')) }
   }
 
-  #scanFile(url, queue) {
+  // What #takeIn takes in of the file; `parse`, what a later scan of it starts from (`reparse`): its parse, or once its
+  // specifiers are found, those.
+  #scanFile(url, reparse) {
+    scanCounts[reparse === undefined ? 'parsed' : 'resolved']++
     const file = fileURLToPath(url)
     const ext = extname(file)
     const stylesheet = stylesheetFormat(file)
+    // `imports`: condition key -> specifier -> child URL.
+    const scanned = { imports: new Map(), unresolved: [], parseErrors: [], queued: [] }
+    const { imports, unresolved, parseErrors, queued } = scanned
     // `resource: true` is what both bundle builders key off; they derive its format from its bytes.
     const leaf = stylesheet !== undefined ? null
       : ext === '.json' ? { format: 'json', edges: [] }
       : this.#isResource(file) || this.#natives.has(url) ? { format: null, edges: [], resource: true }
       : JS_EXTENSIONS.has(ext) ? null
       : { format: null, edges: [] }
-    if (leaf !== null) {
-      this.files.set(url, leaf)
-      return
-    }
+    if (leaf !== null) return { ...scanned, file: leaf }
 
-    const result = this.#reparse ?? (stylesheet === undefined ? this.parseFile(file) : this.#parseStylesheet(file, stylesheet))
-    this.#parse = result
-    if (result.crash !== undefined) {
-      this.#recordParseError(url, result.declared, result.crash, false)
-      return
+    const result = reparse ?? (stylesheet === undefined ? this.parseFile(file) : this.#parseStylesheet(file, stylesheet))
+    scanned.parse = result
+    // `recovered`: false where the parser crashed; true where oxc's partial module records were discarded.
+    const failed = (format, message, recovered) => {
+      parseErrors.push({ url, format, message, recovered })
+      return { ...scanned, file: { format, edges: [], parseError: message } }
     }
+    if (result.crash !== undefined) return failed(result.declared, result.crash, false)
     const { format, parsed, errors } = result
 
     let parseError
     if (errors.length > 0) {
       parseError = errors.map((e) => e.message).join('; ')
       // A partially-parsed module file may be missing link-time edges we can't enumerate.
-      if (format.startsWith('module')) {
-        this.#recordParseError(url, format, parseError, true)
-        return
-      }
+      if (format.startsWith('module')) return failed(format, parseError, true)
       // A script walks on through oxc's recovered AST, so a scan reports the rest of the graph's errors too.
-      this.parseErrors.push({ url, format, message: parseError, recovered: true })
+      parseErrors.push({ url, format, message: parseError, recovered: true })
     }
 
     const typesErased = () => result.strippedSource !== null || !this.keepsTypeImports?.(file)
@@ -518,34 +481,30 @@ export class Scan {
       const touches = this.memo === null ? 0 : this.host.touches()
       specs = collectSpecifiers(parsed.program, this.defines, this.babel ? (node) => listsTypesOnly(node, result) && typesErased() : undefined)
       // Where finding the specifiers touched no package not unpacked yet, they are kept in place of the parse.
-      if (this.memo !== null && this.host.touches() === touches) this.#parse = { format, errors, specs }
+      if (this.memo !== null && this.host.touches() === touches) scanned.parse = { format, errors, specs }
     }
 
-    // The edge kind picks Node's resolution context, not the parent's format: a createRequire()d require() in ESM
-    // resolves under require conditions. A custom resolver keeps the format's: bundlers don't split per edge.
-    const formatContext = ['module', 'module-typescript'].includes(format) ? 'import' : 'require'
+    const formatConditions = this.customResolve ? new Set(resolveConditions(format, this.extraConditions)) : null
     const edges = []
-    const specMaps = new Map() // condition key -> specifier -> child URL
-    // A miss, never read.
-    const addExcluded = (s, reason) => {
+    // A miss, never read; `hints`, what the unresolved report says of it besides.
+    const addMiss = (s, reason, hints) => {
       edges.push({ ...s, error: reason })
-      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
+      unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason, ...hints })
     }
     const addChild = (s, conditions, childURL, childPath) => {
       if (this.excludes?.(childPath) !== undefined) {
-        addExcluded(s, EXCLUDED_REASON)
+        addMiss(s, EXCLUDED_REASON)
         return
       }
       edges.push({ ...s, child: childURL })
-      nestedMap(specMaps, [...conditions].join(', ')).set(s.spec, childURL)
-      if (s.native) this.#natives.add(childURL)
-      if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || stylesheetFormat(childPath) !== undefined || this.#isResource(childPath)) queue.push(childURL)
+      nestedMap(imports, [...conditions].join(', ')).set(s.spec, childURL)
+      if (s.native || RESOLVABLE_EXTS.has(extname(childPath)) || stylesheetFormat(childPath) !== undefined || this.#isResource(childPath)) queued.push(childURL)
     }
     // Each native addon there that a path spelled in part names is an edge of the specifier spelling it, as a run
     // records the one it loads. Only as Node resolves: a browser or React Native target loads no native addon.
     const addNatives = (s) => {
       if (s.pattern === undefined || this.customResolve) return false
-      const conditions = this.#conditionSet('require')
+      const conditions = this.#nodeConditions('require')
       let named = false
       for (const spec of this.#spelledBy(file, s.pattern)) {
         let childPath
@@ -560,41 +519,39 @@ export class Scan {
       }
       return named
     }
-    const addUnresolved = (s, reason, conditions, target) => {
-      edges.push({ ...s, error: reason })
+    // A resolver's miss: `targetOf()`, where it would have landed (#missTargets').
+    const addUnresolved = (s, reason, conditions, targetOf) => {
       const typescriptURL = this.#typescriptCandidate(file, s.spec, conditions)
-      const targets = this.missTargets ? this.#missTargets(file, s.spec, target) : []
-      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason, ...(typescriptURL ? { typescriptURL } : {}), ...(targets.length > 0 ? { targets } : {}) })
+      const targets = this.missTargets ? this.#missTargets(file, s.spec, targetOf()) : []
+      addMiss(s, reason, { ...(typescriptURL ? { typescriptURL } : {}), ...(targets.length > 0 ? { targets } : {}) })
     }
 
     for (const s of specs) {
       // A stylesheet's edge, as its loader resolves it (css.js), whatever resolves the JS: a static one, so a miss
       // breaks the build as it breaks the loader's. One naming no file (`data:`, `https:`, `/public.png`) is none.
       if (CSS_KINDS.has(s.kind)) {
-        const conditions = s.kind === 'css-url' ? CSS_URL_CONDITIONS : CSS_IMPORT_CONDITIONS
-        const hit = this.#resolveCss(file, s.kind, s.spec)
-        if (hit !== null) addChild(s, conditions, hit.url, fileURLToPath(hit.url))
-        else if (cssRequests(s.spec).length > 0) {
-          edges.push({ ...s, error: 'MODULE_NOT_FOUND' })
-          this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason: 'MODULE_NOT_FOUND' })
-        }
+        this.#cssResolver ??= createCssResolver({ host: this.host })
+        const hit = this.#cssResolver(file, s.kind, s.spec)
+        if (hit !== null) addChild(s, s.kind === 'css-url' ? CSS_URL_CONDITIONS : CSS_IMPORT_CONDITIONS, hit.url, fileURLToPath(hit.url))
+        else if (cssRequests(s.spec).length > 0) addMiss(s, 'MODULE_NOT_FOUND')
         continue
       }
       if (s.dynamic) {
         if (addNatives(s)) continue
         edges.push({ kind: s.kind, dynamic: true })
-        this.unresolved.push({ parentURL: url, kind: s.kind, reason: 'dynamic' })
+        unresolved.push({ parentURL: url, kind: s.kind, reason: 'dynamic' })
         continue
       }
-      const context = this.customResolve ? formatContext : (s.kind === 'require' ? 'require' : 'import')
-      const conditions = this.#conditionSet(context)
+      // The edge kind picks Node's resolution context, not the parent's format: a createRequire()d require() in ESM
+      // resolves under require conditions. A custom resolver keeps the format's: bundlers don't split per edge.
+      const conditions = formatConditions ?? this.#nodeConditions(s.kind)
       // An `empty` edge (a browser/RN `false` redirect) is recorded but neither queued nor counted as unresolved.
       if (this.customResolve) {
         const r = this.customResolve(file, s.spec, conditions)
         if (r?.builtin) edges.push({ ...s, builtin: true })
         else if (r?.empty) edges.push({ ...s, empty: true })
         else if (r?.url) addChild(s, conditions, r.url, fileURLToPath(r.url))
-        else addUnresolved(s, 'MODULE_NOT_FOUND', conditions, this.missTargets ? this.customResolve.missTargets?.(file, s.spec, conditions) : undefined)
+        else addUnresolved(s, 'MODULE_NOT_FOUND', conditions, () => this.customResolve.missTargets?.(file, s.spec, conditions))
         continue
       }
       if (isBuiltin(s.spec)) {
@@ -603,7 +560,7 @@ export class Scan {
       }
       const excluded = this.#excludedPackage(file, s.spec)
       if (excluded !== undefined) {
-        addExcluded(s, excluded)
+        addMiss(s, excluded)
         continue
       }
       let childPath
@@ -613,15 +570,13 @@ export class Scan {
         // The edge stays keyed by the original specifier; only the target is the mapped file.
         if (this.typescript) childPath = this.#typescriptResolve(file, s.spec, conditions)
         if (childPath == null) {
-          addUnresolved(s, cause.code ?? cause.message, conditions, cause.target)
+          addUnresolved(s, cause.code ?? cause.message, conditions, () => cause.target)
           continue
         }
       }
       addChild(s, conditions, pathToFileURL(childPath).toString(), childPath)
     }
-
-    for (const [key, specMap] of specMaps) nestedMap(this.imports, key).set(url, specMap)
-    this.files.set(url, parseError ? { format, edges, parseError } : { format, edges })
+    return { ...scanned, file: parseError ? { format, edges, parseError } : { format, edges } }
   }
 
   toRelative(root) {

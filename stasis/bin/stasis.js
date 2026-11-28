@@ -208,10 +208,9 @@ if (command === '-v' || command === '--version') {
   if (values.generate !== undefined && values['no-generate']) fail('Error: github-bundle takes --generate or --no-generate, not both')
   const lockfileOnly = Boolean(values['lockfile-only'])
   // Before anything is fetched.
-  const { bundleFormat, checkLockfileOnly } = await import('../src/cmd/output.js')
+  const { bundleFormat } = await import('../src/cmd/output.js')
   try {
-    checkLockfileOnly('github-bundle: ', { lockfileOnly, lockfile: values.lockfile, output: values.output, brotliQuality: values['brotli-quality'], format: values.format, named: true })
-    bundleFormat('github-bundle: ', { format: values.format, output: values.output, brotliQuality: values['brotli-quality'] })
+    bundleFormat('github-bundle: ', { lockfileOnly, lockfile: values.lockfile, output: values.output, brotliQuality: values['brotli-quality'], format: values.format })
   } catch (cause) {
     fail(`Error: ${cause.message}`)
   }

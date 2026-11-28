@@ -22,7 +22,7 @@ let generate
 
 // `source` with its Flow types blanked in place (offsets kept): one marked `@flow` as Flow throughout (`f<T>(x)` a
 // call), any other as a `@noflow` file, marked so past its end. Flow code (`enum`s) stays. Throws where it can't parse.
-function stripFlowTypes(source, { removeEmptyImports = false } = {}) {
+function stripFlowTypes(source, removeEmptyImports) {
   flowRemoveTypes ??= require('flow-remove-types')
   if (hasFlowPragma(source)) return flowRemoveTypes(source, { all: true, removeEmptyImports }).toString()
   if (source.includes('@noflow')) return flowRemoveTypes(source, { removeEmptyImports }).toString()
@@ -57,7 +57,7 @@ export function stripFlow(text, path, parse, { removeEmptyImports = false } = {}
   const read = (lower) => {
     try {
       const source = lower ? lowerFlowSyntax(text) : text
-      const stripped = stripFlowTypes(source, { removeEmptyImports })
+      const stripped = stripFlowTypes(source, removeEmptyImports)
       return { parsed: parse(stripped) || null, source, stripped }
     } catch (error) {
       return { parsed: null, error }

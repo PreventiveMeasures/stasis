@@ -148,5 +148,4 @@ export function checkAhead(name, packageManager, options) {
   const entries = told?.length === 0 && options.entries.length > 0 ? undefined : told
   const refusals = entries === undefined ? (pm === undefined ? Object.values(KINDS) : [KINDS[pm.kind]]).map(({ standIn }) => refusal([standIn])) : [refusal(entries)]
   if (!refusals.includes(null)) throw refusals[0]
-  return pm
 }

@@ -5,17 +5,6 @@ import { TomlError, parseToml } from '@preventive/lockfile/toml.js'
 
 export { TomlError }
 
-// The index of the bracket closing the one at `open`; the last index when unbalanced.
-export function matchClose(text, open) {
-  const close = { '[': ']', '(': ')', '{': '}' }[text[open]]
-  let depth = 0
-  for (let i = open; i < text.length; i++) {
-    if (text[i] === text[open]) depth++
-    else if (text[i] === close && --depth === 0) return i
-  }
-  return text.length - 1
-}
-
 // Split on commas outside brackets, braces, parentheses and strings.
 export function splitTopLevel(text) {
   const parts = []

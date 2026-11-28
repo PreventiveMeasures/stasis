@@ -12,7 +12,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 
-import { ASSET_REGISTRY, assetRegistryResolver } from '../stasis/src/metro-assets.js'
+import { ASSET_REGISTRY, assetRegistryResolver } from '../stasis/src/metro-resolver.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))

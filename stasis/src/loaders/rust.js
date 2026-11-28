@@ -9,7 +9,8 @@ import { join, posix, relative } from 'node:path'
 import { assertRealPathWithinBase, memoized, nestedMap, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { TARGET_CFG_KEYS, TARGET_UNIT, VENDOR_DIR, cfgName, createCargoContext, evalCfg, evalCfgKey, isTestTargetPath, normName, normalizeCfg, normalizeRel } from './cargo.js'
-import { matchClose, splitTopLevel } from './toml.js'
+import { isFileIn, skipRead } from './paths.js'
+import { splitTopLevel } from './toml.js'
 
 const PATH_KEYWORDS = new Set(['crate', 'self', 'super'])
 const NON_CRATE_LEADS = new Set([...PATH_KEYWORDS, 'std', 'core', 'alloc'])
@@ -49,6 +50,17 @@ export function lexRust(content) {
     blanked.push([start, i])
   }
   return { code: blankRanges(content, comments), masked: blankRanges(content, blanked) }
+}
+
+// The index of the bracket closing the one at `open`; the last index when unbalanced.
+function matchClose(text, open) {
+  const close = { '[': ']', '(': ')', '{': '}' }[text[open]]
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === text[open]) depth++
+    else if (text[i] === close && --depth === 0) return i
+  }
+  return text.length - 1
 }
 
 // `text` with `ranges` (in order of start, maybe overlapping) blanked, line breaks kept.
@@ -643,7 +655,7 @@ export function scanRustItems(content, { features = null, maybeFeatures = null, 
   const inlineModuleVis = new Map()
   for (const s of spans) upsert(inlineModuleVis, s.path.join('::'), () => s.vis)
   const inlineModules = [...inlineModuleVis.keys()].map((p) => p.split('::'))
-  return { mods, refs: [...refs.values()], externCrates, bindings, imports, macros, invocations: new Set(calls.keys()), calls, callSites, includes, unfollowed, defined, inlineModules, inlineModuleVis, skipped }
+  return { mods, refs: [...refs.values()], externCrates, bindings, imports, macros, calls, callSites, includes, unfollowed, defined, inlineModules, inlineModuleVis, skipped }
 }
 
 // Whether a `use` binds a name that is not the crate of that name: `use std::io;` does, `use serde_json;` doesn't.
@@ -661,33 +673,27 @@ export function getModuleDir(filePath, { root = false } = {}) {
 
 const ownsDir = (file, { roots, pathLoaded }) => roots?.has(file) === true || pathLoaded?.has(file) === true
 
-function firstFile(candidates, { knownSources, baseDir }) {
-  if (knownSources) return candidates.find((c) => knownSources.has(c)) ?? null
-  if (baseDir) return candidates.find((c) => isFile(join(baseDir, c))) ?? null
-  return null
-}
-
 // A file owning its directory tries the `<stem>/` rule after, so a glob-listed module file still resolves.
-export function resolveModPath(modName, fromFile, { knownSources, baseDir, roots, pathLoaded, inlinePath = [], boundary = null } = {}) {
+export function resolveModPath(modName, fromFile, { knownSources, baseDir, roots, pathLoaded, inlinePath = [], boundary = '.' } = {}) {
   const owns = ownsDir(fromFile, { roots, pathLoaded })
   for (const dir of new Set([getModuleDir(fromFile, { root: owns }), getModuleDir(fromFile)])) {
     // An inline module's `#[path = "…"]` may climb (`..`): held to `boundary` like any explicit path.
     const base = normalizeRel(dir, [...inlinePath, modName].filter(Boolean).join('/'))
-    if (base === null || (boundary !== null && !withinDir(base, boundary))) continue
-    const found = firstFile([`${base}.rs`, `${base}/mod.rs`], { knownSources, baseDir })
+    if (base === null || !withinDir(base, boundary)) continue
+    const found = [`${base}.rs`, `${base}/mod.rs`].find((c) => isFileIn(c, knownSources, baseDir))
     if (found) return found
   }
   return null
 }
 
 // Inside inline modules, relative to the file's module dir plus theirs; root-escaping paths resolve to nothing.
-export function resolveExplicitModPath(explicitPath, fromFile, { knownSources, baseDir, roots, pathLoaded, inlinePath = [], boundary = null } = {}) {
+export function resolveExplicitModPath(explicitPath, fromFile, { knownSources, baseDir, roots, pathLoaded, inlinePath = [], boundary = '.' } = {}) {
   const dir = inlinePath.length === 0
     ? posix.dirname(fromFile)
     : [getModuleDir(fromFile, { root: ownsDir(fromFile, { roots, pathLoaded }) }), ...inlinePath].filter(Boolean).join('/')
   const rel = normalizeRel(dir, explicitPath)
-  if (rel === null || (boundary !== null && !withinDir(rel, boundary))) return null
-  return firstFile([rel], { knownSources, baseDir })
+  if (rel === null || !withinDir(rel, boundary)) return null
+  return isFileIn(rel, knownSources, baseDir) ? rel : null
 }
 
 const withinDir = (rel, dir) => dir === '.' || rel === dir || rel.startsWith(`${dir}/`)
@@ -1608,24 +1614,60 @@ function* callersOf(name, templateCalls, seen = new Set()) {
   yield name
   for (const [caller, called] of templateCalls) if (called.has(name)) yield* callersOf(caller, templateCalls, seen)
 }
-// The outermost call sites, as rustc resolves a call in a template.
-const effectiveInvokers = (name, invokers, templateCalls) => new Set(callersOf(name, templateCalls).flatMap((n) => invokers.get(n) ?? []))
-// Calls by path are matched by name: a `$crate::m!` resolves where the macro is invoked as surely as `m!`.
-function noteMacroCalls(invokers, templateCalls, path, items) {
-  for (const name of items.callSites.keys()) upsert(invokers, name, () => new Set()).add(path)
-  for (const m of items.macros) for (const name of [...m.calls, ...m.pathCalls]) upsert(templateCalls, m.name, () => new Set()).add(name)
-}
-// Of `from`'s package (a macro of the same name elsewhere is likely another), unless `#[macro_export]`ed.
-const hostsOf = (name, from, invokers, templateCalls, packageOf) => [...effectiveInvokers(name, invokers, templateCalls)].filter((f) => packageOf === null || packageOf(f) === packageOf(from))
-// The copies of template `mod` `decl` a file invoking its macro declares: one per inline module invoking the
-// macro (or one whose template calls it), at the first such invocation (`offset`, for textual scope).
-function hostedCopies(decl, items, templateCalls) {
-  const sites = [...callersOf(decl.template, templateCalls)].flatMap((n) => items.callSites.get(n) ?? []).toSorted((a, b) => a.offset - b.offset)
-  const byModule = new Map()
-  for (const site of sites) upsert(byModule, site.inlinePath.join('::'), () => site)
-  if (byModule.size === 0) byModule.set('', { offset: Infinity, inlinePath: [], inlineDirs: [] })
-  const own = (list) => list.slice(decl.templateDepth)
-  return [...byModule.values()].map((site) => ({ ...decl, inlinePath: [...site.inlinePath, ...own(decl.inlinePath)], inlineDirs: [...site.inlineDirs, ...own(decl.inlineDirs)], offset: site.offset }))
+
+// The template rules both passes follow, over the scans noted so far. A package defining its own `quote!` invokes
+// that one everywhere in it. A `mod` a `macro_rules!` template declares is declared in each module invoking the macro
+// (serde_core's `crate_root! { … pub mod de; … }`), of its own package unless `#[macro_export]`ed: a macro of the
+// same name elsewhere is likely another.
+function templateRules(ctx) {
+  const packageOf = memoized((path) => (ctx ? ctx.packageInfo(path)?.dir ?? '.' : path.startsWith(`${VENDOR_DIR}/`) ? path.split('/', 2).join('/') : '.'))
+  const own = new Map() // package → the template macros it defines
+  const skippedIn = new Map() // package → its files that skipped a template macro
+  const invokers = new Map() // macro → the files calling it
+  const calls = new Map() // macro → the macros its template calls
+  const scans = new Map()
+  const mods = new Map() // `${file}\0${at}` → a template `mod` (`decl`), its file (`from`) and whether its macro is exported
+  // The outermost call sites, as rustc resolves a call in a template.
+  const invokersOf = (name) => new Set(callersOf(name, calls).flatMap((n) => invokers.get(n) ?? []))
+  return {
+    packageOf,
+    mods,
+    invokersOf,
+    ownIn: (path) => own.get(packageOf(path)),
+    // After each template macro `items` newly tells `path`'s package defines, `rescan(file)` for each other file of
+    // the package that skipped one.
+    noteOwn(path, items, rescan = () => {}) {
+      const pkg = packageOf(path)
+      if (items.skipped.size > 0) upsert(skippedIn, pkg, () => new Set()).add(path)
+      for (const m of items.macros) {
+        if (!TEMPLATE_MACROS.has(m.name)) continue
+        const names = upsert(own, pkg, () => new Set())
+        if (names.has(m.name)) continue
+        names.add(m.name)
+        for (const f of skippedIn.get(pkg) ?? []) if (f !== path) rescan(f)
+      }
+    },
+    // Calls by path are matched by name: a `$crate::m!` resolves where the macro is invoked as surely as `m!`.
+    note(path, items) {
+      scans.set(path, items)
+      for (const name of items.callSites.keys()) upsert(invokers, name, () => new Set()).add(path)
+      for (const m of items.macros) for (const name of [...m.calls, ...m.pathCalls]) upsert(calls, m.name, () => new Set()).add(name)
+      for (const decl of items.mods) {
+        if (decl.template !== null) mods.set(`${path}\0${decl.at}`, { decl, from: path, exported: items.macros.some((m) => m.name === decl.template && m.exported) })
+      }
+    },
+    hostsOf: ({ decl, from, exported }) => [...invokersOf(decl.template)].filter((f) => exported || packageOf(f) === packageOf(from)),
+    // The copies of template `mod` `decl` file `f` declares: one per inline module invoking the macro (or one whose
+    // template calls it), at the first such invocation (`offset`, for textual scope).
+    copiesIn(decl, f) {
+      const sites = [...callersOf(decl.template, calls)].flatMap((n) => scans.get(f).callSites.get(n) ?? []).toSorted((a, b) => a.offset - b.offset)
+      const byModule = new Map()
+      for (const site of sites) upsert(byModule, site.inlinePath.join('::'), () => site)
+      if (byModule.size === 0) byModule.set('', { offset: Infinity, inlinePath: [], inlineDirs: [] })
+      const keep = (list) => list.slice(decl.templateDepth)
+      return [...byModule.values()].map((site) => ({ ...decl, inlinePath: [...site.inlinePath, ...keep(decl.inlinePath)], inlineDirs: [...site.inlineDirs, ...keep(decl.inlineDirs)], offset: site.offset }))
+    },
+  }
 }
 const templatesLess = memoized((own) => new Set([...TEMPLATE_MACROS].filter((name) => !own.has(name))), (own) => [...own].toSorted().join())
 
@@ -1686,33 +1728,23 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
   for (const [path, content] of sources) {
     if (!formats?.has(path)) scanned.set(path, cachedScan(sources, path, content, buildOf(path, ctx, units)))
   }
-  // A package defining its own `quote!` invokes that one everywhere in it: files that skipped one are rescanned.
-  const packageOf = memoized((path) => (ctx ? ctx.packageInfo(path)?.dir ?? '.' : path.startsWith(`${VENDOR_DIR}/`) ? path.split('/', 2).join('/') : '.'))
-  const ownTemplates = new Map()
+  // Files that skipped a `quote!` their package turns out to define are rescanned.
+  const templates = templateRules(ctx)
+  const { packageOf } = templates
+  for (const [path, items] of scanned) templates.noteOwn(path, items)
   for (const [path, items] of scanned) {
-    for (const m of items.macros) if (TEMPLATE_MACROS.has(m.name)) upsert(ownTemplates, packageOf(path), () => new Set()).add(m.name)
-  }
-  for (const [path, items] of scanned) {
-    const own = items.skipped.size > 0 ? ownTemplates.get(packageOf(path)) : undefined
+    const own = items.skipped.size > 0 ? templates.ownIn(path) : undefined
     if (own === undefined || own.isDisjointFrom(items.skipped)) continue
     scanned.set(path, cachedScan(sources, path, sources.get(path), buildOf(path, ctx, units), own))
   }
-  const invokers = new Map()
-  const templateCalls = new Map()
-  for (const [path, items] of scanned) noteMacroCalls(invokers, templateCalls, path, items)
-  // A `mod` a template declares is declared in each module invoking the macro (serde_core's `crate_root! { … pub
-  // mod de; … }`), of its own package unless `#[macro_export]`ed; it keeps its defining file and mounting cfgs.
+  for (const [path, items] of scanned) templates.note(path, items)
+  // A hosted template `mod` keeps its defining file and mounting cfgs.
   const hosted = new Map()
   const hostedAway = new Set()
-  for (const [path, items] of scanned) {
-    for (const decl of items.mods) {
-      if (decl.template === null) continue
-      const exported = items.macros.some((m) => m.name === decl.template && m.exported)
-      const hosts = hostsOf(decl.template, path, invokers, templateCalls, exported ? null : packageOf)
-      if (hosts.length === 0) continue
-      hostedAway.add(decl)
-      for (const f of hosts) for (const copy of hostedCopies(decl, scanned.get(f), templateCalls)) upsert(hosted, f, () => []).push({ ...copy, definedIn: path })
-    }
+  for (const t of templates.mods.values()) {
+    const hosts = templates.hostsOf(t)
+    if (hosts.length > 0) hostedAway.add(t.decl)
+    for (const f of hosts) for (const copy of templates.copiesIn(t.decl, f)) upsert(hosted, f, () => []).push({ ...copy, definedIn: t.from })
   }
   const modsOf = (path) => [...scanned.get(path).mods.filter((d) => !hostedAway.has(d)), ...(hosted.get(path) ?? [])]
   // A `mod` an `include!`d file declares resolves beside it, as rustc does: like a `#[path]`-loaded file's.
@@ -1743,7 +1775,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     for (const m of items.macros) {
       if (m.includes.length === 0) continue
       const incs = m.includes.map((inc) => ({ ...inc, conditional: true }))
-      for (const f of effectiveInvokers(m.name, invokers, templateCalls)) upsert(includeEdges, f, () => []).push(...incs)
+      for (const f of templates.invokersOf(m.name)) upsert(includeEdges, f, () => []).push(...incs)
     }
   }
   // file → spec → target file → the declarations mounting it: each its cfg, the macro body it sits in and, for a
@@ -2057,6 +2089,9 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
   return { sources, resolutions: out, missing, unresolvedCrates: unresolved, wantedRoots: [...wanted.keys()], wantedUnits: wanted }
 }
 
+// resolveModPath gates on isFile so a dir is normally never queued; EISDIR is guarded anyway.
+const RUST_SKIPPED = { ENOENT: '[loader.rust] Missing file', EISDIR: '[loader.rust] Skipping directory reference' }
+
 // Reads each file once into `sources`, an earlier walk's too: a file now compiled as more units is gone through again.
 export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null, formats = null, sources = new Map(), units = new Map(), crateRoots: rootsOf = new Map(), unloaded = new Set() } = {}) {
   const realBase = realpathSync(baseDir)
@@ -2069,16 +2104,10 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
   // file → the directory it must really lie in: a vendored crate's files stay in its package, symlinks included.
   const boundaries = new Map(entries.map((e) => [e, boundaryOf(e, ctx)]))
   const realDirs = new Map()
-  // Template definitions and invocations arrive in any order, so each side is kept and paired.
+  // Template definitions and invocations arrive in any order, so each side is kept and paired; a template's includes
+  // by its macro's name, each once.
+  const templates = templateRules(ctx)
   const templateIncludes = new Map()
-  const templateMods = new Map()
-  const templateCalls = new Map()
-  const invokers = new Map()
-  const scansOf = new Map()
-  // A package defining its own `quote!` has its files scanned again without the name (see buildRustTree).
-  const packageOf = (rel) => ctx.packageInfo(rel)?.dir ?? '.'
-  const ownTemplates = new Map()
-  const skippedIn = new Map()
   withEntryUnits(units, entries, ctx)
   for (const e of entries) addTo(rootsOf, e, new Set([e]))
   // Files walked before and now compiled as more units, or in more crates: what they name may change.
@@ -2121,25 +2150,22 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
       queue(from, file, { rust: true })
     }
   }
-  const hostsOfMod = (name, { from, exported }) => hostsOf(name, from, invokers, templateCalls, exported ? null : packageOf)
+  // Template by template, in the order each was first noted.
+  const templateMods = () => Map.groupBy(templates.mods.values(), (t) => t.decl.template).values().flatMap((ts) => ts)
   const expandTemplates = () => {
     for (const [name, incs] of templateIncludes) {
-      for (const f of effectiveInvokers(name, invokers, templateCalls)) for (const inc of incs) includeFrom(inc, f)
+      for (const f of templates.invokersOf(name)) for (const inc of incs) includeFrom(inc, f)
     }
-    for (const [name, decls] of templateMods) {
-      for (const t of decls.values()) for (const f of hostsOfMod(name, t)) for (const copy of hostedCopies(t.decl, scansOf.get(f), templateCalls)) modFrom(copy, f)
-    }
+    for (const t of templateMods()) for (const f of templates.hostsOf(t)) for (const copy of templates.copiesIn(t.decl, f)) modFrom(copy, f)
   }
 
   // A template's `mod`s nothing in its package invokes stand beside its definition, walked once nothing else is left.
   const placed = new Set()
   const placeUninvoked = () => {
-    for (const [name, decls] of templateMods) {
-      for (const t of decls.values()) {
-        if (placed.has(t.decl) || hostsOfMod(name, t).length > 0) continue
-        placed.add(t.decl)
-        modFrom(t.decl, t.from)
-      }
+    for (const t of templateMods()) {
+      if (placed.has(t.decl) || templates.hostsOf(t).length > 0) continue
+      placed.add(t.decl)
+      modFrom(t.decl, t.from)
     }
   }
 
@@ -2161,46 +2187,25 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
       formats?.set(relPath, utf8 ? 'resource' : 'resource:base64')
       return [relPath, utf8 ? buf.toString('utf8') : buf.toString('base64'), true]
     } catch (err) {
-      if (err.code === 'ENOENT') {
-        console.warn(`[loader.rust] Missing file: ${relPath}`)
-        unloaded.add(relPath)
-        return null
-      }
-      // resolveModPath gates on isFile so a dir is normally never queued; guard EISDIR anyway.
-      if (err.code === 'EISDIR') {
-        console.warn(`[loader.rust] Skipping directory reference: ${relPath}`)
-        return null
-      }
-      throw err
+      if (err.code === 'ENOENT') unloaded.add(relPath)
+      return skipRead(RUST_SKIPPED, relPath, err)
     }
   }
   // Run again for a file whose package turned out to define a template macro: its `quote!` bodies are its own then.
-  const handle = (relPath, content) => {
+  const handle = (relPath) => {
     const here = unitsOf(units, relPath)
-    const pkg = packageOf(relPath)
-    const items = cachedScan(sources, relPath, content, buildOf(relPath, ctx, units), ownTemplates.get(pkg))
+    const items = cachedScan(sources, relPath, sources.get(relPath), buildOf(relPath, ctx, units), templates.ownIn(relPath))
     const { mods, refs, externCrates, bindings, includes, macros } = items
-    if (items.skipped.size > 0) upsert(skippedIn, pkg, () => new Set()).add(relPath)
-    for (const m of macros) {
-      if (!TEMPLATE_MACROS.has(m.name)) continue
-      const own = upsert(ownTemplates, pkg, () => new Set())
-      if (own.has(m.name)) continue
-      own.add(m.name)
-      for (const f of skippedIn.get(pkg) ?? []) if (f !== relPath) handle(f, sources.get(f))
-    }
+    templates.noteOwn(relPath, items, handle)
     // A template's `mod`s and includes wait for the files invoking it (expandTemplates).
-    for (const decl of mods) {
-      if (decl.template === null) modFrom(decl, relPath)
-      else nestedMap(templateMods, decl.template).set(`${relPath}\0${decl.at}`, { decl, from: relPath, exported: macros.some((m) => m.name === decl.template && m.exported) })
-    }
+    for (const decl of mods) if (decl.template === null) modFrom(decl, relPath)
     for (const inc of includes) includeFrom(inc, relPath)
     for (const m of macros) {
       if (m.includes.length === 0) continue
       const list = upsert(templateIncludes, m.name, () => [])
       for (const inc of m.includes) if (!list.some((x) => x.kind === inc.kind && x.path === inc.path && x.base === inc.base)) list.push(inc)
     }
-    noteMacroCalls(invokers, templateCalls, relPath, items)
-    scansOf.set(relPath, items)
+    templates.note(relPath, items)
     // A reference to an in-tree crate pulls its root in, a crate root by role whatever its name (`[lib] path`).
     const leads = new Set()
     for (const e of externCrates) if (!NON_CRATE_LEADS.has(e.name)) leads.add(e.name)
@@ -2223,14 +2228,14 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
       if (!entry) continue
       const [relPath, content, asset] = entry
       sources.set(relPath, content)
-      if (!asset) handle(relPath, content)
+      if (!asset) handle(relPath)
     }
     for (;;) {
       expandTemplates()
       if (revisit.size === 0) break
       const again = [...revisit]
       revisit.clear()
-      for (const relPath of again) handle(relPath, sources.get(relPath))
+      for (const relPath of again) handle(relPath)
     }
     if (next.length === 0) placeUninvoked()
     wave = next
@@ -2239,14 +2244,12 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
 
 // Walks again the roots the tree pass wants until none is new; one refused or gone isn't asked for again.
 export async function collectRustBundle(baseDir, entries, { cargo, buildScripts = false }) {
-  const formats = new Map()
-  const sources = new Map()
-  const units = new Map()
-  const rootsOf = new Map()
-  const unloaded = new Set()
-  const roots = [...entries]
+  // What the walks share.
+  const walked = { cargo, formats: new Map(), sources: new Map(), units: new Map(), crateRoots: new Map(), unloaded: new Set() }
+  const { formats, sources, units, unloaded } = walked
+  const roots = new Set(entries)
   const walk = async (wave) => {
-    await collectRustFilesFromDisk(baseDir, wave, { cargo, formats, sources, units, crateRoots: rootsOf, unloaded })
+    await collectRustFilesFromDisk(baseDir, wave, walked)
     if (!buildScripts) return
     const scripts = new Set()
     for (const path of sources.keys()) {
@@ -2256,18 +2259,18 @@ export async function collectRustBundle(baseDir, entries, { cargo, buildScripts 
       if (addTo(units, script, as)) scripts.add(script)
     }
     if (scripts.size === 0) return
-    for (const s of scripts) if (!roots.includes(s)) roots.push(s)
+    for (const s of scripts) roots.add(s)
     await walk([...scripts])
   }
   await walk(entries)
   const tried = new Set()
   const complete = async () => {
-    const tree = buildRustTree(sources, { roots, baseDir, cargo, formats, units })
+    const tree = buildRustTree(sources, { roots: [...roots], baseDir, cargo, formats, units })
     const wanted = tree.wantedRoots.filter((r) => !unloaded.has(r) && (addTo(units, r, tree.wantedUnits.get(r)) || (!sources.has(r) && !tried.has(r))))
     if (wanted.length === 0) return tree
     for (const r of wanted) {
       tried.add(r)
-      if (!roots.includes(r)) roots.push(r)
+      roots.add(r)
     }
     await walk(wanted)
     return complete()

@@ -6,20 +6,8 @@ import { isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { diskHost } from '@exodus/stasis-core/host'
 import { relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
-import { collectFromDisk } from './bash.js'
-import {
-  FOUNDRY_TOML,
-  REMAPPINGS_TXT,
-  foundryLibs,
-  foundryProfile,
-  foundryProject,
-  parseRemappingLines,
-  readFoundryTomlRemappings,
-  shownFrom,
-  toSolcRemapping,
-} from './foundry.js'
-import { ancestors, applyToDir, isDotRelative } from './paths.js'
-import { decodeUtf8, projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
+import { ancestors, applyToDir, collectFromDisk, isDotRelative } from './paths.js'
+import { decodeUtf8, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
 
 // By char code: identifier start [A-Za-z_$], identifier part [\w$], digit, and a number literal's [\w.].
 const isIdentStart = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 95 || c === 36
@@ -113,39 +101,6 @@ export function extractSolImports(content) {
   return specs
 }
 
-const toLoaderRemapping = ({ context, name, path }) => ({ context, prefix: name, target: path })
-
-// A foundry.toml's and, with `forge`, a remappings.txt's are slash-terminated as forge reads them; else (solc,
-// Hardhat) a remappings.txt applies as written.
-function readMapping(mappingFile, { env, forge, host, show }) {
-  if (mappingFile.endsWith('.toml')) return readFoundryTomlRemappings(mappingFile, foundryProfile(env), { show, host })
-  const name = show(mappingFile)
-  const text = readUtf8OrNull(mappingFile, name, host)
-  if (text === null) throw new Error(`${name}: no such file`)
-  const listed = parseRemappingLines(text, { label: name, emptyPath: !forge })
-  return { remappings: listed.map(forge ? toSolcRemapping : toLoaderRemapping), files: [mappingFile] }
-}
-
-// The remappings `mappingFile` lists, else what `forge build` uses with a foundry.toml at the root, else a
-// root remappings.txt as written.
-export function discoverSolidityConfig(baseDir, { mappingFile, env = process.env, host = diskHost } = {}) {
-  const forge = isFile(join(baseDir, FOUNDRY_TOML), host)
-  if (forge && !mappingFile) return foundryProject(baseDir, { env, host })
-  const { libs, profiled, files: libsFiles } = forge ? foundryLibs(baseDir, { env, host }) : { libs: [], profiled: false, files: [] }
-  const ownership = projectOwnership(baseDir, libs, { soldeer: forge, host })
-  const show = shownFrom(toPosix(resolve(baseDir)), host)
-  if (mappingFile) {
-    const abs = resolve(baseDir, mappingFile)
-    const { remappings, files, profiled: mappingProfiled } = readMapping(abs, { env, forge, host, show })
-    // The profile picks the mapping file's remappings (a .toml) or the root foundry.toml's libs.
-    const envUsed = profiled || mappingProfiled ? [`FOUNDRY_PROFILE=${env.FOUNDRY_PROFILE}`] : []
-    return { remappings, libs, ownership, files: [...new Set([...files, ...libsFiles].map((f) => projectRelative(baseDir, f, host)))], envUsed }
-  }
-  const txt = join(baseDir, REMAPPINGS_TXT)
-  if (!isFile(txt, host)) return { remappings: [], libs, ownership, files: [], envUsed: [] }
-  return { remappings: readMapping(txt, { env, forge, host, show }).remappings, libs, ownership, files: [REMAPPINGS_TXT], envUsed: [] }
-}
-
 // As solc remaps: of those whose context and prefix match, the longest context wins, then the longest prefix,
 // then the one listed last; its target replaces the prefix verbatim (`//` collapsed).
 export function applyRemappings(name, fromFile, remappings) {
@@ -221,10 +176,6 @@ function resolveImport(specifier, fromFile, { remappings = [], baseDir, libs = [
 
 // Relative, remapped, then in the importer's library, the project, node_modules; null too where refused.
 export const resolveSolImport = (specifier, fromFile, options = {}) => resolveImport(specifier, fromFile, options).path ?? null
-
-// Not `hardhat.config.*`, code that may hold keys.
-export const SOLIDITY_ROOT_MANIFESTS = [FOUNDRY_TOML, REMAPPINGS_TXT, 'foundry.lock', 'soldeer.lock', '.gitmodules', 'package.json']
-export const SOLIDITY_PACKAGE_MANIFESTS = ['package.json', FOUNDRY_TOML, REMAPPINGS_TXT]
 
 // Each import, resolved (within `within`) or warned of; one naming no file but a `verbatim` key is that key.
 function importsOf(content, from, options, verbatim, within = null) {

@@ -14,13 +14,15 @@ import {
   nearestPackage,
   outsideNodeModules,
   readManifest,
+  realpathOr,
   resolveTypescriptFallback,
   tsconfigOutputsOf,
-  typescriptSiblings,
+  typescriptAliasTargets,
+  typescriptSource,
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { metroHost, scanResolution, stripTypeDeclaration } from './metro-resolver.js'
-import { RELATIVE_REQUEST, createNodeResolver } from './resolve-node.js'
+import { createNodeResolver } from './resolve-node.js'
 import { hostMemo } from './vfs-bundle/lazy.js'
 
 // Legacy package fields (`react-native`/`browser`/`main`, their redirect maps) and platform suffixes, as Metro resolves
@@ -58,11 +60,8 @@ function entryThroughMap(map, main) {
 
 // By real path, as Node, Metro and esbuild record a file: under pnpm a package's imports resolve only from where it lies.
 function fileResolution(path, host) {
-  try {
-    return { url: pathToFileURL(host.realpath(path)).toString() }
-  } catch {
-    return null
-  }
+  const real = realpathOr(path, host, null)
+  return real === null ? null : { url: pathToFileURL(real).toString() }
 }
 
 const isPathSpec = (spec) => spec.startsWith('.') || isAbsolute(spec)
@@ -73,11 +72,11 @@ export const METRO_ASSET_EXTS = new Set(metroDefaults.assetExts)
 export const METRO_ASSET_RESOLUTIONS = metroDefaults.assetResolutions
 const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 
-// --metro --typescript: an absent JS output is its first TS sibling on disk, else an unbuilt output's source.
+// --metro --typescript: an absent JS output is its first TS sibling on disk, else an unbuilt output's source. `view`'s
+// files are the sources on disk (metroHost's).
 function typescriptView(view, { outputs, host }) {
-  const sibling = (path) => typescriptSiblings(path).find((candidate) => view.isFile(candidate)) ?? null
   const source = (path) => {
-    const pick = sibling(path) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : sibling(input)), { outputs, host })
+    const pick = typescriptSource(path, host) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : typescriptSource(input, host)), { outputs, host })
     return outsideNodeModules(pick, host)
   }
   const substituted = (path) => (view.isFile(path) || view.isDirectory(path) ? null : source(path))
@@ -99,10 +98,8 @@ function resolveSourceFile(base, opts) {
   if (bare) return bare
   // tsc's substitution comes once the literal file is absent, before the appended extensions, as tsc orders them.
   // Its pick, the first sibling on disk, maps nothing in node_modules, never to a later sibling.
-  if (opts.typescript) {
-    const sibling = typescriptSiblings(base).find((candidate) => isSourceFile(candidate, opts.host))
-    if (sibling !== undefined) return inNodeModules(sibling, opts.host) ? null : sibling
-  }
+  const sibling = opts.typescript ? typescriptSource(base, opts.host) : null
+  if (sibling !== null) return outsideNodeModules(sibling, opts.host)
   for (const ext of opts.sourceExts) {
     const hit = tryExt(`.${ext}`)
     if (hit) return hit
@@ -229,8 +226,7 @@ export function createFieldResolver({
     if (resolved || !typescript || (metro && isAssetFile(specifier, assetExts))) return resolved
     const hit = resolveTypescriptFallback(parentFile, specifier, { conditions: conds, paths: typescriptPaths, host })
     if (hit != null) return fileResolution(hit, host)
-    const aliased = typescriptPaths !== null && !RELATIVE_REQUEST.test(specifier) && !isAbsolute(specifier) && !specifier.startsWith('#') && !inNodeModules(parentFile, host)
-    if (aliased) tried.push(...typescriptPaths.matchPaths(specifier, parentFile))
+    tried.push(...typescriptAliasTargets(parentFile, specifier, typescriptPaths, host))
     return null
   }
   // Once per directory (all a file's resolving reads), specifier and conditions, kept as the manifests are and in `kept`.
@@ -244,7 +240,7 @@ export function createFieldResolver({
   })
 }
 
-// As scan's #conditionSet gives a custom resolver: a bundler's base, not Node's. esbuild, webpack and Metro assert
+// What scan.js gives a custom resolver: a bundler's base, not Node's. esbuild, webpack and Metro assert
 // `import`/`require` and `default`, never `node`, so an `exports` map listing `node` first can't win over the extras.
 export function resolveConditions(format, extras = []) {
   const esm = format === 'module' || format === 'module-typescript'

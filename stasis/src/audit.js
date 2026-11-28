@@ -3,12 +3,10 @@ import { dependencyEcosystem, moduleFileKey, NPM_DIRECTORY, sameGithub, upsert, 
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
-import { DIM, formatTable, painter, takesColors } from './table.js'
+import { DIM, formatTable, painter } from './table.js'
 import { parseFile, parseFileWithKind } from './parse.js'
 import { logos } from './sixel.js'
 import { collectWhy, invertReason, packageRecords } from './why.js'
-
-export { formatTable }
 
 // Where advisories() asks for each ecosystem's advisories (OSV has a GitHub repo's as a GitHub Action's).
 const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV', 'Packagist'], soldeer: ['Soldeer', 'GitHub'], github: ['OSV', 'GitHub'] }
@@ -52,8 +50,7 @@ function unaudited({ ecosystem, version, vendoredIn }) {
 // else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`.
 export function collectPackagesFromFile(file) {
   const { kind, artifact } = parseFileWithKind(file)
-  const records = auditedRecords(artifact.modules).filter(({ files, isEvidence }) => Object.keys(files).some(isEvidence))
-  return records.map(({ name, version, ecosystem, repo, files, host }) => {
+  return auditedRecords(artifact.modules).map(({ name, version, ecosystem, repo, files, host }) => {
     if (host !== undefined) return { ecosystem, name, version, vendoredIn: host }
     let github = ecosystem === 'github' ? undefined : repo?.github
     if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
@@ -61,17 +58,19 @@ export function collectPackagesFromFile(file) {
   }).toArray()
 }
 
-// Each dependency of `modules` the audit may count: first-party code never reaches a public registry.
+// Each dependency of `modules` the audit may count, with its `evidence` files: first-party code never reaches a public
+// registry, and one with no evidence of its real code is not audited.
 function* auditedRecords(modules) {
   for (const [dir, { name, version, ecosystem: tagged, repo, files, vendoredIn }] of packageRecords(modules)) {
     const ecosystem = dependencyEcosystem(dir, tagged)
     if (ecosystem === undefined || !name || (!version && vendoredIn === undefined)) continue
+    const evidence = Object.keys(files).filter((rel) => isEvidenceFile(name, version ?? null, rel, ecosystem))
+    if (evidence.length === 0) continue
     const host = vendoredIn === undefined ? undefined : modules.get(vendoredIn)
     yield {
-      dir, name, ecosystem, repo, files,
+      dir, name, ecosystem, repo, files, evidence,
       version: version === undefined ? undefined : versionOf(ecosystem, version),
       host: host === undefined ? undefined : `${host.name}@${host.version}`,
-      isEvidence: (rel) => isEvidenceFile(name, version ?? null, rel, ecosystem),
     }
   }
 }
@@ -115,27 +114,22 @@ export function collectPackages(files) {
     .toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
 
-// Each audited package (packageKey) -> the bundle consumers that recorded an evidence file of it: webpack shipping
-// only ws's noop browser.js stub is no reason for ws.
-export function collectReasons(files) {
-  return reasonIndex(files).byPkg
-}
-
-// `consumers`, what --reason may name, holds one that recorded first-party code alone too.
-function reasonIndex(files) {
+// `byPkg`, each audited package (packageKey) -> the bundle consumers that recorded an evidence file of it: webpack
+// shipping only ws's noop browser.js stub is no reason for ws. `consumers`, what --reason may name, holds one that
+// recorded first-party code alone too. Each is by its `name`: `bundle:metro` is `metro` where none records `metro`,
+// so it can't be taken for one.
+export function reasonIndex(files) {
+  const artifacts = files.map((file) => parseFile(file))
+  const recorders = new Set(artifacts.flatMap(({ reason }) => Object.keys(reason ?? {}).filter((consumer) => Array.isArray(reason[consumer]))))
+  const renamed = recorders.has('bundle:metro') && !recorders.has('metro')
+  const name = (consumer) => (renamed && consumer === 'bundle:metro' ? 'metro' : consumer)
   const byPkg = new Map()
-  const consumers = new Set()
-  for (const file of files) {
-    const artifact = parseFile(file)
-    const fileReasons = invertReason(artifact.reason)
+  for (const artifact of artifacts) {
+    const fileReasons = invertReason(artifact.reason, name)
     if (!fileReasons) continue
-    for (const [consumer, list] of Object.entries(artifact.reason)) if (Array.isArray(list)) consumers.add(consumer)
     const fileToPkgs = new Map()
     for (const record of auditedRecords(artifact.modules)) {
-      const key = packageKey(record, record.host)
-      for (const rel of Object.keys(record.files)) {
-        if (record.isEvidence(rel)) upsert(fileToPkgs, moduleFileKey(record.dir, rel), () => []).push(key)
-      }
+      for (const rel of record.evidence) upsert(fileToPkgs, moduleFileKey(record.dir, rel), () => []).push(packageKey(record, record.host))
     }
     for (const [f, recorded] of fileReasons) {
       for (const key of fileToPkgs.get(f) ?? []) {
@@ -144,18 +138,7 @@ function reasonIndex(files) {
       }
     }
   }
-  return { byPkg, consumers }
-}
-
-// `bundle:metro` named `metro` where none records `metro`, so it can't be taken for one.
-function namedIndex({ byPkg, consumers }) {
-  const renamed = consumers.has('bundle:metro') && !consumers.has('metro')
-  const name = (consumer) => (renamed && consumer === 'bundle:metro' ? 'metro' : consumer)
-  return {
-    byPkg: new Map([...byPkg].map(([key, set]) => [key, new Set([...set].map(name))])),
-    consumers: new Set([...consumers].map(name)),
-    name,
-  }
+  return { byPkg, consumers: new Set([...recorders].map(name)), name }
 }
 
 // A package that is malware is worse than any vulnerability in one.
@@ -218,20 +201,18 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   files = files.map((file) => parseFile(file))
   // --why-deep (keep every chain, see dropSuffixed) and --why-full (no `...` collapse) imply --why.
   why = why || whyDeep || whyFull
-  let index
-  const indexed = () => (index ??= namedIndex(reasonIndex(files)))
+  const { byPkg: reasons, consumers, name: consumerName } = reasonIndex(files)
   if (reason) {
-    const { consumers, name } = indexed()
-    if (!consumers.has(name(reason))) {
+    if (!consumers.has(consumerName(reason))) {
       const known = [...consumers].toSorted(byConsumerOrder)
       throw new AuditError(`--reason=${reason}: ${known.length === 0
         ? 'the files record no consumers (only a bundle does)'
         : `no file records that consumer; they record ${known.join(', ')}`}`)
     }
-    reason = name(reason)
+    reason = consumerName(reason)
   }
   const all = collectPackages(files)
-  const packages = reason ? all.filter((pkg) => indexed().byPkg.get(packageKey(pkg, pkg.vendoredIn?.[0]))?.has(reason)) : all
+  const packages = reason ? all.filter((pkg) => reasons.get(packageKey(pkg, pkg.vendoredIn?.[0]))?.has(reason)) : all
   const skipped = packages.map((pkg) => ({ ...pkg, because: unaudited(pkg) })).filter((pkg) => pkg.because !== undefined)
   const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
   // The npm packages --reason's consumer didn't record, and those `lockfile` locks alone, each once.
@@ -270,14 +251,14 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOfPkg(pkg), pkg]))
   // The registry's, not OSV's records, by their consumers, or the names of the lockfiles alone locking them.
   const malware = [...result, ...elsewhere].filter((adv) => adv.malware && adv.source === 'registry')
-  const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, new Map([...indexed().byPkg, ...lockedOnly]), null, null, vendoredOf([...asked, ...others]))
+  const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, new Map([...reasons, ...lockedOnly]), null, null, vendoredOf([...asked, ...others]))
   // --why's chains REPLACE the consumers of npm's advisories.
   let whyByPkg = null
   if (why) {
     const targetKeys = new Set(result.filter((adv) => adv.ecosystem === 'npm').flatMap((adv) => adv.versions.map((v) => keyOf(adv, v))))
-    whyByPkg = collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull, consumerName: indexed().name })
+    whyByPkg = collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull, consumerName })
   }
-  const rows = flattenAdvisories(result, indexed().byPkg, whyByPkg, reason, vendoredOf(asked))
+  const rows = flattenAdvisories(result, reasons, whyByPkg, reason, vendoredOf(asked))
   return { packages, skipped, advisories: result, rows, npmMalware, why, whyDeep, whyFull, reason }
 }
 
@@ -288,15 +269,15 @@ const severityOf = (row) => row.severity || 'unrated'
 const WRAPPED = ['title', 'reason', 'vulnerable', 'installed']
 
 // `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`, in the rows' own order, so the parts add up.
-function alertStats(rows, paint, colored) {
+function alertStats(rows, paint) {
   const count = `${rows.length} alert${rows.length === 1 ? '' : 's'}`
   if (rows.length === 0) return paint(['bold', 'green'], count)
   const bySeverity = Map.groupBy(rows, severityOf)
-  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], badge(severity, `${list.length} ${severity}`, colored))).join(', ')})`
+  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], badge(paint, severity, `${list.length} ${severity}`))).join(', ')})`
 }
 
-// Malware's colour a space wider on either side, where there is colour.
-const badge = (severity, text, colored) => (severity === 'malware' && colored ? ` ${text} ` : text)
+// Malware's colour a space wider on either side, where `paint` colours.
+const badge = (paint, severity, text = severity) => (severity === 'malware' && paint.colors ? ` ${text} ` : text)
 
 // Packagist's, standing for an advisory only where OSV has no record of it, has no icon.
 const SOURCE_LOGOS = { registry: 'npm', repository: 'github', osv: 'osv' }
@@ -318,13 +299,11 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
   const icons = given === true ? logos() : given || null
   const paintOut = painter(out, colors)
   const paintErr = painter(err, colors)
-  const coloredOut = colors ?? takesColors(out)
-  const coloredErr = colors ?? takesColors(err)
   for (const note of notes) err.write(`${paintErr('yellow', note)}\n`)
   const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}${reason ? ` recorded by ${reason}` : ''}`
   if (packages.length === 0) {
     err.write(`${scanned}\n${paintErr('yellow', reason ? `No dependencies recorded by ${reason}` : 'No dependencies found in the input files')}\n`)
-    printMalware(npmMalware, err, paintErr, coloredErr)
+    printMalware(npmMalware, err, paintErr)
     return
   }
   if (rows.length > 0) {
@@ -341,7 +320,7 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
       if (column === 'reason' && why) return text.replaceAll(/(?<=^| )(?:->|\.\.\.)(?= |$)/gu, (arrow) => paintOut(DIM, arrow))
       return text
     }
-    const table = formatTable(rows.map((row) => ({ ...row, severity: badge(severityOf(row), severityOf(row), coloredOut), ...(icons && { id: `${' '.repeat(ICON_CELLS)} ${row.id}` }) })), columns, {
+    const table = formatTable(rows.map((row) => ({ ...row, severity: badge(paintOut, severityOf(row)), ...(icons && { id: `${' '.repeat(ICON_CELLS)} ${row.id}` }) })), columns, {
       multiline: why ? ['reason'] : [],
       wrap: WRAPPED,
       width,
@@ -356,15 +335,15 @@ export function printAuditReport({ packages, skipped = [], rows, npmMalware = []
     const lines = aligned(skipped.map((pkg) => [named(pkg), paintErr(DIM, pkg.because)]))
     err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines}\n`)
   }
-  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr, coloredErr)}\n`)
-  printMalware(npmMalware, err, paintErr, coloredErr)
+  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr)}\n`)
+  printMalware(npmMalware, err, paintErr)
 }
 
-function printMalware(rows, err, paint, colored) {
+function printMalware(rows, err, paint) {
   if (rows.length === 0) return
   const packages = new Set(rows.map((row) => `${row.package}@${row.installed}`)).size
   const lines = aligned(rows.map((row) => [`${row.package} ${row.installed}`, row.id, row.title, ...(row.reason ? [paint(DIM, row.reason)] : [])]))
-  err.write(`\n${paint(SEVERITY_TONES.malware, badge('malware', 'malware', colored))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}:\n${lines}\n`)
+  err.write(`\n${paint(SEVERITY_TONES.malware, badge(paint, 'malware'))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}:\n${lines}\n`)
 }
 
 // Rows of cells two spaces apart, indented two, all but a row's last padded to the widest of its column.

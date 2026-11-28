@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { archiveIntegrity, ATTESTED_METADATA, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, moduleInfo, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
+import { archiveIntegrity, ATTESTED_METADATA, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, memoized, moduleInfo, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -12,6 +12,7 @@ import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.j
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 import { VfsError } from '@preventive/vfs'
 import { installedMetadata } from '../installed.js'
+import { ancestors } from '../loaders/paths.js'
 import { createNodeResolver } from '../resolve-node.js'
 import { globSync, matchesGlob } from './glob.js'
 import { lazyView, untouchedMemo } from './lazy.js'
@@ -19,12 +20,7 @@ import { settleSoldeer } from './soldeer.js'
 import { YARNCLEAN, yarnclean } from './yarnclean.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 
-export function nearest(cwd, holds) {
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    if (holds(dir)) return dir
-    if (dirname(dir) === dir) return null
-  }
-}
+export const nearest = (cwd, holds) => ancestors(cwd).find(holds) ?? null
 
 export const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
 
@@ -83,15 +79,11 @@ function reportedLibc() {
   }
   return 'unknown'
 }
-let machineLibc
-const currentLibc = () => (machineLibc ??= reportedLibc())
+const currentLibc = memoized(reportedLibc)
 
 // No Node: a tree laid out to be read, not run, is for none, which takes every engines.node. A libc is detected only
 // for this machine's os; for another, unless given, pnpm matches none ('unknown').
-const target = ({ os, cpu, libc } = {}) => {
-  const forOs = os ?? process.platform
-  return { os: forOs, cpu: cpu ?? process.arch, libc: libc ?? (forOs === process.platform ? currentLibc() : 'unknown') }
-}
+const target = ({ os = process.platform, cpu = process.arch, libc = os === process.platform ? currentLibc() : 'unknown' }) => ({ os, cpu, libc })
 
 export function checkNonEmpty(name, fields) {
   for (const [key, value] of Object.entries(fields)) {
@@ -132,18 +124,17 @@ function npmWorkspaceRoot(host, dir, os) {
 // npm installs the package cwd is in from npmWorkspaceRoot's, whatever package-lock.json is nearer; any other from the
 // nearest package-lock.json beside a package.json. A nameless package.json is a package where a workspace root takes it.
 function npmRoot(host, cwd, os) {
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    if (isFile(join(dir, 'package.json'), host)) {
-      const root = npmWorkspaceRoot(host, dir, os)
-      if (root !== null) return root
-      if (holdsPackage(host, dir)) break
-    }
-    if (dirname(dir) === dir) break
+  for (const dir of ancestors(cwd)) {
+    if (!isFile(join(dir, 'package.json'), host)) continue
+    const root = npmWorkspaceRoot(host, dir, os)
+    if (root !== null) return root
+    if (holdsPackage(host, dir)) break
   }
   return nearest(cwd, (dir) => isFile(join(dir, 'package-lock.json'), host) && isFile(join(dir, 'package.json'), host))
 }
 
-const noneAbove = (file) => async (names, above) => !(await above()).some((dir) => dir.includes(file))
+// A JS subtree is laid out alone where nothing above it is read: `file`, nor a .yarnclean, which cleans from above.
+const noneAbove = (file) => async (names, above) => !(await above()).some((dir) => dir.includes(file) || dir.includes(YARNCLEAN))
 const foundryIn = (names) => names.includes('foundry.toml') || names.includes('soldeer.toml')
 
 const PACKAGE_MANAGERS = {
@@ -201,7 +192,7 @@ const PACKAGE_MANAGERS = {
     alone: async (names, above) => foundryIn(names) || !(await above()).some(foundryIn),
     projects: () => ['.'],
     installs: 'dependencies',
-    hides: 'node_modules',
+    hides: hasNodeModulesSegment,
     async build(view, soldeer, file, given) {
       const tree = await naming(file, buildSoldeerTree({ project: view, host: { soldeer, os: given.os ?? process.platform }, github: given.client }))
       settleSoldeer(view, tree.vfs, dirname(file))
@@ -395,8 +386,7 @@ async function settled(promises) {
 function layoutOf(tree) {
   const { installs, hides } = PACKAGE_MANAGERS[tree.packageManager]
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
-  const hidden = hides === undefined ? undefined : (rel) => rel.split('/').includes(hides)
-  return { installs: [...[...tree.projects].map((dir) => join(dir, installs)), ...files], hides: hidden }
+  return { installs: [...[...tree.projects].map((dir) => join(dir, installs)), ...files], hides }
 }
 
 function mountedVfs(owners) {
@@ -419,8 +409,7 @@ export const unpackedOf = (tree) => (tree.trees === undefined
   : tree.trees.reduce((sum, one) => sum + unpackedOf(one), 0))
 
 function forestOf(trees) {
-  let root = trees[0].root
-  while (!trees.every((tree) => isPathWithin(root, tree.root))) root = dirname(root)
+  const root = ancestors(trees[0].root).find((dir) => trees.every((tree) => isPathWithin(dir, tree.root)))
   const members = trees.map((tree) => {
     const at = posix.relative(root, tree.root)
     return { tree, at, prefix: at === '' ? '' : `${at}/`, ...layoutOf(tree) }
@@ -494,19 +483,9 @@ function dependenciesOf(vfs, dir, roots) {
       return null
     }
   }
-  const found = []
-  for (const name of names) {
-    if (!PACKAGE_NAME.test(name)) continue
-    for (let at = dir; ; at = posix.dirname(at)) {
-      const real = posix.basename(at) === 'node_modules' ? null : realOrNull(posix.join(at, 'node_modules', name))
-      if (real !== null) {
-        if (roots.has(real)) found.push(real)
-        break
-      }
-      if (at === '/') break
-    }
-  }
-  return found
+  const dirs = ancestors(dir).filter((at) => posix.basename(at) !== 'node_modules').toArray()
+  const found = (name) => dirs.values().map((at) => realOrNull(posix.join(at, 'node_modules', name))).find((real) => real !== null)
+  return [...names].filter((name) => PACKAGE_NAME.test(name)).map(found).filter((real) => roots.has(real))
 }
 
 // Each package unpacked is cleaned as the full tree's (positive patterns clean each path by its own). What a package
@@ -606,7 +585,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     if (installed.has(rel)) return 'tree'
     return hides?.(rel) ? 'none' : 'outside'
   }
-  const installedIn = Map.groupBy(disk === null ? [] : installed, (dir) => join(root, dirname(dir)))
+  const installedIn = Map.groupBy(installed, (dir) => join(root, dirname(dir)))
   const inVfs = disk === null ? (p) => p : (p) => `/${p.slice(prefix.length)}`
   // As spelled: realpath resolves a `..` after the link before it.
   const abs = (p) => (p.startsWith('/') ? p : `/${p}`)
@@ -749,13 +728,13 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     findPackageJSON(p) {
       let from = normal(p)
       if (host.stat(from)?.isFile()) from = realpath(from)
-      for (let dir = dirname(from); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+      for (const dir of ancestors(dirname(from))) {
+        if (basename(dir) === 'node_modules') break
         const candidate = join(dir, 'package.json')
         if (packageJSONStat(host, candidate)?.isFile()) {
           checkManifest(candidate)
           return candidate
         }
-        if (dirname(dir) === dir) break
       }
       return undefined
     },

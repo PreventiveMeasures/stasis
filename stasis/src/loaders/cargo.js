@@ -467,16 +467,21 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   const configs = runDir === '.' ? rootConfigs : cargoConfigs(baseDir, runDir)
   const vendorDir = vendorDirOf(baseDir, configs)
   const isVendoredDir = (dir) => dir !== vendorDir && dir.startsWith(`${vendorDir}/`)
+  const direntsOf = (dir) => {
+    try {
+      return readdirSync(join(baseDir, dir), { withFileTypes: true })
+    } catch {
+      return []
+    }
+  }
+  const subdirs = (dir) => direntsOf(dir).filter((e) => e.isDirectory()).map((e) => (dir === '.' ? e.name : `${dir}/${e.name}`))
   // `git`: whether the copy is a git checkout's (no package checksum), null without `.cargo-checksum.json`.
+  // A symlinked copy too, unlike in exact().
   const vendored = memoized(() => {
     const index = { byName: new Map(), byLib: new Map() }
-    let dirs = []
-    try {
-      dirs = readdirSync(join(baseDir, vendorDir))
-    } catch { /* no vendor dir */ }
-    for (const d of dirs) {
-      if (d.startsWith('.')) continue // a directory source reads none of these
-      const m = manifestAt(`${vendorDir}/${d}`)
+    for (const { name } of direntsOf(vendorDir)) {
+      if (name.startsWith('.')) continue // a directory source reads none of these
+      const m = manifestAt(`${vendorDir}/${name}`)
       if (!m?.package) continue
       const entry = { version: m.package.version, dir: m.dir, git: checksumOf(m.dir)?.git ?? null }
       upsert(index.byName, normName(m.package.name), () => []).push(entry)
@@ -524,12 +529,12 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       throw new Error(`${m.dir}/.cargo-checksum.json: the package checksum of ${nameVersion(m)}, ${hex}, isn't the one ${lk.file} locks (${locked.join(', ')}): vendor it again`)
     }
   }
-  const buildPackage = memoized(() => entries.map(packageFor).find((m) => m && !isVendoredDir(m.dir)) ?? null)
-  // Its Cargo.lock, resolver and `[patch]` are the build's.
-  const buildWorkspaceRoot = () => {
-    const pkg = buildPackage()
-    return pkg === null ? readManifest('.') : rootManifestOf(pkg)
-  }
+  // The workspace root of the first entry's own package (one not vendored), else the bundle root's manifest:
+  // its Cargo.lock, resolver and `[patch]` are the build's.
+  const buildWorkspaceRoot = memoized(() => {
+    const pkg = entries.map(packageFor).find((m) => m && !isVendoredDir(m.dir))
+    return pkg === undefined ? readManifest('.') : rootManifestOf(pkg)
+  })
   // Null when the workspace root lies above the bundle root: its lockfile is cargo's, never read.
   const buildLockPath = () => {
     const root = buildWorkspaceRoot()
@@ -754,13 +759,6 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     return { resolved, lacking: [...lacking.values()] }
   }
 
-  const subdirs = (dir) => {
-    try {
-      return readdirSync(join(baseDir, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => (dir === '.' ? e.name : `${dir}/${e.name}`))
-    } catch {
-      return []
-    }
-  }
   const globDirs = (rootDir, pattern) => {
     let dirs = [rootDir]
     for (const seg of pattern.split('/').filter((x) => x !== '' && x !== '.')) {
@@ -882,9 +880,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     }
     return exact().graph ? { resolved: exact().resolved, lacking: [] } : replay()
   })
-  const ensureResolved = () => resolveBuild().resolved
   const maybeOf = memoized((node) => {
-    const { sure, all } = ensureResolved()
+    const { sure, all } = resolveBuild().resolved
     const on = sure.get(node)
     const maybe = new Set([...(all.get(node) ?? [])].filter((f) => !on?.has(f)))
     return maybe.size === 0 ? null : maybe
@@ -1072,7 +1069,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     resolveCrate: (name, fromFile, opts) => crateCandidates(name, fromFile, opts)[0]?.file ?? null,
     // `cargo` (cargo's resolver over the lockfile), `metadata`, or `replay` with `why` cargo's resolver couldn't run.
     resolution() {
-      ensureResolved()
+      resolveBuild()
       if (metadata) return { mode: 'metadata', why: null }
       const { graph, why = null } = exact()
       return { mode: graph ? 'cargo' : 'replay', why }
@@ -1115,18 +1112,18 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     // Null when unknown, as for a package the build doesn't pull in: its gated code is then kept.
     featuresFor: ofPackage((m, fileRel, unit = TARGET_UNIT) => {
       const node = nodeKey(unitFeatureCtx(unit), m.dir)
-      const { sure, all } = ensureResolved()
+      const { sure, all } = resolveBuild().resolved
       return sure.get(node) ?? (all.has(node) ? NO_FEATURES : null)
     }, null),
     // On only in some of the builds the loader can't tell apart (a target-specific table it can't decide).
     maybeFeaturesFor: ofPackage((m, fileRel, unit = TARGET_UNIT) => maybeOf(nodeKey(unitFeatureCtx(unit), m.dir)), null),
     // dir -> { on, maybe }: a package only an undecided table pulls in has every feature of its maybe.
     featureResolution(context = 'target') {
-      const { sure, all } = ensureResolved()
+      const { sure, all } = resolveBuild().resolved
       return byDir(all.keys(), context, (node) => ({ on: sure.get(node) ?? NO_FEATURES, maybe: maybeOf(node) ?? NO_FEATURES }))
     },
     resolvedFeatures(context = 'target') {
-      const { sure } = ensureResolved()
+      const { sure } = resolveBuild().resolved
       return byDir(sure.keys(), context, (node) => sure.get(node))
     },
     unitOfCrate(libFile, fromUnit = TARGET_UNIT) {

@@ -9,10 +9,10 @@ import { stripVTControlCharacters, styleText } from 'node:util'
 
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { AuditError, EMOJI, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
+import { AuditError, EMOJI, audit, collectPackages, collectPackagesFromFile, flattenAdvisories, printAuditReport, reasonIndex } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
 import { parseFile } from '../stasis/src/parse.js'
-import { DIM } from '../stasis/src/table.js'
+import { DIM, formatTable } from '../stasis/src/table.js'
 import { GITHUB, NPM, OSV, logos } from '../stasis/src/sixel.js'
 import { tgzOfBundle } from './stasis-tgz.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -104,7 +104,7 @@ test('collectPackages and collectReasons take node_modules as a path segment, no
     reason: { run: ['src/entry.js', 'tools/foo_node_modules/index.js', 'node_modules/foo/index.js'] },
   })
   t.assert.deepStrictEqual(collectPackages([lock, bundle]).map((p) => `${p.name}@${p.version}`), ['bar@4.5.6', 'baz@0.0.1', 'foo@1.2.3', 'foo@2.0.0'])
-  t.assert.deepStrictEqual([...collectReasons([bundle]).keys()], ['foo@2.0.0'])
+  t.assert.deepStrictEqual([...reasonIndex([bundle]).byPkg.keys()], ['foo@2.0.0'])
 }))
 
 // A bundle of every ecosystem a dependency is tagged with: an npm package, a vendored crate, a
@@ -142,7 +142,7 @@ test('collectPackages takes every ecosystem a dependency is tagged with, and no 
   ])
   // One crate and one npm package of a name and version are two packages, each with its reasons.
   const reasoned = writeBundle(tmp, 'reasoned.br', { ...ECOSYSTEMS_BUNDLE, reason: { run: ['node_modules/serde/index.js'], webpack: ['vendor/serde/src/lib.rs', 'vendor/serde/Cargo.toml'] } })
-  t.assert.deepStrictEqual(Object.fromEntries([...collectReasons([reasoned])].map(([key, set]) => [key, [...set]])), { 'serde@1.0.100': ['run'], 'cargo:serde@1.0.100': ['webpack'] })
+  t.assert.deepStrictEqual(Object.fromEntries([...reasonIndex([reasoned]).byPkg].map(([key, set]) => [key, [...set]])), { 'serde@1.0.100': ['run'], 'cargo:serde@1.0.100': ['webpack'] })
 }))
 
 test('collectPackages skips bundle modules without name/version (v0 legacy)', withTmp((t, tmp) => {
@@ -317,7 +317,7 @@ test('collectReasons excludes a consumer that recorded only corrected files', wi
       run: ['node_modules/ws/index.js'],
     },
   })
-  t.assert.deepStrictEqual([...collectReasons([bundle]).get('ws@7.5.9')], ['run'])
+  t.assert.deepStrictEqual([...reasonIndex([bundle]).byPkg.get('ws@7.5.9')], ['run'])
 }))
 
 test('collectPackagesFromFile rejects unknown JSON shape with a lockfile-specific error', withTmp((t, tmp) => {
@@ -399,25 +399,25 @@ test('collectReasons maps a bundle reason map to node_modules packages', withTmp
       webpack: ['node_modules/baz/index.js', 'node_modules/foo/index.js', 'src/entry.js'],
     },
   })
-  const reasons = collectReasons([file])
+  const reasons = reasonIndex([file]).byPkg
   t.assert.deepStrictEqual([...reasons.get('foo@2.0.0')].toSorted(), ['run', 'webpack'])
   t.assert.deepStrictEqual([...reasons.get('baz@0.0.1')].toSorted(), ['webpack'])
 }))
 
 test('collectReasons returns nothing for a lockfile (no reason map)', withTmp((t, tmp) => {
   const file = writeLock(tmp)
-  t.assert.equal(collectReasons([file]).size, 0)
+  t.assert.equal(reasonIndex([file]).byPkg.size, 0)
 }))
 
 test('collectReasons returns nothing for a bundle without a reason map', withTmp((t, tmp) => {
   const file = writeBundle(tmp)
-  t.assert.equal(collectReasons([file]).size, 0)
+  t.assert.equal(reasonIndex([file]).byPkg.size, 0)
 }))
 
 test('collectReasons unions reasons across multiple files', withTmp((t, tmp) => {
   const a = writeBundle(tmp, 'a.br', { reason: { run: ['node_modules/foo/index.js'] } })
   const b = writeBundle(tmp, 'b.br', { reason: { webpack: ['node_modules/foo/index.js'] } })
-  const reasons = collectReasons([a, b])
+  const reasons = reasonIndex([a, b]).byPkg
   t.assert.deepStrictEqual([...reasons.get('foo@2.0.0')].toSorted(), ['run', 'webpack'])
 }))
 

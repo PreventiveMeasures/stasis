@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { brotliCompressSync } from 'node:zlib'
 
 import { collectWhy } from '../stasis/src/why.js'
-import { collectReasons } from '../stasis/src/audit.js'
+import { reasonIndex } from '../stasis/src/audit.js'
 import { withTmp } from './tmp.helper.js'
 
 // Build a bundle from a compact spec:
@@ -661,7 +661,7 @@ test('collectWhy reasons exclude a consumer that recorded only corrected files',
   // ws's reasons, in --why nor in the plain column -- the two must match.
   const why = collectWhy([file], new Set(['ws@7.5.9']))
   t.assert.deepStrictEqual(linesFor(why, 'ws@7.5.9'), ['run: b -> ws'])
-  t.assert.deepStrictEqual([...collectReasons([file]).get('ws@7.5.9')], ['run'])
+  t.assert.deepStrictEqual([...reasonIndex([file]).byPkg.get('ws@7.5.9')], ['run'])
 }))
 
 test('collectWhy keeps a bare line for a reason whose only paths are corrected edges', withTmp((t, tmp) => {
@@ -801,7 +801,7 @@ test('collectWhy --why reason set matches the non-why reasons of the flagged pac
   })
   const why = collectWhy([file], new Set(['c@1.0.0']))
   const whyReasons = [...new Set([...why.get('c@1.0.0')].map((l) => l.split(':')[0]))].toSorted()
-  const flagged = [...collectReasons([file]).get('c@1.0.0')].toSorted()
+  const flagged = [...reasonIndex([file]).byPkg.get('c@1.0.0')].toSorted()
   t.assert.deepStrictEqual(whyReasons, flagged)
   t.assert.deepStrictEqual(flagged, ['metro', 'run'])
 }))

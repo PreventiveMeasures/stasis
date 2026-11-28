@@ -1,33 +1,28 @@
 // foundry.toml profiles (with `extends`) and the remappings `forge build` hands solc: a port of foundry
 // v1.8.3's `RemappingsProvider` and foundry-compilers' `Remapping::find_many_with_context`. Not read:
 // ~/.foundry/foundry.toml, `FOUNDRY_CONFIG`, FOUNDRY_*/DAPP_* other than the profile and remappings.
+// discoverSolidityConfig picks these, a --mapping file's, or a remappings.txt's as solc and Hardhat read it.
 
-import { posix, resolve } from 'node:path'
+import { join, posix, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { nestedMap, toPosix } from '@exodus/stasis-core/util'
-import { isDir } from '../resolve-typescript.js'
-import { projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull } from './solidity-ownership.js'
+import { isDir, isFile } from '../resolve-typescript.js'
+import { canonicalize, dirEntries, isAbs, normalComps, projectOwnership, projectRelative, readUtf8OrNull, shownFrom, stripPrefix } from './solidity-ownership.js'
 import { isTomlTable, readToml } from './toml.js'
 
-export const FOUNDRY_TOML = 'foundry.toml'
-export const REMAPPINGS_TXT = 'remappings.txt'
+const FOUNDRY_TOML = 'foundry.toml'
+const REMAPPINGS_TXT = 'remappings.txt'
+// Not `hardhat.config.*`, code that may hold keys.
+export const SOLIDITY_ROOT_MANIFESTS = [FOUNDRY_TOML, REMAPPINGS_TXT, 'foundry.lock', 'soldeer.lock', '.gitmodules', 'package.json']
+export const SOLIDITY_PACKAGE_MANIFESTS = ['package.json', FOUNDRY_TOML, REMAPPINGS_TXT]
 
-// Paths are absolute POSIX, compared by component as Rust compares `Path`s.
-const isAbs = (p) => p.startsWith('/')
-const normalComps = (p) => p.split('/').filter((c) => c !== '' && c !== '.')
+// Paths are absolute POSIX, compared by component as Rust compares `Path`s (isAbs, normalComps and stripPrefix
+// are solidity-ownership's).
 const compCount = (p) => normalComps(p).length + (isAbs(p) ? 1 : 0)
 const fileName = (p) => normalComps(p).at(-1) ?? null
 const pathKey = (p) => (isAbs(p) ? '/' : '') + normalComps(p).join('/')
 const pathEq = (a, b) => pathKey(a) === pathKey(b)
-// `Path::strip_prefix`: the remaining components, or null.
-function stripPrefix(p, base) {
-  if (isAbs(p) !== isAbs(base)) return null
-  const a = normalComps(p)
-  const b = normalComps(base)
-  if (b.length > a.length || !b.every((c, i) => a[i] === c)) return null
-  return a.slice(b.length).join('/')
-}
 const pathStartsWith = (p, base) => stripPrefix(p, base) !== null
 const rustJoin = (base, p) => (isAbs(p) ? p : base.endsWith('/') ? `${base}${p}` : `${base}/${p}`)
 const parentOf = (p) => {
@@ -47,16 +42,6 @@ function cmpPath(a, b) {
   return x.length - y.length
 }
 
-function canonicalize(p, host) {
-  const real = realpathOrNull(p, host)
-  return real === null ? null : toPosix(real)
-}
-
-// How messages name a file of the project at `root`: from the root, by its lexical or its canonical path.
-export function shownFrom(root, host = diskHost, canonicalRoot = canonicalize(root, host) ?? root) {
-  return (abs) => stripPrefix(abs, root) || stripPrefix(abs, canonicalRoot) || abs
-}
-
 const isSymlinkPath = (p, host) => {
   try {
     return host.readlink(p) !== null
@@ -65,21 +50,13 @@ const isSymlinkPath = (p, host) => {
   }
 }
 
-// In the filesystem's own order where the host has one: forge walks `read_dir` unsorted, and where two
-// packages share a lib window the first one listed decides a remapping. A dangling symlink is dropped.
-function listDir(dir, host) {
-  let entries
-  try {
-    entries = host.readdirUnsorted ? host.readdirUnsorted(dir) : host.readdir(dir)
-  } catch {
-    return []
-  }
-  return entries.flatMap((e) => {
-    const path = rustJoin(dir, e.name)
-    const kind = e.isSymbolicLink() ? host.stat(path) : e
-    return kind === null ? [] : [{ path, name: e.name, isFile: kind.isFile(), isDir: kind.isDirectory(), isSymlink: e.isSymbolicLink() }]
-  })
-}
+// In the filesystem's own order: forge walks `read_dir` unsorted, and where two packages share a lib
+// window the first one listed decides a remapping. A dangling symlink is dropped.
+const listDir = (dir, host) => dirEntries(dir, host).flatMap((e) => {
+  const path = rustJoin(dir, e.name)
+  const kind = e.isSymbolicLink() ? host.stat(path) : e
+  return kind === null ? [] : [{ path, name: e.name, isFile: kind.isFile(), isDir: kind.isDirectory(), isSymlink: e.isSymbolicLink() }]
+})
 
 const readDir = (dir, host) => listDir(dir, host).filter((e) => !e.name.startsWith('.'))
 
@@ -133,10 +110,10 @@ const withSlash = (s) => (s.endsWith('/') || s.endsWith('.sol') ? s : `${s}/`)
 const withTrailing = (s) => (s.endsWith('/') ? s : `${s}/`)
 const trimSlashes = (s) => s.replace(/\/+$/u, '')
 
-export const toSolcRemapping = (r) => ({ context: r.context, prefix: withSlash(r.name), target: withSlash(r.path) })
+const toSolcRemapping = (r) => ({ context: r.context, prefix: withSlash(r.name), target: withSlash(r.path) })
 
 // Profile names are case-insensitive (figment's `Profile`).
-export const foundryProfile = (env) => (env.FOUNDRY_PROFILE || 'default').toLowerCase()
+const foundryProfile = (env) => (env.FOUNDRY_PROFILE || 'default').toLowerCase()
 
 // `RelativeRemappingPathBuf::with_root`.
 function withRoot(parent, path) {
@@ -422,14 +399,6 @@ export function foundryTomlRemappings(text, profile = 'default') {
   return profileRemappings(parseFoundryToml(text), profile)
 }
 
-// What `--mapping=foundry.toml` takes, as solc's; `profiled`: whether the selected `profile` is one of the file's.
-export function readFoundryTomlRemappings(file, profile, { show, host = diskHost }) {
-  const abs = toPosix(resolve(file))
-  const read = readFoundryProfiles(abs, profile, { show, host })
-  const remappings = profileRemappings(read, profile, show(abs)).map(toSolcRemapping)
-  return { remappings, files: read.files, profiled: hasProfile(read.profiles, profile) }
-}
-
 const hasProfile = (profiles, profile) => profile !== 'default' && profiles.has(profile)
 
 // For the root foundry.toml: a profile that isn't there is warned about.
@@ -685,7 +654,7 @@ function providerRemappings(root, { userRemappings, libs, autoDetect, profile, f
 }
 
 // The detected lib dirs, warned, where forge would reject the foundry.toml's settings (a pinned mapping file reads nothing else).
-export function foundryLibs(baseDir, { env = process.env, host = diskHost } = {}) {
+function foundryLibs(baseDir, env, host) {
   const root = toPosix(resolve(baseDir))
   const profile = foundryProfile(env)
   try {
@@ -732,4 +701,43 @@ export function foundryProject(baseDir, { env = process.env, host = diskHost } =
   const relFiles = [...files].map((f) => projectRelative(root, f, host))
   const envUsed = [...(profiled ? [`FOUNDRY_PROFILE=${env.FOUNDRY_PROFILE}`] : []), ...(envName === null ? [] : [envName])]
   return { remappings, libs: config.libs, files: relFiles, envUsed, ownership }
+}
+
+const toLoaderRemapping = ({ context, name, path }) => ({ context, prefix: name, target: path })
+
+// A foundry.toml's and, with `forge`, a remappings.txt's are slash-terminated as forge reads them; else (solc,
+// Hardhat) a remappings.txt applies as written. `profiled`: whether the selected profile is one of a foundry.toml's.
+function readMapping(file, { env, forge, host, show }) {
+  if (file.endsWith('.toml')) {
+    const profile = foundryProfile(env)
+    const abs = toPosix(resolve(file))
+    const read = readFoundryProfiles(abs, profile, { show, host })
+    const remappings = profileRemappings(read, profile, show(abs)).map(toSolcRemapping)
+    return { remappings, files: read.files, profiled: hasProfile(read.profiles, profile) }
+  }
+  const name = show(file)
+  const text = readUtf8OrNull(file, name, host)
+  if (text === null) throw new Error(`${name}: no such file`)
+  const listed = parseRemappingLines(text, { label: name, emptyPath: !forge })
+  return { remappings: listed.map(forge ? toSolcRemapping : toLoaderRemapping), files: [file] }
+}
+
+// The remappings `mappingFile` lists, else what `forge build` uses with a foundry.toml at the root, else a
+// root remappings.txt as written.
+export function discoverSolidityConfig(baseDir, { mappingFile, env = process.env, host = diskHost } = {}) {
+  const forge = isFile(join(baseDir, FOUNDRY_TOML), host)
+  if (forge && !mappingFile) return foundryProject(baseDir, { env, host })
+  const { libs, profiled, files: libsFiles } = forge ? foundryLibs(baseDir, env, host) : { libs: [], profiled: false, files: [] }
+  const ownership = projectOwnership(baseDir, libs, { soldeer: forge, host })
+  const show = shownFrom(toPosix(resolve(baseDir)), host)
+  if (mappingFile) {
+    const abs = resolve(baseDir, mappingFile)
+    const { remappings, files, profiled: mappingProfiled } = readMapping(abs, { env, forge, host, show })
+    // The profile picks the mapping file's remappings (a .toml) or the root foundry.toml's libs.
+    const envUsed = profiled || mappingProfiled ? [`FOUNDRY_PROFILE=${env.FOUNDRY_PROFILE}`] : []
+    return { remappings, libs, ownership, files: [...new Set([...files, ...libsFiles].map((f) => projectRelative(baseDir, f, host)))], envUsed }
+  }
+  const txt = join(baseDir, REMAPPINGS_TXT)
+  if (!isFile(txt, host)) return { remappings: [], libs, ownership, files: [], envUsed: [] }
+  return { remappings: readMapping(txt, { env, forge, host, show }).remappings, libs, ownership, files: [REMAPPINGS_TXT], envUsed: [] }
 }
