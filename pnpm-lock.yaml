@@ -254,8 +254,8 @@ importers:
         specifier: 1.0.0-alpha.8
         version: 1.0.0-alpha.8(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)
       '@preventive/upstream':
-        specifier: ^1.8.0
-        version: 1.8.0(@noble/hashes@2.4.0)
+        specifier: ^1.9.0
+        version: 1.9.0(@noble/hashes@2.4.0)
       '@preventive/vfs':
         specifier: ^1.1.0
         version: 1.1.0
@@ -894,8 +894,8 @@ packages:
     resolution: {integrity: sha512-t1FQfGMtJC9s+gG4xvCsVk6h8Z78jqm4pSpjMXeQ/qwDaNVdt9qIVpNCohXOXpqClQDvIGKlXpo9AH7SkYU3jA==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.4.1.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/compare@1.2.12':
-    resolution: {integrity: sha512-HpUCH1AQHZnqLAmZeZ2myyfgZ4YhaVlOpzN8mJHUlVxdA8BDaxWDwqq2Wf2q0rjlDI2AwgbdJkz8O6DyZdbhQg==, tarball: https://registry.npmjs.org/@preventive/compare/-/compare-1.2.12.tgz}
+  '@preventive/compare@1.2.14':
+    resolution: {integrity: sha512-Z5ai79UjLvH//UmKMNgVvuV+YK05MjaKNKODpxzvI8mUr+WIGadJPED68j4X1JxNiuxARi0tU4GkqmI+RZzaJA==, tarball: https://registry.npmjs.org/@preventive/compare/-/compare-1.2.14.tgz}
     engines: {node: '>=24.14.0'}
     peerDependencies:
       css-tree: '>=3.2.1'
@@ -944,8 +944,8 @@ packages:
       oxc-parser:
         optional: true
 
-  '@preventive/upstream@1.8.0':
-    resolution: {integrity: sha512-T7rraWa9gaVQKFmQvcfSoCgDTFNoyo9WcnAZE4Pt5z3EaQLz/bc7gJenYp7QF6G6i4wMYH2xeeiPwiVBODifSw==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.8.0.tgz}
+  '@preventive/upstream@1.9.0':
+    resolution: {integrity: sha512-ngbFIy/niKJJp8acOldCP0ZDRja5QUivOpk9ZCuth9ihAkUghb2Kmm8ABoj1wVlcz2OOO/QUs3K+xhfnajX2Ag==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.9.0.tgz}
     engines: {node: '>=24.14.0'}
     peerDependencies:
       semver: ^7.5.2
@@ -3437,7 +3437,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/compare@1.2.12(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
+  '@preventive/compare@1.2.14(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
     dependencies:
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
       '@preventive/diff': 1.1.1
@@ -3451,10 +3451,10 @@ snapshots:
       '@chalker/queue': 1.0.1
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
       '@preventive/archive': 1.4.1(@noble/hashes@2.4.0)
-      '@preventive/compare': 1.2.12(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
+      '@preventive/compare': 1.2.14(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/diff': 1.1.1
       '@preventive/lockfile': 1.3.0(@noble/hashes@2.4.0)
-      '@preventive/upstream': 1.8.0(@noble/hashes@2.4.0)
+      '@preventive/upstream': 1.9.0(@noble/hashes@2.4.0)
       '@preventive/vfs': 1.1.0
     transitivePeerDependencies:
       - '@noble/hashes'
@@ -3478,7 +3478,7 @@ snapshots:
       flow-remove-types: 2.322.0
       oxc-parser: 0.152.0
 
-  '@preventive/upstream@1.8.0(@noble/hashes@2.4.0)':
+  '@preventive/upstream@1.9.0(@noble/hashes@2.4.0)':
     dependencies:
       '@preventive/archive': 1.4.1(@noble/hashes@2.4.0)
       '@preventive/lockfile': 1.3.0(@noble/hashes@2.4.0)
