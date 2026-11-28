@@ -1,15 +1,13 @@
 # Audit corrections
 
 `stasis audit` audits a package only when an artifact records some of its real
-code. Some packages ship a file that holds none of it, such as `ws`'s
-`browser.js`, a stub that only throws. A package recorded only through such a
-file, plus its manifest, is skipped: none of its code ships, so none of its
-advisories apply.
+code. Some packages ship a file with none of it, such as `ws`'s `browser.js`,
+a stub that only throws. A package recorded only through such a file, plus its
+manifest, is skipped.
 
-Those files are listed as plain data in `@exodus/stasis/audit-corrections`.
-Other tools can apply the same rule from that list instead of keeping their own
-copy of it, for example one that reads bundles on a server, or one that walks a
-tree `@preventive/deptree` laid out.
+Those files are listed as plain data in `@exodus/stasis/audit-corrections`, so
+other tools (one reading bundles on a server, or walking a tree
+`@preventive/deptree` laid out) can apply the same rule.
 
 ## What is corrected
 
@@ -36,9 +34,8 @@ isEvidenceFile('ws', '8.22.0', 'package.json') // false: a manifest
   evidence unless it is a manifest of its ecosystem (`package.json` for npm,
   `Cargo.toml` for a crate, and so on) or a corrected file at a version in its
   range. `file` is relative to the package's directory.
-- `CORRECTIONS` is a frozen array with one entry per corrected file, the very
-  objects the audit reads. It holds plain data only, so `JSON.stringify` carries
-  all of it:
+- `CORRECTIONS` is a frozen array of plain data, one entry per corrected file,
+  the same objects the audit reads:
 
   ```js
   {
@@ -51,13 +48,12 @@ isEvidenceFile('ws', '8.22.0', 'package.json') // false: a manifest
   ```
 
   - `range` is the semver range the correction was verified for. A version
-    outside it, a pre-release the range leaves out, or a version that does not
-    parse is never corrected, so the package stays audited.
-  - `integrity` lists the sha512 of every distinct copy of `file` that the
-    versions in `range` publish, in the `sha512-<base64>` form a stasis lockfile
-    records a file in. A tool that holds the file's bytes can check that they
-    are one of the copies verified. A version range alone cannot tell a real
-    stub from other content put at the same path:
+    outside it, a pre-release the range excludes, or an unparsable version is
+    never corrected, so the package stays audited.
+  - `integrity` lists the sha512 of every distinct copy of `file` the versions
+    in `range` publish, in a stasis lockfile's `sha512-<base64>` form. A tool
+    holding the file's bytes can check they are one of these; a range alone
+    can't tell the real stub from other content at the same path:
 
     ```js
     import { createHash } from 'node:crypto'
@@ -68,8 +64,7 @@ isEvidenceFile('ws', '8.22.0', 'package.json') // false: a manifest
 
 ## Changing a correction
 
-A new release could change the file, so a range is widened only after checking
-the file in every release the wider range adds, read from each release's
-registry tarball and held to its registry integrity. Any new copy of the file
-goes into `integrity`, and the boundary tests in `tests/audit.test.js` move to
-the new edge of the range.
+A range is widened only after checking the file in every release the wider
+range adds, read from each release's registry tarball and held to its registry
+integrity. Any new copy of the file goes into `integrity`, and the boundary
+tests in `tests/audit.test.js` move to the new edge of the range.
