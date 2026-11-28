@@ -1,9 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { gzipSync } from 'node:zlib'
 
-import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { BUNDLE_FILE, TGZ_FILE, isGzip, isTgzName } from '@exodus/stasis-core/util'
+import { BUNDLE_FORMATS, CONFIG_FILE, defaultBundleName, formatOf, isGzip, isTgzName } from '@exodus/stasis-core/util'
 
 export function writeFile(abs, data) {
   mkdirSync(dirname(abs), { recursive: true })
@@ -52,23 +50,24 @@ export function checkLockfileOnly(prefix, { lockfileOnly, lockfile, output, add 
   if (refusal) throw new Error(`${prefix}${refusal[1]}`)
 }
 
-// The format a bundle is written in: `format` (--format, br or tgz), else its `output`'s name's (a .stasis.tgz's tgz),
-// else br. Refused, its message `prefix`ed, where the two disagree, or a tgz is to be compressed with brotli.
-export function bundleFormat(prefix, { format, output, brotliQuality }) {
-  if (format !== undefined && format !== 'br' && format !== 'tgz') throw new Error(`${prefix}--format must be br or tgz (got '${format}')`)
-  const named = output === undefined || output === '-' ? undefined : isTgzName(output) ? 'tgz' : 'br'
-  if (format === 'tgz' && named === 'br') throw new Error(`${prefix}--format=tgz writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got '${output}')`)
-  if (format === 'br' && named === 'tgz') throw new Error(`${prefix}--format=br writes a stasis.code.br, not --output=${output}, a .stasis.tgz's name`)
-  const resolved = format ?? named ?? 'br'
+// The format a bundle is written in: `format` (--format, br or tgz), else `configured` (stasis.config.json's format), else
+// its `output`'s name's (a .stasis.tgz's tgz), else that of the bundle `exists(name)` finds at the root, where given
+// (defaultBundleName's), else br. Refused, its message `prefix`ed, where any two disagree, or a tgz is to be brotli'd.
+export function bundleFormat(prefix, { format, configured, output, brotliQuality, exists }) {
+  for (const [value, what] of [[format, '--format'], [configured, `${CONFIG_FILE}'s format`]]) {
+    if (value !== undefined && !BUNDLE_FORMATS.has(value)) throw new Error(`${prefix}${what} must be br or tgz (got '${value}')`)
+  }
+  if (format !== undefined && configured !== undefined && format !== configured) throw new Error(`${prefix}--format=${format} disagrees with ${CONFIG_FILE}'s format, ${configured}`)
+  const asked = format ?? configured
+  const what = format !== undefined ? `--format=${format}` : `${CONFIG_FILE}'s format ${configured}`
+  const named = output === undefined || output === '-' ? undefined : formatOf(output)
+  if (asked === 'tgz' && named === 'br') throw new Error(`${prefix}${what} writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got '${output}')`)
+  if (asked === 'br' && named === 'tgz') throw new Error(`${prefix}${what} writes a stasis.code.br, not --output=${output}, a .stasis.tgz's name`)
+  const found = output === undefined && asked === undefined && exists !== undefined ? formatOf(defaultBundleName(undefined, exists)) : undefined
+  const resolved = asked ?? named ?? found ?? 'br'
   if (resolved === 'tgz' && brotliQuality !== undefined) throw new Error(`${prefix}--brotli-quality compresses a stasis.code.br, not a .stasis.tgz`)
   return resolved
 }
 
-// The name a bundle of `format` is written under by default, or the suffix of one.
-export const bundleFileOf = (format) => (format === 'tgz' ? TGZ_FILE : BUNDLE_FILE)
-
-// A .stasis.tgz of `bundle`: Bundle#toTar's tar, packed with @preventive/archive (imported for a tgz alone) and gzipped.
-export async function stasisTgzOf(bundle) {
-  const { pack } = await import('@preventive/archive/tar.js')
-  return gzipSync(pack(bundle.toTar({ integrityOf: sha512integrity })))
-}
+// A .stasis.tgz of `bundle`, parse.js's (and @preventive/archive's) imported for a tgz alone.
+export const stasisTgzOf = async (bundle) => (await import('../parse.js')).writeStasisTgz(bundle)

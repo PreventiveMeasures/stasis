@@ -80,5 +80,5 @@ test('stasis run refuses a .stasis.tgz other than its stasis.lock.json\'s files,
 
   const core = await run(coreCli, load(tgz), tmp)
   t.assert.notEqual(core.status, 0)
-  t.assert.match(core.stderr, /app\.stasis\.tgz is a \.stasis\.tgz, which `stasis run` reads \(stasis-core runs a stasis\.code\.br\)/u)
+  t.assert.match(core.stderr, /app\.stasis\.tgz is a \.stasis\.tgz, which stasis reads and writes and stasis-core can't \(it writes a stasis\.code\.br\)/u)
 }))

@@ -4,13 +4,13 @@ import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
-import { compressBundle, parseBundleBytes } from './brotli.js'
+import { bundleFileBytes, parseBundleFile } from './bundle-file.js'
 import { lockfileFromBundle } from './extract.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
 import { excludedText, linksOn, moduleExcluder, parsePolicy, recordedIn } from './policy.js'
 import { bundledIntegrity, canonicalizePath } from './state-util.js'
-import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withFilledOf, withMetadataOf } from './util.js'
+import { assertFormatOf, assertRealPathWithinBase, attestsAny, BUNDLE_FORMATS, classifyFormat, CONFIG_FILE, defaultBundleName, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withFilledOf, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: outputMatcher must read the real disk, not be captured.
 const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
@@ -31,7 +31,10 @@ function readAddConfig(baseDir) {
   if (cfg.brotliQuality !== undefined && !isBrotliQuality(cfg.brotliQuality)) {
     throw new Error(`${CONFIG_FILE}: brotliQuality must be an integer 0..11 (got ${JSON.stringify(cfg.brotliQuality)})`)
   }
-  const bundleFile = cfg.bundleFile || BUNDLE_FILE
+  if (cfg.format !== undefined && !BUNDLE_FORMATS.has(cfg.format)) throw new Error(`${CONFIG_FILE}: format must be br or tgz (got ${JSON.stringify(cfg.format)})`)
+  assertFormatOf(cfg.bundleFile || undefined, cfg.format, `${CONFIG_FILE}: format ${cfg.format}`)
+  // Named, else the format's, else the stasis.code.br or stasis.tgz there, as a run finds it.
+  const bundleFile = cfg.bundleFile || defaultBundleName(cfg.format, (name) => existsSync(join(baseDir, name)))
   const resourcesBundleFile = cfg.resourcesBundleFile
   // Distinct, else they clobber on write; canonicalized so symlink and relative aliases are caught too.
   if (resourcesBundleFile &&
@@ -272,7 +275,7 @@ export function addCommand({ cwd = process.cwd(), entries, lockfileOnly = false,
 
   const repo = detectRepo(baseDir)
   // Each artifact is read before a file is added to any: what one attests of a package is held of the others too.
-  const bundleAt = (file, abs = resolve(baseDir, file)) => (existsSync(abs) ? existingOf(`bundle at ${file}`, () => parseBundleBytes(readFileSync(abs))) : undefined)
+  const bundleAt = (file, abs = resolve(baseDir, file)) => (existsSync(abs) ? existingOf(`bundle at ${file}`, () => parseBundleFile(readFileSync(abs), file)) : undefined)
   const bundles = new Map([bundleFile, resourcesBundleFile].filter(Boolean).map((file) => [file, bundleAt(file)]))
   const lock = hasLock ? existingOf(LOCK_FILE, () => Lockfile.parse(readFileSync(lockPath, 'utf8'))) : undefined
   const attest = heldToInstall(baseDir, [...bundles, [LOCK_FILE, lock]].filter(([, artifact]) => artifact))
@@ -307,7 +310,7 @@ export function addCommand({ cwd = process.cwd(), entries, lockfileOnly = false,
     const abs = resolve(baseDir, target)
     const merged = plan(target, existing, added, kind, lockfileOnly ? undefined : (bundle) => {
       mkdirSync(dirname(abs), { recursive: true })
-      writeFileSync(abs, compressBundle(bundle, brotliQuality))
+      writeFileSync(abs, bundleFileBytes(bundle, abs, brotliQuality))
     })
     after.set(target, merged)
     // Serialized under lockfileOnly too: never write a lockfile of a bundle that couldn't be written.

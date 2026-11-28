@@ -26,6 +26,7 @@
     "src/add.js",
     "src/artifact-util.js",
     "src/brotli.js",
+    "src/bundle-file.js",
     "src/bundle.js",
     "src/bundle-util.js",
     "src/cli.js",
