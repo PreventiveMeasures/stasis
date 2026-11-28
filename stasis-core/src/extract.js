@@ -51,10 +51,8 @@ function addToLockfile(lock, derived, lockAbs) {
 }
 
 // As bigints: a number can round a large Windows file id.
-function fileId(path) {
-  const stats = statSync(path, { throwIfNoEntry: false, bigint: true })
-  return stats && `${stats.dev}:${stats.ino}`
-}
+const bigStat = (path) => statSync(path, { throwIfNoEntry: false, bigint: true })
+const fileId = (stats) => stats && `${stats.dev}:${stats.ino}`
 
 function dirsBelow(outDir, abs) {
   const dirs = []
@@ -64,13 +62,13 @@ function dirsBelow(outDir, abs) {
 
 // Extract never overwrites a file with other bytes, nor the bundle it reads, under any name (symlink, hard link).
 function alreadyInPlace(abs, file, content, bundleId) {
-  const stats = statSync(abs, { throwIfNoEntry: false, bigint: true })
+  const stats = bigStat(abs)
   if (stats === undefined) {
     // A dangling symlink: the write would create its target, wherever that is.
     if (lstatSync(abs, { throwIfNoEntry: false }) !== undefined) throw new Error(`extract: ${file} is a dangling symlink`)
     return false
   }
-  if (`${stats.dev}:${stats.ino}` === bundleId) throw new Error(`extract: ${file} is the bundle being extracted`)
+  if (fileId(stats) === bundleId) throw new Error(`extract: ${file} is the bundle being extracted`)
   if (!stats.isFile()) throw new Error(`extract: ${file} exists and is not a file`)
   if (!readFileSync(abs).equals(Buffer.from(content))) throw new Error(`extract: ${file} exists with other content`)
   return true
@@ -161,8 +159,8 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   const lockText = derived === null || frozen ? null : (merging ? addToLockfile(onDisk, derived, lockAbs) : derived).serialize()
 
   // What is already on disk is checked whole before the first write too; nor may the lockfile's land on the bundle.
-  const bundleId = fileId(bundleAbs)
-  if (lockText !== null && fileId(lockAbs) === bundleId) throw new Error(`extract: ${LOCK_FILE} is the bundle being extracted`)
+  const bundleId = fileId(bigStat(bundleAbs))
+  if (lockText !== null && fileId(bigStat(lockAbs)) === bundleId) throw new Error(`extract: ${LOCK_FILE} is the bundle being extracted`)
   const checkedDirs = new Set()
   const inPlace = new Set()
   for (const { abs, content, file } of writes) {

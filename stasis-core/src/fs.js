@@ -41,14 +41,6 @@ function decode(buf, options) {
 // The synthetic realpath of a bundle-served path gone from disk.
 const encodeRealpath = (abs, options) => (encodingOf(options) === 'buffer' ? Buffer.from(abs) : abs)
 
-// Absent under --fs: `*.map` (a captured build replays byte-identically; `map` in resources opts out) and
-// `.env*` (a capture never bakes in a secret). Either serves at load only as an explicit bundle member. And what
-// excludeModules excludes (classify), as though not installed.
-function isSkippedFsPath(state, abs, url) {
-  const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
-  return skipped && !(state.config.loadBundle && state.getFsStatFamily(url) !== undefined)
-}
-
 // Indistinguishable from a real absent file's. String() spells a Buffer path as UTF-8 and a URL as its href.
 function enoent(syscall, path) {
   const p = String(path)
@@ -102,8 +94,12 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const abs = toAbsPath(path)
     if (abs === null || !isPathWithin(state.root, abs)) return null
     const url = pathToFileURL(abs).toString()
-    if (isSkippedFsPath(state, abs, url)) return { mode: 'absent' }
-    // Resolvable still: Node's require() realpaths it, and the resolution then misses as MODULE_NOT_FOUND.
+    // Absent: `*.map` (a captured build replays byte-identically; `map` in resources opts out) and `.env*` (a
+    // capture never bakes in a secret), either served at load only as an explicit bundle member.
+    const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
+    if (skipped && !(state.config.loadBundle && state.getFsStatFamily(url) !== undefined)) return { mode: 'absent' }
+    // And what excludeModules excludes, as though not installed. Resolvable still: Node's require() realpaths it,
+    // and the resolution then misses as MODULE_NOT_FOUND.
     if (state.excludedModule(url) !== undefined) return { mode: 'absent', resolvable: true }
     if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
     if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
