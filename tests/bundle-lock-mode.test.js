@@ -68,6 +68,13 @@ test('stasis bundle with no lock mode given holds the build to a stasis.lock.jso
   await build(dir)
   await build(dir, { lockfile: 'stasis.lock.json' })
   t.assert.equal(readFileSync(lockPath, 'utf8'), written, 'left as it is')
+  // A file it records otherwise refused, with --lockfile-only too.
+  writeFileSync(join(dir, 'index.js'), 'module.exports = 9\n')
+  for (const options of [{}, { lockfileOnly: true, output: undefined }]) {
+    await t.assert.rejects(build(dir, options), /^Error: stasis\.lock\.json: content mismatch for 'index\.js'$/u, JSON.stringify(options)) // eslint-disable-line no-await-in-loop -- one lockfile, read by each
+  }
+  t.assert.equal(readFileSync(lockPath, 'utf8'), written)
+  writeFileSync(join(dir, 'index.js'), 'module.exports = 1\n')
   // A file it doesn't attest refused; in add, or under --add, held to what it records and written anew.
   writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
   for (const options of [{}, { lockfile: 'stasis.lock.json' }, { lockfileOnly: true, output: undefined }]) {

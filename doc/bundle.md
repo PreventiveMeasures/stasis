@@ -32,8 +32,8 @@ one misses, as one of a package that is not installed does, see
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
 | `--format=(br\|tgz)` | Write a `stasis.code.br` (`br`) or a [`.stasis.tgz`](file-formats.md#stasistgz) (`tgz`, default name `stasis.tgz`). Default: the `--output`'s name's, `tgz` for one named `stasis.tgz` or `<name>.stasis.tgz`, else `br`. Refused where it disagrees with the `--output`'s name, with `--brotli-quality` for a tgz, or with `--lockfile-only`. |
 | `--deptree` | Lay out the dependencies in memory from the lockfile instead of reading the installed ones, with nothing installed: see [Dependencies from the lockfile](#dependencies-from-the-lockfile---deptree). JS and Solidity. |
-| `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file, where it isn't there; where it is, the build is held to it and, under the default `frozen`, it is left as it is. See [Companion lockfile](#companion-lockfile---lockfile). |
-| `--lockfile-only` | Write the lockfile alone, no bundle: at `--lockfile`'s path, or the one the build is held to (the project's `stasis.lock.json`). Where it is there, under the default `frozen`, nothing is written. Not with `--output`, `--add` or `--brotli-quality`. See [Companion lockfile](#companion-lockfile---lockfile). |
+| `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file, where it isn't there; where it is, the build is held to it: under the default `frozen`, refused where it conflicts with it (records a file otherwise, or doesn't record one built), else left as it is. See [Companion lockfile](#companion-lockfile---lockfile). |
+| `--lockfile-only` | Write the lockfile alone, no bundle: at `--lockfile`'s path, or the one the build is held to (the project's `stasis.lock.json`). Where it is there, under the default `frozen`, the build is refused where it conflicts with it (records a file otherwise, or doesn't record one built), else nothing is written. Not with `--output`, `--add` or `--brotli-quality`. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. `--mainFields`/`--metro` always emit full scope, and refuse any other, given here or set by the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson) (which `--scope=full` overrides). |
 | `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
@@ -115,7 +115,7 @@ there, and `add` where it isn't or under `--add`, which adds to what is there:
 | Mode | Behavior |
 | - | - |
 | `add` | What it builds must agree with what the lockfile records, each file and module among it; `--lockfile` writes the one built, which attests the bundle beside it (with `--add`, merged with the one there, as the bundle is). |
-| `frozen` | As `add`, and the lockfile must be there and attest every file built, and the bundle must load beside it as `stasis run --lock=frozen --bundle=load` loads them. It is left as it is: `--lockfile` and `--lockfile-only` write nothing. |
+| `frozen` | As `add`, and the lockfile must be there and attest every file built, and the bundle must load beside it as `stasis run --lock=frozen --bundle=load` loads them: a build that conflicts with it is refused. One that doesn't leaves it as it is: `--lockfile` and `--lockfile-only` write nothing. |
 | `replace` | The lockfile there is not read; `--lockfile`, which it requires, writes the one built (with `--add`, of the bundle merged). |
 | `ignore` | The lockfile there is neither read nor written; `--lockfile` and `--lockfile-only` are refused. |
 | `none` | There must be no lockfile there; `--lockfile` and `--lockfile-only` are refused. |
@@ -134,7 +134,7 @@ and `patch` is held to how that package was installed (see
 `--lockfile-only` writes the lockfile alone: the same one, byte for byte, that
 `--lockfile` writes beside the bundle, at `--lockfile`'s path, or without it the
 one the build is held to. Where that is there, under the default `frozen`, it
-only checks the build against it. The bundle is built all the same, and
+only checks the build against it, refusing one that conflicts with it. The bundle is built all the same, and
 checked as it would be for writing, so the lockfile is refused wherever the
 bundle would be; only compressing and writing the bundle is skipped. As when it
 is written, the bundle's default path is never taken into
