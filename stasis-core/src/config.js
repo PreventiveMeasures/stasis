@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { diskHost } from './host.js'
 import { POLICY_KEYS, parsePolicy } from './policy.js'
 import { canonicalizePath } from './state-util.js'
-import { BUNDLE_MODES, CONFIG_FILE, extSetsEqual, FS_MODES, isBrotliQuality, isTgzName, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
+import { assertFormatOf, BUNDLE_FORMATS, BUNDLE_MODES, CONFIG_FILE, extSetsEqual, FS_MODES, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 
@@ -25,6 +25,8 @@ const OPTIONS = {
   lockFile: { env: 'EXODUS_STASIS_LOCK_FILE', type: 'string' },
   bundle: { env: 'EXODUS_STASIS_BUNDLE', valid: BUNDLE_MODES },
   bundleFile: { env: 'EXODUS_STASIS_BUNDLE_FILE', type: 'string' },
+  // The bundle's, which its file's name must agree with: br (stasis.code.br) or tgz (stasis.tgz by default).
+  format: { env: 'EXODUS_STASIS_FORMAT', valid: BUNDLE_FORMATS },
   // When set, resources go to this file and code-only to bundleFile; bundle=load reads both.
   resourcesBundleFile: { env: 'EXODUS_STASIS_RESOURCES_BUNDLE_FILE', type: 'string' },
   debug: { env: 'EXODUS_STASIS_DEBUG', parse: envBool, type: 'boolean' },
@@ -118,6 +120,7 @@ export class Config {
       lockFile: str('lockFile'),
       bundle: str('bundle', 'none'),
       bundleFile: str('bundleFile'),
+      format: str('format'),
       resourcesBundleFile: str('resourcesBundleFile'),
       debug: val('debug', false),
       childProcess: val('childProcess', false),
@@ -147,7 +150,7 @@ export class Config {
   }
 
   #checkInvariants() {
-    const { lock, lockFile, bundle, bundleFile, resourcesBundleFile, fs, brotliQuality } = this.#opts
+    const { lock, lockFile, bundle, bundleFile, format, resourcesBundleFile, fs, brotliQuality } = this.#opts
     for (const key of OPTION_KEYS) if (this.#opts[key] !== undefined) assertOption(key, this.#opts[key])
     if (brotliQuality !== undefined && !isBrotliQuality(brotliQuality)) {
       throw new RangeError(`brotliQuality must be an integer 0..11 (got ${JSON.stringify(brotliQuality)})`)
@@ -162,9 +165,8 @@ export class Config {
     if (resourcesBundleFile !== undefined && (bundle === 'none' || bundle === 'ignore')) {
       throw new RangeError(`resourcesBundleFile requires an active bundle mode (got bundle='${bundle}')`)
     }
-    // A .stasis.tgz is read (load or frozen), never written.
-    const tgz = (bundle === 'add' || bundle === 'replace') && [bundleFile, resourcesBundleFile].find((file) => file !== undefined && isTgzName(file))
-    if (tgz) throw new RangeError(`bundle=${bundle} writes ${tgz}, but a .stasis.tgz is read (load or frozen), never written`)
+    // A State that writes refuses a .stasis.tgz (State#refuseWritingTgz): a build's, writing nothing, reads one.
+    assertFormatOf(bundleFile, format, `format=${format}`)
 
     // Write targets must be distinct: canonicalize so './x.br' vs 'x.br' and symlinks to one inode compare equal.
     const claimed = new Map()

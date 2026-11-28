@@ -1866,7 +1866,7 @@ test('validate: a .stasis.tgz validates as the bundle of its files does; one hol
   t.assert.deepStrictEqual(untimed(await validated('stasis.tgz', tgz)), untimed(valid), 'stasis.tgz, as <name>.stasis.tgz')
   // A tgz under any other name, and anything else under its name, refused.
   await Promise.all(['app.tgz', 'app.tar.gz', 'tgz.stasis.code.br', 'stasis.tgz.br', 'app.stasis-tgz'].map((name) =>
-    t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone` })))
+    t.assert.rejects(validated(name, tgz), { message: `${join(tmp, name)}: a tgz must be named stasis.tgz or <name>.stasis.tgz` })))
   await t.assert.rejects(validated('br.stasis.tgz', readFileSync(br)), { message: `${join(tmp, 'br.stasis.tgz')}: incorrect header check` })
   // Its files held to the repository and packages by their bytes, as a bundle's are.
   const differs = await validated('edited.stasis.tgz', tgzOf(entriesOf(built('MAIN\n'))))
@@ -1876,7 +1876,7 @@ test('validate: a .stasis.tgz validates as the bundle of its files does; one hol
   const refused = async (message, entries, { tar = pack(entries), after = [] } = {}) => t.assert.rejects(
     validated('refused.stasis.tgz', Buffer.concat([gzipSync(tar), Buffer.from(after)])), { message: new RegExp(`^${RegExp.escape(at)}: ${message.source}$`, 'u') })
   // What it holds is Bundle.fromTar's to hold to its lockfile (bundle-tar.test.js), told of the file.
-  await refused(/src\/extra\.js is in it, but not in its stasis\.lock\.json/u, [...entriesOf(bundle), { name: 'src/extra.js', data: bytes('extra\n') }])
+  await refused(/src\/extra\.js is not in stasis\.lock\.json/u, [...entriesOf(bundle), { name: 'src/extra.js', data: bytes('extra\n') }])
   // No byte past either stream but zeros: none after the gzip member, nor past a zero after it (where zlib stops), nor in
   // another member gzip(1) reads on into, nor after the tar's end marker.
   const tar = pack(entriesOf(bundle))

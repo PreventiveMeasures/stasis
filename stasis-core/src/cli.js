@@ -34,7 +34,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   // --resources-bundle-file needs an active bundle mode (unlike --bundle-file, inert under ignore).
   if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
   if (bundle === 'load' && (lock === 'add' || lock === 'replace')) fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
-  if ((bundle === 'add' || bundle === 'replace') && [bundleFile, resourcesBundleFile].some(isTgzName)) fail('Error: a .stasis.tgz is read (--bundle=load or frozen), never written')
+  if ((bundle === 'add' || bundle === 'replace') && [bundleFile, resourcesBundleFile].some(isTgzName)) fail('Error: a .stasis.tgz is read-only (--bundle=load or frozen)')
   if (lock === 'none' && bundle === 'none') fail('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
   if (values.fs !== undefined && !FS_MODES.has(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
   if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')

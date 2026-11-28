@@ -54,7 +54,7 @@ test('stasis run refuses a .stasis.tgz other than its stasis.lock.json\'s files,
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'full', bundleFile: 'app.stasis.tgz' }))
   const configured = await run(cli, ['--lock=ignore', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.notEqual(configured.status, 0)
-  t.assert.match(configured.stderr, /bundle=add writes app\.stasis\.tgz, but a \.stasis\.tgz is read \(load or frozen\), never written/u)
+  t.assert.match(configured.stderr, /app\.stasis\.tgz: a \.stasis\.tgz is read-only \(bundle = load or frozen\)/u)
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'full' }))
   rmSync(join(tmp, 'src'), { recursive: true })
   const load = (file) => ['--lock=frozen', '--bundle=load', `--bundle-file=${file}`, 'src/entry.js']
@@ -69,16 +69,51 @@ test('stasis run refuses a .stasis.tgz other than its stasis.lock.json\'s files,
   const tgz = join(tmp, 'app.stasis.tgz')
   writeFileSync(tgz, tgzOfDir(fixture))
   const written = await Promise.all(['add', 'replace'].map((mode) => run(cli, [`--bundle=${mode}`, `--bundle-file=${tgz}`, 'src/entry.js'], tmp)))
-  const neverWritten = [1, "Error: a .stasis.tgz is read (--bundle=load or frozen), never written\nRun 'stasis --help' for usage.\n"]
+  const neverWritten = [1, "Error: a .stasis.tgz is read-only (--bundle=load or frozen)\nRun 'stasis --help' for usage.\n"]
   t.assert.deepStrictEqual(written.map(({ status, stderr }) => [status, stderr]), [neverWritten, neverWritten])
 
   const misnamed = join(tmp, 'app.tgz')
   writeFileSync(misnamed, readFileSync(tgz))
   const other = await run(cli, load(misnamed), tmp)
   t.assert.notEqual(other.status, 0)
-  t.assert.match(other.stderr, new RegExp(`stasis: ${RegExp.escape(misnamed)} is a tgz, which is read as stasis\\.tgz or <name>\\.stasis\\.tgz alone`, 'u'))
+  t.assert.match(other.stderr, new RegExp(`stasis: ${RegExp.escape(misnamed)}: a tgz must be named stasis\\.tgz or <name>\\.stasis\\.tgz`, 'u'))
 
   const core = await run(coreCli, load(tgz), tmp)
   t.assert.notEqual(core.status, 0)
-  t.assert.match(core.stderr, /app\.stasis\.tgz is a \.stasis\.tgz, which only `stasis run` reads/u)
+  t.assert.match(core.stderr, /app\.stasis\.tgz: a \.stasis\.tgz needs stasis, not stasis-core/u)
+}))
+
+test('stasis run finds a stasis.tgz at the root as a stasis.code.br, stasis.config.json\'s format or bundleFile naming which; both there refused; one found never written', withTmp(async (t, tmp) => {
+  cpSync(fixture, tmp, { recursive: true })
+  writeFileSync(join(tmp, 'stasis.tgz'), tgzOfDir(fixture))
+  rmSync(join(tmp, 'src'), { recursive: true })
+  const config = (json) => writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'full', ...json }))
+  const load = () => run(cli, ['--lock=frozen', '--bundle=load', 'src/entry.js'], tmp)
+  const found = await load()
+  t.assert.deepStrictEqual([found.status, found.stdout], [0, 'hello, world\n'], found.stderr)
+  config({ format: 'tgz' })
+  const named = await load()
+  t.assert.deepStrictEqual([named.status, named.stdout], [0, 'hello, world\n'], named.stderr)
+  config({ format: 'br' })
+  t.assert.notEqual((await load()).status, 0, 'format br names a stasis.code.br, of which there is none')
+  config({})
+
+  writeFileSync(join(tmp, 'stasis.code.br'), 'either\n')
+  const both = await load()
+  t.assert.notEqual(both.status, 0)
+  t.assert.match(both.stderr, /stasis: both stasis\.code\.br and stasis\.tgz exist; set format or bundleFile in stasis\.config\.json/u)
+  // The config's format or bundleFile naming the one, read once the root's config is.
+  config({ format: 'tgz' })
+  const byFormat = await load()
+  t.assert.deepStrictEqual([byFormat.status, byFormat.stdout], [0, 'hello, world\n'], byFormat.stderr)
+  config({ bundleFile: 'stasis.tgz' })
+  const byFile = await load()
+  t.assert.deepStrictEqual([byFile.status, byFile.stdout], [0, 'hello, world\n'], byFile.stderr)
+  config({})
+  rmSync(join(tmp, 'stasis.code.br'))
+
+  cpSync(join(fixture, 'src'), join(tmp, 'src'), { recursive: true })
+  const written = await run(cli, ['--lock=ignore', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.notEqual(written.status, 0)
+  t.assert.match(written.stderr, /stasis\.tgz: a \.stasis\.tgz is read-only \(bundle = load or frozen\)/u)
 }))

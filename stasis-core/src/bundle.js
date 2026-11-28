@@ -242,31 +242,31 @@ export class Bundle {
     const files = new Map()
     for (const entry of entries) {
       if (entry.type === 'directory') continue
-      assert(entry.type === 'file' || entry.type === 'contiguous-file', `${entry.name} is a ${entry.type}, which no ${LOCK_FILE} attests`)
+      assert(entry.type === 'file' || entry.type === 'contiguous-file', `${entry.name} is a ${entry.type}, not a file`)
       files.set(entry.name, entry)
     }
-    assert(files.has(LOCK_FILE), `holds no ${LOCK_FILE} at its top`)
+    assert(files.has(LOCK_FILE), `no top-level ${LOCK_FILE}`)
     let lockfile
     try {
       lockfile = Lockfile.parse(utf8().decode(files.get(LOCK_FILE).data))
     } catch (cause) {
-      throw new Error(`its ${LOCK_FILE} is no stasis lockfile${cause.message ? ` (${cause.message})` : ''}`, { cause })
+      throw new Error(`${LOCK_FILE}: not a valid stasis lockfile${cause.message ? ` (${cause.message})` : ''}`, { cause })
     }
-    for (const [file, format] of lockfile.formats) assert(format !== 'directory', `its ${LOCK_FILE} records '${file}' as a directory capture, which a .stasis.tgz can't carry`)
+    for (const [file, format] of lockfile.formats) assert(format !== 'directory', `${LOCK_FILE}: a .stasis.tgz can't hold directory capture '${file}'`)
     const read = new Set()
     const bundle = Bundle.fromLockfile(lockfile, {
       integrityOf,
       read: (path) => {
         const data = files.get(path)?.data
-        assert(data !== undefined, `${path}, which its ${LOCK_FILE} attests, is not in it`)
+        assert(data !== undefined, `${path} is in ${LOCK_FILE} but missing`)
         read.add(path)
         return data
       },
     })
     for (const [path, { mode }] of files) {
       if (path === LOCK_FILE) continue
-      assert(read.has(path), `${path} is in it, but not in its ${LOCK_FILE}`)
-      assert(((mode & EXECUTE_BITS) !== 0) === lockfile.executable.has(path), `${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
+      assert(read.has(path), `${path} is not in ${LOCK_FILE}`)
+      assert(((mode & EXECUTE_BITS) !== 0) === lockfile.executable.has(path), `${path}'s execute bit differs from ${LOCK_FILE}`)
     }
     return bundle
   }
@@ -278,7 +278,7 @@ export class Bundle {
   // of) is refused; a stat record, payload-free, is its lockfile's; `reason` and `package`, which a lockfile records
   // none of, are left out.
   toTar({ integrityOf }) {
-    for (const [file, format] of this.formats) assert(format !== 'directory', `bundle: '${file}' is a directory capture, which a .stasis.tgz can't carry`)
+    for (const [file, format] of this.formats) assert(format !== 'directory', `bundle: a .stasis.tgz can't hold directory capture '${file}'`)
     const text = new TextEncoder()
     const data = new Map([...this.sources].map(([file, content]) => [file, this.formats.get(file) === 'resource:base64' ? fromBase64(content) : text.encode(content)]))
     const lockfile = Lockfile.fromBundle(this, (file) => integrityOf(data.get(file)))

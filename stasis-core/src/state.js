@@ -9,8 +9,9 @@ import { Bundle, mergeRepo } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
-import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ARCHIVED, ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isGzip, isTgzName, misnamedTgz, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS, stylesheetFormat } from './util.js'
+import { compressBundleText } from './brotli.js'
+import { parseBundleFile } from './bundle-file.js'
+import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, isNativeArtifact, isPathWithin, isPlainObject, isStasisArtifactName, isStatFormat, isSubpackage, isTgzName, defaultBundleName, TGZ_FILE, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sameAttested, sortedByPath, splitNodeModulesPath, toPosix, unionImports, upsert, upsertFormat, withFilledOf, withMetadataOf, attestsFormat, reconcileFormat, GENERIC_FORMATS, stylesheetFormat } from './util.js'
 import { detectRepo, inNamespaceOf, invalidPackageConfig, isPackagesManifest, manifestIdentity, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { classifiedFiles, expandExtra, fileKind } from './add.js'
 import { linksOn, moduleExcluder } from './policy.js'
@@ -22,16 +23,6 @@ const { mkdirSync, rmSync, writeFileSync } = fs
 
 const VERSION = corePackage.version
 const CAN_OBSERVE_EXECUTE_BITS = canObserveExecuteBits()
-
-// A .stasis.tgz as stasis's run-archived.js reads it; a tgz under another name, none.
-function servedBundleOf(bytes, path) {
-  if (isTgzName(path)) {
-    assert.ok(globalThis[ARCHIVED], `stasis: ${path} is a .stasis.tgz, which only \`stasis run\` reads`)
-    return globalThis[ARCHIVED](bytes, path)
-  }
-  assert.ok(!isGzip(bytes), `stasis: ${misnamedTgz(path)}`)
-  return parseBundleBytes(bytes)
-}
 
 function readPackageJSON(host, pkgAbsolute) {
   const buf = host.readFile(pkgAbsolute)
@@ -144,7 +135,10 @@ export class State {
       this.#policy = inherited.policy
       this.#absorbed = inherited.absorbed
       assert.ok(this.config.bundleFile, 'sidecar State requires bundleFile')
-      if (this.config.writeBundle) for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key, 'sidecar ')
+      if (this.config.writeBundle) {
+        this.#refuseWritingTgz()
+        for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key, 'sidecar ')
+      }
       // frozenBundle too: it has its own attestation snapshot to build. What it absorbs reaches the parent.
       if (this.config.bundle) {
         const path = this.config.bundleFile
@@ -178,7 +172,7 @@ export class State {
       // One there that can't be read is refused, not walked past (packageJSONStat).
       if (packageJSONStat(this.#host, join(cursor, 'package.json')) !== null) {
         potentialRoots.push(cursor)
-      } else if ([CONFIG_FILE, LOCK_FILE, BUNDLE_FILE].some((file) => this.#exists(join(cursor, file)))) {
+      } else if ([CONFIG_FILE, LOCK_FILE, BUNDLE_FILE, TGZ_FILE].some((file) => this.#exists(join(cursor, file)))) {
         throw new Error('Unexpected stasis config without package.json')
       }
       if (cursor === env.PROJECT_CWD) break // e.g. yarn sets this
@@ -195,30 +189,27 @@ export class State {
     // A flag/env `bundleFile` is rootDir-INDEPENDENT, so NOT a root signal: else load's root could diverge.
     const explicitBundlePath = this.config.bundleFile
     // Where no root has a signal, the outermost's: explicit artifacts load against it.
-    let lockProbe, sources, sourcesPath
+    let lockProbe
     for (const rootDir of potentialRoots) {
       const config = readFileSyncMaybe(rootDir, CONFIG_FILE, 'utf-8', this.#host)
       lockProbe = explicitLockPath ? null : readFileSyncMaybe(rootDir, LOCK_FILE, 'utf-8', this.#host)
-      sourcesPath = explicitBundlePath || join(rootDir, BUNDLE_FILE)
-      sources = this.#readMaybe(sourcesPath)
-      // Root signals: a config, a lockfile, or the DEFAULT bundle path (an explicit one still loads via `sources`).
-      if (config === null && lockProbe === null && (explicitBundlePath || sources === null)) continue
+      // Root signals: a config, a lockfile, or a bundle at a DEFAULT path (an explicit one still loads, below).
+      const bundleThere = !explicitBundlePath && [BUNDLE_FILE, TGZ_FILE].some((name) => this.#exists(join(rootDir, name)))
+      if (config === null && lockProbe === null && !bundleThere) continue
       this.root = rootDir
 
       if (config) {
         this.config.loadConfig(config)
         // false: a static build checks the whole bundle itself, every offender at once.
         if (checkPolicy) this.#policy = this.config.policy
-        // stasis.config.json may set a `bundleFile` the probe couldn't see.
-        if (this.#bundlePath !== sourcesPath) {
-          sourcesPath = this.#bundlePath
-          sources = this.#readMaybe(sourcesPath)
-        }
       }
 
       // The innermost wins: else an outer root re-detects a rootDir-independent bundleFile.
       break
     }
+    // Once the root's config is loaded: its `bundleFile` or `format` names the bundle, which the probe couldn't see.
+    const sourcesPath = this.#bundlePath
+    const sources = this.#readMaybe(sourcesPath)
 
     this.#absorbLockfile(explicitLockPath ? this.#readMaybe(explicitLockPath, 'utf-8') : lockProbe, this.#lockPath)
     if (sources && this.config.bundleMode === 'none') throw new Error(`Unexpected ${sourcesPath} with config.bundle = 'none'`)
@@ -239,7 +230,10 @@ export class State {
     if (this.config.frozenBundle) this.#freezeBundle()
     this.#holdToInstalled(this.#lock === null ? this.#bundlePath : this.#lockPath)
 
-    if (this.config.writeBundle) for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key)
+    if (this.config.writeBundle) {
+      this.#refuseWritingTgz()
+      for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key)
+    }
     if (this.config.writeLockfile) this.#claimWritePath('lockFile')
     if (isPreload || this.#claims.size > 0) liveStates().add(this)
   }
@@ -338,7 +332,7 @@ export class State {
 
   // v0 has no per-file formats or import map: serving one widens the trust boundary.
   #parseServedBundle(bytes, path, runner = 'stasis run') {
-    const bundle = servedBundleOf(bytes, path)
+    const bundle = parseBundleFile(bytes, path)
     assert.equal(bundle.version, Bundle.VERSION, `${runner} requires a v1 bundle; ${path} is v${bundle.version}: re-bundle it`)
     assert.equal(bundle.config.scope, this.config.scope)
     this.#assertLoaded(bundle, path)
@@ -919,7 +913,22 @@ export class State {
   }
 
   get #bundlePath() {
-    return this.config.bundleFile || join(this.root, BUNDLE_FILE)
+    return this.config.bundleFile || this.#defaultBundleAt(this.root)
+  }
+
+  // A .stasis.tgz is read (bundle = load or frozen), never written: a State that writes (claims its paths) refuses one,
+  // named, its format's, or found; a build's, which writes its own output, doesn't.
+  #refuseWritingTgz() {
+    const tgz = [this.#bundlePath, this.config.resourcesBundleFile].find((file) => file !== undefined && isTgzName(file))
+    assert.ok(!this.#claim || tgz === undefined, `stasis: ${tgz}: a .stasis.tgz is read-only (bundle = load or frozen)`)
+  }
+
+  // Where none is named: the config's format's, else the stasis.code.br or stasis.tgz there, refused where both are for
+  // a State that reads or writes it (a build's, claiming nothing, asks only whether one is there).
+  #defaultBundleAt(dir) {
+    const exists = (name) => this.#exists(join(dir, name))
+    const uses = this.#absorbsBundles || (this.config.writeBundle && this.#claim)
+    return join(dir, uses || !exists(BUNDLE_FILE) ? defaultBundleName(this.config.format, exists) : BUNDLE_FILE)
   }
 
   // A sidecar never writes the lockfile.

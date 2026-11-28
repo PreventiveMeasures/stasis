@@ -3,12 +3,12 @@ import { existsSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 
 import { compressBundle } from '@exodus/stasis-core/brotli'
-import { BUNDLE_FILE, LOCK_FILE } from '@exodus/stasis-core/util'
+import { BUNDLE_FILE, LOCK_FILE, bundleFileOf } from '@exodus/stasis-core/util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed, heldToLockfile } from './bundle.js'
 import { githubToken, withNpmToken } from './tokens.js'
-import { bundledSummary, bundleFileOf, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundledSummary, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
 const NAME_MAX = 255

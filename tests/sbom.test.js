@@ -473,7 +473,7 @@ test('sbomCommand reads a .stasis.tgz as the bundle of its files, and writes non
   const of = (file) => sbomCommand({ files: [file], format: 'cyclonedx', output: join(tmp, 'sbom.json'), ...fixed }).doc
   t.assert.deepStrictEqual(of(tgz).components.map(({ name, version }) => `${name}@${version}`), ['foo@1.2.3'])
   t.assert.deepStrictEqual(of(tgz), of(br))
-  t.assert.throws(() => sbomCommand({ files: [br], format: 'spdx', output: join(tmp, 'sbom.stasis.tgz') }), /sbom\.stasis\.tgz names a \.stasis\.tgz, which this writes none of/u)
+  t.assert.throws(() => sbomCommand({ files: [br], format: 'spdx', output: join(tmp, 'sbom.stasis.tgz') }), /sbom\.stasis\.tgz: only a \.stasis\.tgz may have this name/u)
 }))
 
 test('sbomCommand requires at least one input file', (t) => {

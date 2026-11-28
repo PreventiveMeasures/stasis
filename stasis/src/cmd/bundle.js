@@ -22,7 +22,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, ecosystemFamily, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, stylesheetFormat, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
+import { attestsAny, BUNDLE_FILE, bundleFileOf, CONFIG_FILE, TGZ_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, ecosystemFamily, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, metroFormat, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, stylesheetFormat, toPosix, upsert, withAttestedOf, withMetadataOf, sameGithub } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, moduleExcluder, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { compressBundleText, parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -52,7 +52,7 @@ import {
   loadComposerPackages,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
-import { bundledSummary, bundleFileOf, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, packagesLabel, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundledSummary, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, packagesLabel, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
 import { LANGUAGE_FLAGS, OPTION_FLAGS, checkCombinations, configuredBuilds, nonEmpty, withConfigDefine } from './bundle-options.js'
 import { withNpmToken } from './tokens.js'
 
@@ -565,7 +565,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
 }
 
 // The files that root a State in the directory holding one (state.js's discovery).
-const STASIS_ROOT_FILES = [CONFIG_FILE, LOCK_FILE, BUNDLE_FILE]
+const STASIS_ROOT_FILES = [CONFIG_FILE, LOCK_FILE, BUNDLE_FILE, TGZ_FILE]
 
 function rootedBy(dir, host = diskHost, hint = '') {
   const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(dir, name)) !== null)
@@ -1898,9 +1898,12 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, ...g
 export async function bundleCommand({ cwd = process.cwd(), output, format: asked, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
   if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=-')
   checkLockfileOnly('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality, format: asked, named: true })
-  const format = bundleFormat('bundleCommand: ', { format: asked, output, brotliQuality })
-  const built = await buildOfCommand({ ...options, cwd, output, format, lockfile, lockfileOnly, add })
+  // The flags', before the build; then the root's too: its config's format, and which bundle is there.
+  bundleFormat('bundleCommand: ', { format: asked, output, brotliQuality })
+  const formatAt = (root) => bundleFormat('bundleCommand: ', { format: asked, configured: readConfigFile('bundleCommand', root)?.format, output, brotliQuality, exists: lockfileOnly ? undefined : (name) => existsSync(join(root, name)) })
+  const built = await buildOfCommand({ ...options, cwd, output, formatAt, lockfile, lockfileOnly, add })
   const { root } = built
+  const format = formatAt(root)
   // By default at the root, where `stasis run --bundle=load` discovers it: in cwd below the root it would root
   // the next run and `stasis bundle` there, out of the files above it.
   const target = output ?? relative(resolve(cwd), join(root, bundleFileOf(format)))
@@ -2074,7 +2077,7 @@ const repoAttested = (recorded, repo) => Object.entries(recorded).every(([key, v
 const repoLabel = ({ github = '?', commit = '?', directory }) => `${github}@${commit}${directory ? `/${directory}` : ''}`
 
 // That the bundle of `serialized` (its bytes), to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis run
-// --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths it names.
+// --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths and format it names.
 function loadsBeside(serialized, { at, lockAbs, label, root, scope, host = diskHost }) {
   // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
   const bytes = brotliCompressSync(serialized, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
@@ -2082,7 +2085,7 @@ function loadsBeside(serialized, { at, lockAbs, label, root, scope, host = diskH
     if (path === at) return bytes
     const data = host.readFile(path)
     if (basename(path) !== CONFIG_FILE) return data
-    const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...config } = JSON.parse(data.toString('utf8'))
+    const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, format: _format, ...config } = JSON.parse(data.toString('utf8'))
     return Buffer.from(JSON.stringify(config))
   }
   const served = { ...host, readFile }
@@ -2118,7 +2121,7 @@ export async function buildCommandBundle(options = {}) {
 }
 
 // bundleCommand's build, not written; `extra` never takes in `output` and `lockfile`, where it would write.
-async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, output, format, lockfile, lockfileOnly = false, add = false, builds, deptree, ...given } = {}) {
+async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, output, formatAt, lockfile, lockfileOnly = false, add = false, builds, deptree, ...given } = {}) {
   const options = entryOptionsOf(given)
   if (builds !== undefined) {
     if (!nonEmpty(builds)) throw new TypeError('bundleCommand: builds must be a non-empty array')
@@ -2129,7 +2132,7 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, ou
   const plans = (builds ?? [{}]).map((build) => ({ ...entryOptionsOf({ ...options, ...build }), policy: build.policy, cwd, env }))
   // --lockfile-only asks for a lockfile as --lockfile does: only a JS bundle has one.
   const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile: lockfile ?? (lockfileOnly ? LOCK_FILE : undefined) }))
-  const outputsAt = (root) => [output ?? join(root, bundleFileOf(format)), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
+  const outputsAt = (root) => [output ?? join(root, bundleFileOf(formatAt?.(root))), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
   // With `builds`, `extra` is the bundle's, not any build's: added to their union.
   const bundleExtra = builds !== undefined
   let union, root

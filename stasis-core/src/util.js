@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { ARCHIVE_ALGORITHM, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, STYLESHEET_FORMATS, isLockfileName } from './artifact-util.js'
+import { ARCHIVE_ALGORITHM, BUNDLE_FILE, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, STYLESHEET_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 export * from './artifact-util.js'
@@ -15,16 +15,34 @@ export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORIT
 export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 export const installedAccounts = (modules, root, options) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root, options)) || new Map()
 
-// A stasis.lock.json and the files it attests, gzipped as a tar, as `stasis.tgz` or `<name>.stasis.tgz`: read, never
-// written. A tar is no zero-dependency read, so stasis's run-archived.js registers here what reads one
-// (`globalThis[ARCHIVED](bytes, path)`, its bundle).
+// A stasis.lock.json and the files it attests, gzipped as a tar, as `stasis.tgz` or `<name>.stasis.tgz`. A tar is no
+// zero-dependency work, so stasis's run-archived.js registers here what reads and writes one
+// (`globalThis[ARCHIVED]`, `{ read(bytes, path), write(bundle) }`; bundle-file.js's).
 export const TGZ_FILE = 'stasis.tgz'
 export const ARCHIVED = Symbol.for('@exodus/stasis-core/archived')
 export const isTgzName = (path) => {
   const base = basename(path)
   return base === TGZ_FILE || base.endsWith(`.${TGZ_FILE}`)
 }
-export const misnamedTgz = (path) => `${path} is a tgz, which is read as ${TGZ_FILE} or <name>.${TGZ_FILE} alone`
+export const misnamedTgz = (path) => `${path}: a tgz must be named ${TGZ_FILE} or <name>.${TGZ_FILE}`
+
+// A bundle's format (stasis.config.json's `format`): `br`, brotli'd JSON (stasis.code.br), or `tgz` (stasis.tgz).
+export const BUNDLE_FORMATS = new Set(['br', 'tgz'])
+export const bundleFileOf = (format) => (format === 'tgz' ? TGZ_FILE : BUNDLE_FILE)
+export const formatOf = (file) => (isTgzName(file) ? 'tgz' : 'br')
+// Refused, `what` (`format`, `--format=tgz`) said of it, where `format` disagrees with the bundle file `file` names.
+export function assertFormatOf(file, format, what) {
+  if (format === undefined || file === undefined || formatOf(file) === format) return
+  throw new RangeError(`${what}, but '${file}' ${format === 'tgz' ? "isn't" : 'is'} a .stasis.tgz`)
+}
+// The bundle file's name in a directory where none is named: `format`'s, else whichever of stasis.code.br and
+// stasis.tgz `exists(name)` finds there (stasis.code.br where neither is), refused where both are.
+export function defaultBundleName(format, exists) {
+  if (format !== undefined) return bundleFileOf(format)
+  if (!exists(TGZ_FILE)) return BUNDLE_FILE
+  if (exists(BUNDLE_FILE)) throw new Error(`stasis: both ${BUNDLE_FILE} and ${TGZ_FILE} exist; set format or bundleFile in ${CONFIG_FILE}`)
+  return TGZ_FILE
+}
 // gzip's magic. No stasis bundle starts so: brotli's first byte would ask a 16 MiB window, where stasis writes zlib's 4 MiB.
 export const isGzip = (bytes) => bytes[0] === 0x1f && bytes[1] === 0x8b
 
@@ -282,7 +300,7 @@ export const isTypeDeclaration = (name) => /\.d\.[cm]?ts$/u.test(basename(name).
 // Absent on a first run but present on a later one, so a capture recording one conflicts on the next run.
 export function isStasisArtifactName(name) {
   const base = basename(name).toLowerCase()
-  return isLockfileName(base) || (base.includes('stasis') && base.endsWith('.br'))
+  return isLockfileName(base) || (base.includes('stasis') && base.endsWith('.br')) || base === TGZ_FILE || base.endsWith(`.${TGZ_FILE}`)
 }
 
 // `name` is a BARE dir name, matched at any depth, so every walk agrees on what "not source" means.
