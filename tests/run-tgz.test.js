@@ -102,6 +102,11 @@ test('stasis run finds a stasis.tgz at the root as a stasis.code.br, stasis.conf
   const both = await load()
   t.assert.notEqual(both.status, 0)
   t.assert.match(both.stderr, /stasis: stasis\.code\.br and stasis\.tgz are both there: remove one, or name the one with stasis\.config\.json's format or bundleFile/u)
+  // The config's format naming the one, read once the root's config is.
+  config({ format: 'tgz' })
+  const chosen = await load()
+  t.assert.deepStrictEqual([chosen.status, chosen.stdout], [0, 'hello, world\n'], chosen.stderr)
+  config({})
   rmSync(join(tmp, 'stasis.code.br'))
 
   cpSync(join(fixture, 'src'), join(tmp, 'src'), { recursive: true })

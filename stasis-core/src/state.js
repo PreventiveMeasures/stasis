@@ -189,30 +189,27 @@ export class State {
     // A flag/env `bundleFile` is rootDir-INDEPENDENT, so NOT a root signal: else load's root could diverge.
     const explicitBundlePath = this.config.bundleFile
     // Where no root has a signal, the outermost's: explicit artifacts load against it.
-    let lockProbe, sources, sourcesPath
+    let lockProbe
     for (const rootDir of potentialRoots) {
       const config = readFileSyncMaybe(rootDir, CONFIG_FILE, 'utf-8', this.#host)
       lockProbe = explicitLockPath ? null : readFileSyncMaybe(rootDir, LOCK_FILE, 'utf-8', this.#host)
-      sourcesPath = explicitBundlePath || this.#defaultBundleAt(rootDir)
-      sources = this.#readMaybe(sourcesPath)
-      // Root signals: a config, a lockfile, or the DEFAULT bundle path (an explicit one still loads via `sources`).
-      if (config === null && lockProbe === null && (explicitBundlePath || sources === null)) continue
+      // Root signals: a config, a lockfile, or a bundle at a DEFAULT path (an explicit one still loads, below).
+      const bundleThere = !explicitBundlePath && [BUNDLE_FILE, TGZ_FILE].some((name) => this.#exists(join(rootDir, name)))
+      if (config === null && lockProbe === null && !bundleThere) continue
       this.root = rootDir
 
       if (config) {
         this.config.loadConfig(config)
         // false: a static build checks the whole bundle itself, every offender at once.
         if (checkPolicy) this.#policy = this.config.policy
-        // stasis.config.json may set a `bundleFile` the probe couldn't see.
-        if (this.#bundlePath !== sourcesPath) {
-          sourcesPath = this.#bundlePath
-          sources = this.#readMaybe(sourcesPath)
-        }
       }
 
       // The innermost wins: else an outer root re-detects a rootDir-independent bundleFile.
       break
     }
+    // Once the root's config is loaded: its `bundleFile` or `format` names the bundle, which the probe couldn't see.
+    const sourcesPath = this.#bundlePath
+    const sources = this.#readMaybe(sourcesPath)
 
     this.#absorbLockfile(explicitLockPath ? this.#readMaybe(explicitLockPath, 'utf-8') : lockProbe, this.#lockPath)
     if (sources && this.config.bundleMode === 'none') throw new Error(`Unexpected ${sourcesPath} with config.bundle = 'none'`)
