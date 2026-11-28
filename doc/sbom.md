@@ -1,6 +1,6 @@
 # `stasis sbom`
 
-`stasis sbom` exports the package inventory that one or more stasis lockfiles
+`stasis sbom` exports the package inventory that one or more lockfiles
 (`stasis.lock.json`) and/or bundles (`stasis.code.br`) record as a Software
 Bill of Materials (SBOM). A [`.stasis.tgz`](file-formats.md#stasistgz) is read
 as the bundle of its files.
@@ -11,47 +11,44 @@ stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bund
 
 | Argument | Meaning |
 | --- | --- |
-| `--format` (**required**) | `spdx` (SPDX 2.3, JSON) or `cyclonedx` (CycloneDX 1.5, JSON). No default. |
-| `--output` / `-o` | File to write to. Defaults to stdout; `-` is explicit stdout. Intermediate dirs are created as needed. |
+| `--format` (**required**) | `spdx` (SPDX 2.3, JSON) or `cyclonedx` (CycloneDX 1.5, JSON). |
+| `--output` / `-o` | File to write, its directories created as needed. Default `-`, stdout. |
 | positional(s) | One or more lockfiles/bundles to inventory. |
 
-The one-line summary always goes to stderr, never into a document written to
-stdout (e.g. `stasis sbom --format=spdx stasis.lock.json > sbom.json`).
+The one-line summary goes to stderr.
 
 ## What it includes
 
-The SBOM lists first-party/workspace packages as well as dependencies: every
-package bucket that records a `name` and `version` becomes one component.
+Every package bucket that records a `name` and `version`, first-party or
+dependency, becomes one component, deduplicated by ecosystem + name + version
+across inputs and sorted by name then version.
 
-- **Workspace root** (the `"."` bucket) is the document's *primary* component:
-  `metadata.component` in CycloneDX, the `DESCRIBES` target in SPDX, typed
-  `application`. When inputs (or a monorepo) yield more than one workspace
-  package, or a `node_modules`-scope artifact yields none, there is no primary
-  component: every package is a plain component, and SPDX `DESCRIBES` the
-  workspace packages (or every package, if there are none).
-- **Dependencies** are typed `library`. The primary component `DEPENDS_ON` each
-  (CycloneDX `dependencies`, SPDX relationships), as a flat graph.
+- **Workspace root** (the `"."` bucket) is the document's *primary* component,
+  typed `application`: `metadata.component` in CycloneDX, the `DESCRIBES`
+  target in SPDX. With more than one workspace package (several inputs, or a
+  monorepo) or none (a `node_modules`-scope artifact), there is no primary:
+  every package is a plain component, and SPDX `DESCRIBES` the workspace
+  packages, else every package.
+- **Dependencies** are typed `library`. The primary `DEPENDS_ON` each, as a
+  flat graph (CycloneDX `dependencies`, SPDX relationships).
+- **Vendored packages**, copies of other packages listed in a dependency's
+  `vendored` (Next.js's `dist/compiled/<dir>`, see `doc/file-formats.md`), are
+  placed inside their host:
+  - CycloneDX: nested in its `components`, each `bom-ref` the host's with the
+    directory as a purl subpath, the directory as `evidence.occurrences`
+    location.
+  - SPDX: `SPDXRef-Package-<n>-Vendored-<i>`, after the other packages, which
+    the host `CONTAINS`, the directory as `packageFileName`.
 
-Packages are deduplicated by ecosystem + name + version across all inputs and
-sorted by name then version. Inventory is at the **package** level, not the file
-level. Legacy `version: 0` bundles record no `name`/`version`, so they contribute nothing.
-
-- **Vendored packages**, copies of other packages that a dependency ships and
-  an artifact lists in its record's `vendored` (Next.js's `dist/compiled/<dir>`,
-  see `doc/file-formats.md`), are placed inside their host: in CycloneDX, nested
-  in its `components`, each `bom-ref` the host's with the directory as a purl
-  subpath, and the directory as its `evidence.occurrences` location; in SPDX, as
-  packages after the rest, `SPDXRef-Package-<n>-Vendored-<i>`, which the host
-  `CONTAINS`, with the directory as `packageFileName`. Only copies holding a
-  bundled file are listed, each under the name and (if any) `version` its own
-  `package.json` gives, with a purl only if it has a version (most of Next.js's
-  copies don't). Across inputs, a host lists the union of its copies. Lockfiles
-  record them as bundles do. A dependency's `subpackages` (its own subpath entry
-  points, `@hookform/resolvers/zod`) are its own code and not listed.
+  Only copies holding a bundled file are listed, under the name and `version`
+  (if any) of their own `package.json`, with a purl only if versioned. A host
+  lists the union of its copies across inputs; lockfiles record them as
+  bundles do. A dependency's `subpackages` (its own subpath entry points,
+  `@hookform/resolvers/zod`) are its own code, not listed.
 
 ## Package URLs
 
-Each component carries a [purl](https://github.com/package-url/purl-spec), built
+A component's [purl](https://github.com/package-url/purl-spec), if any, is built
 from the `ecosystem` each dependency records:
 
 | Ecosystem | purl | Where it comes from |
@@ -65,20 +62,17 @@ from the `ecosystem` each dependency records:
 | `github` | `pkg:github/<owner>/<repo>@<version>` | Solidity `forge install` git submodules |
 | `soldeer` | — (no purl type) | Solidity Soldeer `dependencies/` |
 
-npm scopes (`@scope/name`), Composer vendors, and GitHub owners map to the purl
+npm scopes (`@scope/name`), Composer vendors and GitHub owners map to the purl
 namespace and the CycloneDX `group` (an `npm:directory` package's scope to the
 `group` too); Composer and GitHub names are lowercased per the purl spec.
-`soldeer`, `cargo-git`, `cargo-unknown` and `npm:directory` components carry a
-name and version but no purl.
-First-party/workspace packages take their purl ecosystem from the project itself.
-Artifacts predating the per-dependency `ecosystem` field fall back to npm (or
+Workspace packages take their purl ecosystem from the project itself;
+artifacts predating the per-dependency `ecosystem` field fall back to npm (or
 Composer for a PHP bundle).
 
 ## Programmatic API (`@exodus/stasis/sbom`)
 
-It takes already-parsed `@exodus/stasis-core` `Bundle`/`Lockfile` instances,
-pulls in **no brotli** (`node:zlib`), and never touches disk; the caller
-supplies the artifacts:
+It takes parsed `@exodus/stasis-core` `Bundle`/`Lockfile` instances and uses
+no disk or brotli (`node:zlib`):
 
 ```js
 import { Bundle } from '@exodus/stasis-core/bundle'
@@ -98,13 +92,11 @@ const spdx = toSpdx(components, { now, uuid, tool })
 - `buildPurl(ecosystem, name, version)` — the purl helper.
 - `opts` is `{ tool, now, uuid }`, for custom tool identity / deterministic output.
 
-The `stasis sbom` CLI wraps this API, reading and writing the files (with
-brotli for `.br` bundles).
+The CLI reads and writes the files (with brotli for `.br` bundles).
 
 ## Notes
 
-- The generated document records `@exodus/stasis` (with its version) as the
-  creating tool (SPDX `creationInfo.creators`, CycloneDX `metadata.tools`).
-- `stasis sbom` makes no network requests; it reports exactly what the input
-  artifacts attest. Use `stasis audit` to check those packages against
-  published advisories.
+- The document records `@exodus/stasis` (with its version) as the creating
+  tool (SPDX `creationInfo.creators`, CycloneDX `metadata.tools`).
+- `stasis sbom` makes no network requests; it reports exactly what the
+  artifacts attest.
