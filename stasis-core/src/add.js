@@ -324,15 +324,15 @@ export function addCommand({ cwd = process.cwd(), entries, lockfileOnly = false,
 
   // One lockfile attests both split targets, so it takes every packed file's integrity (code + resources). `check`
   // sees only what it already records: the files added were checked as the bundles'.
+  const writeLock = (merged) => writeFileSync(lockPath, merged.serialize())
   if (hasLock) {
     const added = Lockfile.fromBundle(assemble(allFiles), (file, content) => bundledIntegrity(content, allFiles.get(file).format))
-    plan(LOCK_FILE, lock, attest(lock, added), '', (merged) => writeFileSync(lockPath, merged.serialize()))
+    plan(LOCK_FILE, lock, attest(lock, added), '', writeLock)
   } else if (lockfileOnly) {
     const created = [...after.values()].filter(Boolean).map(lockfileFromBundle).reduce((a, b) => a.merge(b))
     // It attests what a bundle the add leaves alone carries too: held to the policy whole.
     check?.(created, recordedIn(LOCK_FILE))
-    writes.push(() => writeFileSync(lockPath, created.serialize()))
-    summary.push(`+${fileCount(created)} (${fileCount(created)} total) -> ${LOCK_FILE}`)
+    plan(LOCK_FILE, undefined, created, '', writeLock)
   }
   if (excluded.size > 0) summary.push(`skipped ${excluded.size} auto-excluded`)
 

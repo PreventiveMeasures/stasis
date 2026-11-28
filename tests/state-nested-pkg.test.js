@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { findPackageMetadata } from '@exodus/stasis-core/bundle-util'
+import { packageLookup } from '@exodus/stasis-core/bundle-util'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { State } from '@exodus/stasis-core/state'
 
@@ -94,7 +94,7 @@ test('a private package.json is passed over: one above it that names another pac
 
 test('a bundle buckets a nested package.json with its package where a State takes it as the package\'s, else on its own', (t) => {
   const bucketOf = (file) => {
-    const { pkgDir, name, version } = findPackageMetadata(root, file)
+    const { pkgDir, name, version } = packageLookup(root)(file)
     return `${pkgDir} ${name}@${version}`
   }
   t.assert.equal(bucketOf('node_modules/terser/dist/bundle.min.js'), 'node_modules/terser terser@5.51.2')

@@ -9,7 +9,7 @@ import { State } from '@exodus/stasis-core/state'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { addCommand } from '@exodus/stasis-core/add'
-import { findPackageMetadata } from '@exodus/stasis-core/bundle-util'
+import { packageLookup } from '@exodus/stasis-core/bundle-util'
 
 // A package defined in the local workspace (outside node_modules) may omit `version` -- private/
 // unpublished packages commonly do. Its bucket carries `name` alone, and every artifact round-trip
@@ -96,14 +96,14 @@ test('a version drift against the absorbed version-less bucket still fails close
 }))
 
 test('findPackageMetadata claims a version-less workspace bucket but stays strict in node_modules', withTmp('meta', (t, dir) => {
-  t.assert.deepStrictEqual(findPackageMetadata(dir, 'pkg/index.js'),
+  t.assert.deepStrictEqual(packageLookup(dir)('pkg/index.js'),
     { pkgDir: 'pkg', name: 'pkg-noversion', version: undefined })
 
   mkdirSync(join(dir, 'node_modules', 'dep'), { recursive: true })
   writeFileSync(join(dir, 'node_modules', 'dep', 'package.json'), JSON.stringify({ name: 'dep' }))
   writeFileSync(join(dir, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n')
   // A version-less node_modules manifest never claims the bucket; the walk continues to the root.
-  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'),
+  t.assert.deepStrictEqual(packageLookup(dir)('node_modules/dep/index.js'),
     { pkgDir: '.', name: 'fx', version: '0.0.0' })
 }))
 
@@ -174,7 +174,7 @@ test('a literal "version": null captures as absent and re-verifies across runs',
   const again = capture(dir) // absorbs the artifacts from run 1, then re-observes the same files
   t.assert.equal(again.modules.get('pkg').version, undefined)
 
-  t.assert.deepStrictEqual(findPackageMetadata(dir, 'pkg/index.js'),
+  t.assert.deepStrictEqual(packageLookup(dir)('pkg/index.js'),
     { pkgDir: 'pkg', name: 'pkg-noversion', version: undefined })
 }))
 

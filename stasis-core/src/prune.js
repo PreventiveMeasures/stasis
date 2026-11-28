@@ -126,27 +126,29 @@ function minimalManifest(lockfile, owner, rel, raw) {
   return out
 }
 
-function discoverNodeModulesDirs(root) {
-  const found = []
+// Depth-first in readdir order, each entry but a directory `descend` takes, walked instead (`lenient`: or passed
+// over if it can't be read).
+function* walk(root, descend, lenient = false) {
   const stack = [root]
   while (stack.length > 0) {
     const dir = stack.pop()
-    let entries
+    let entries = []
     try {
       entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      continue
+    } catch (err) {
+      if (!lenient) throw err
     }
     for (const entry of entries) {
-      if (entry.name.startsWith('.') || !entry.isDirectory()) continue
       const full = join(dir, entry.name)
-      // A symlinked node_modules is skipped (prune fails closed on files the lockfile records there); none is descended.
-      if (entry.name === 'node_modules') found.push(full)
-      else stack.push(full)
+      if (entry.isDirectory() && descend(entry)) stack.push(full)
+      else yield { entry, full }
     }
   }
-  return found
 }
+
+// A symlinked node_modules is skipped (prune fails closed on files the lockfile records there); none is descended.
+const nodeModulesDirs = (root) => walk(root, ({ name }) => !name.startsWith('.') && name !== 'node_modules', true)
+  .filter(({ entry }) => entry.name === 'node_modules' && entry.isDirectory()).map(({ full }) => full).toArray()
 
 // A symlink survives prune only if its real target stays inside `boundary`. A dangling link can't leak,
 // so ENOENT returns instead of throwing -- deliberately NOT the loaders' assertRealPathWithinBase.
@@ -165,15 +167,9 @@ function assertSymlinkInternal({ root, realBoundary, label }, linkPath) {
 function* walkFiles(nmRoots, ctx) {
   for (const nmRoot of nmRoots) {
     if (!existsSync(nmRoot)) continue
-    const stack = [nmRoot]
-    while (stack.length > 0) {
-      const dir = stack.pop()
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const full = join(dir, entry.name)
-        if (entry.isSymbolicLink()) assertSymlinkInternal(ctx, full)
-        else if (entry.isDirectory()) stack.push(full)
-        else if (entry.isFile()) yield { full, nmRoot }
-      }
+    for (const { entry, full } of walk(nmRoot, () => true)) {
+      if (entry.isSymbolicLink()) assertSymlinkInternal(ctx, full)
+      else if (entry.isFile()) yield { full, nmRoot }
     }
   }
 }
@@ -199,7 +195,7 @@ export function prune({ root = process.cwd() } = {}) {
   root = resolve(root)
   // In a workspace a dep legitimately links to a sibling package's source dir, so the boundary widens to it.
   const workspace = existsSync(join(root, 'pnpm-workspace.yaml'))
-  const nmRoots = workspace ? discoverNodeModulesDirs(root) : [join(root, 'node_modules')]
+  const nmRoots = workspace ? nodeModulesDirs(root) : [join(root, 'node_modules')]
   const boundary = workspace ? root : join(root, 'node_modules')
   const ctx = {
     root,
