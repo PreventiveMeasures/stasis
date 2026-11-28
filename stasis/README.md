@@ -26,7 +26,6 @@ Lockfile can attest the bundle in a readable form, but that's not required - bun
 | Asserts only, files are read from disk | Loads or asserts (can be used as a lockfile)|
 | Modes: `add`, `replace`, `frozen`, `ignore` | Modes: `load`, `add`, `replace`, `frozen`, `ignore` |
 
-The main difference between lockfiles and bundles is that lockfiles contain integrities, and bundles contain full content.\
 See [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md).
 
 Both can be run in full scope (default) or just in `node_modules` scope.
@@ -58,27 +57,27 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis run --lock=add --bundle=add --mock app.js` | build without the app's side effects (network, fs writes) |
 | `stasis run --lock=add --child-process app.js` | also attest modules loaded in forked child processes (e.g. Metro transform workers) |
 | `stasis run --bundle=add --fs=sync app.js` | build a bundle that also captures sync `fs.readFileSync`/`readdirSync` reads |
-| `stasis run --lock=add --import=./instrument.mjs app.js` | also load a preload module; its own graph is runner infrastructure, not attested |
+| `stasis run --lock=add --import=./instrument.mjs app.js` | also load a preload module, whose own graph isn't attested |
 | `stasis bundle src/index.js` | build a bundle statically, without executing it |
 | `stasis bundle --add src/worker.js` | merge more entries into the existing bundle |
 | `stasis bundle --conditions=react-native,browser app.js` | statically bundle with extra `exports`/`imports` resolution conditions |
 | `stasis bundle --mainFields=react-native,browser,main app.js` | statically bundle honoring legacy package `mainFields` |
 | `stasis bundle --metro --platforms=ios,android app.js` | statically bundle the way Metro resolves, all platforms at once |
-| `stasis bundle --typescript src/index.ts` | statically bundle TS sources, resolving `./x.js` imports to `./x.ts` as tsc does |
-| `stasis bundle --typescript apps/web/next.config.ts` | statically bundle a Next.js app, its `next.config.*` standing for the files `next build` takes |
-| `stasis bundle --resources=png,woff2 src/styles.css` | statically bundle a stylesheet, following its `@import`s and `url()`s as css-loader does |
+| `stasis bundle --typescript src/index.ts` | statically bundle TS sources, resolving `./x.js` imports to `./x.ts` |
+| `stasis bundle --typescript apps/web/next.config.ts` | statically bundle a Next.js app: the files `next build` takes, by its `next.config.*` |
+| `stasis bundle --resources=png,woff2 src/styles.css` | statically bundle a stylesheet, following its `@import`s and `url()`s |
 | `stasis add src assets` | add files to the project's bundles as-is, with no dependency resolution |
 | `stasis github-bundle --github=owner/name --sha=<commit> src/index.js` | statically bundle a GitHub repo at a commit, with nothing installed |
 | `stasis github-bundle owner/name/apps/web --sha=<commit>` | statically bundle the Next.js app in a repo's `apps/web`, by its `next.config.*`, with nothing installed |
 | `stasis build --output=out.js app.stasis.code.br [entry]` | rebuild a runnable JS bundle with esbuild, following the bundle's recorded import graph exactly |
 | `stasis build --output=out.js stasis.lock.json [entry]` | same, reading + verifying sources from disk against the lockfile |
-| `stasis build --platform=hermes --metro=ios --assets-dest=dist --output=main.js app.stasis.code.br` | build a `--metro` bundle for one platform as Metro does: its `.ios` files, assets as Metro's asset modules, their files copied out |
+| `stasis build --platform=hermes --metro=ios --assets-dest=dist --output=main.js app.stasis.code.br` | build a `--metro` bundle for one platform: its `.ios` files, assets as Metro's asset modules, their files copied out |
 | `stasis extract --lock=add app.stasis.code.br` | unpack a bundle back to sources + a `stasis.lock.json` |
 | `stasis diff --stat a.lock.json b.stasis.code.br` | summarize module/file differences between two lockfiles/bundles |
 | `stasis prune` | trim `node_modules` to the lockfile, verifying the rest |
 | `stasis audit stasis.lock.json` | report advisories for a lockfile's or bundle's dependencies |
 | `stasis audit --why app.stasis.code.br` | same, with the import chains that pull each flagged package in |
-| `stasis audit` | same, for the bundle `stasis bundle` would build of `stasis.config.json`'s entries, without writing it |
+| `stasis audit` | same, for the bundle `stasis bundle` would build from `stasis.config.json`'s entries, without writing it |
 | `stasis validate app.stasis.code.br` | check a bundle's own code against its repository and its dependencies against their published packages, held to its lockfile |
 | `stasis sbom --format=spdx stasis.lock.json` | export an SPDX SBOM for a lockfile or bundle |
 | `stasis sbom --format=cyclonedx app.stasis.code.br` | export a CycloneDX SBOM for a lockfile or bundle |
