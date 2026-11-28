@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { diskHost } from './host.js'
 import { POLICY_KEYS, parsePolicy } from './policy.js'
 import { canonicalizePath } from './state-util.js'
-import { assertFormatOf, BUNDLE_FORMATS, BUNDLE_MODES, CONFIG_FILE, extSetsEqual, FS_MODES, isBrotliQuality, isTgzName, LOCK_MODES, TGZ_FILE, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
+import { assertFormatOf, BUNDLE_FORMATS, BUNDLE_MODES, CONFIG_FILE, extSetsEqual, FS_MODES, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 
@@ -165,11 +165,8 @@ export class Config {
     if (resourcesBundleFile !== undefined && (bundle === 'none' || bundle === 'ignore')) {
       throw new RangeError(`resourcesBundleFile requires an active bundle mode (got bundle='${bundle}')`)
     }
+    // A State that writes refuses a .stasis.tgz (State#refuseWritingTgz): a build's, writing nothing, reads one.
     assertFormatOf(bundleFile, format, `format=${format}`)
-    // A .stasis.tgz is read (load or frozen), never written: named, or the format's.
-    const named = bundleFile ?? (format === 'tgz' ? TGZ_FILE : undefined)
-    const tgz = (bundle === 'add' || bundle === 'replace') && [named, resourcesBundleFile].find((file) => file !== undefined && isTgzName(file))
-    if (tgz) throw new RangeError(`bundle=${bundle} writes ${tgz}, but a .stasis.tgz is read (load or frozen), never written`)
 
     // Write targets must be distinct: canonicalize so './x.br' vs 'x.br' and symlinks to one inode compare equal.
     const claimed = new Map()

@@ -18,6 +18,7 @@ const ENV_KEYS = [
   'EXODUS_STASIS_SHARD_SIGNAL_FLUSH',
   'EXODUS_STASIS_FS',
   'EXODUS_STASIS_BROTLI_QUALITY',
+  'EXODUS_STASIS_FORMAT',
 ]
 const withEnv = (vars, fn) => (t) => {
   const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
@@ -1194,4 +1195,25 @@ test('Config treats an empty-string path/mode option as unset, so loadConfig see
   t.assert.equal(c.bundleFile, 'dist/code.br')
   // A real option still is an override.
   t.assert.throws(() => new Config({ scope: 'full' }).loadConfig(json({ scope: 'node_modules' })), /can not override stasis\.config\.json/)
+}))
+
+test('Config format: br or tgz, of stasis.config.json, a flag or EXODUS_STASIS_FORMAT, agreeing with bundleFile', withEnv({}, (t) => {
+  t.assert.equal(new Config().format, undefined)
+  const configured = new Config({ bundle: 'load', lock: 'none' })
+  configured.loadConfig(json({ format: 'tgz' }))
+  t.assert.equal(configured.format, 'tgz')
+  t.assert.equal(new Config({ bundle: 'load', lock: 'none', format: 'tgz', bundleFile: 'dist/app.stasis.tgz' }).format, 'tgz')
+  t.assert.throws(() => new Config({ format: 'zip' }), /Invalid format: zip/)
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'tgz', bundleFile: 'app.br' }), { message: "format=tgz names a .stasis.tgz, stasis.tgz or <name>.stasis.tgz, not 'app.br'" })
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'br', bundleFile: 'app.stasis.tgz' }), { message: "format=br names a stasis.code.br, not 'app.stasis.tgz', a .stasis.tgz's name" })
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none' }).loadConfig(json({ format: 'tgz', bundleFile: 'app.br' })), /format=tgz names a \.stasis\.tgz/)
+  // A State that writes refuses a .stasis.tgz (run-tgz.test.js), not Config: a build's State writes nothing.
+  t.assert.equal(new Config({ bundle: 'replace', lock: 'none', format: 'tgz', bundleFile: 'app.stasis.tgz' }).format, 'tgz')
+  // As every key, a flag or the env can't override the file's.
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'br' }).loadConfig(json({ format: 'tgz' })), /can not override stasis\.config\.json/)
+}))
+
+test('Config format: EXODUS_STASIS_FORMAT is the flag\'s too', withEnv({ EXODUS_STASIS_FORMAT: 'tgz' }, (t) => {
+  t.assert.equal(new Config({ bundle: 'load', lock: 'none' }).format, 'tgz')
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'br' }), /can not override stasis env/)
 }))

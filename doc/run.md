@@ -83,9 +83,11 @@ Both files are looked up in the project root, see [discovery](file-formats.md#di
 
 ## A .stasis.tgz
 
-`--bundle-file` may name a [`.stasis.tgz`](file-formats.md#stasistgz), read
-with `--bundle=load` or `frozen` as a `stasis.code.br` would be. It is never
-written: `add` and `replace` are refused.
+`--bundle-file` or `stasis.config.json`'s `bundleFile` may name a
+[`.stasis.tgz`](file-formats.md#stasistgz), and a `stasis.tgz` at the project
+root is found as a `stasis.code.br` is ([discovery](file-formats.md#discovery)).
+It is read with `--bundle=load` or `frozen` as a `stasis.code.br` would be, and
+never written: `add` and `replace` are refused.
 
 ```sh
 stasis run --bundle=load --bundle-file=app.stasis.tgz app.js                 # run from the tgz alone
@@ -95,8 +97,7 @@ stasis run --lock=ignore --bundle=frozen --bundle-file=app.stasis.tgz app.js # v
 
 At start, the tgz is checked against its own `stasis.lock.json`: one that isn't
 exactly its lockfile's files fails the run before anything runs. `--lock` is
-still the project's lockfile. `stasis.config.json`'s `bundleFile` may name a
-tgz too; `stasis-core run` refuses one.
+still the project's lockfile. `stasis-core run` refuses one.
 
 ## Native addons
 

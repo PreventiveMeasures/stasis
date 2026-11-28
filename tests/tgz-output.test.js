@@ -74,3 +74,37 @@ test('stasis bundle --format: to stdout, refused as a usage error where it confl
   t.assert.ok(!existsSync(join(cwd, 'app.br')) && !existsSync(join(cwd, 'app.stasis.tgz')), 'nothing written')
   t.assert.equal(readFileSync(join(cwd, 'src', 'a.js'), 'utf8'), "console.log('a')\n")
 }))
+
+test('bundleFormat: stasis.config.json\'s format where no --format is given, else the bundle at the root; each held to the other and to the --output', (t) => {
+  const there = (...names) => (name) => names.includes(name)
+  t.assert.deepStrictEqual([
+    bundleFormat('', { configured: 'tgz' }), bundleFormat('', { format: 'tgz', configured: 'tgz' }), bundleFormat('', { configured: 'br', output: 'x.br' }),
+    bundleFormat('', { exists: there('stasis.tgz') }), bundleFormat('', { exists: there() }), bundleFormat('', { exists: there('stasis.code.br') }),
+    bundleFormat('', { output: 'x.br', exists: there('stasis.tgz') }), bundleFormat('', { configured: 'br', exists: there('stasis.tgz') }),
+  ], ['tgz', 'tgz', 'br', 'tgz', 'br', 'br', 'br', 'br'])
+  const refused = (options, message) => t.assert.throws(() => bundleFormat('p: ', options), { message: `p: ${message}` })
+  refused({ format: 'br', configured: 'tgz' }, "--format=br disagrees with stasis.config.json's format, tgz")
+  refused({ configured: 'tgz', output: 'app.br' }, "stasis.config.json's format tgz writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got 'app.br')")
+  refused({ configured: 'br', output: 'app.stasis.tgz' }, "stasis.config.json's format br writes a stasis.code.br, not --output=app.stasis.tgz, a .stasis.tgz's name")
+  refused({ configured: 'zip' }, "stasis.config.json's format must be br or tgz (got 'zip')")
+  t.assert.throws(() => bundleFormat('', { exists: there('stasis.code.br', 'stasis.tgz') }), /stasis\.code\.br and stasis\.tgz are both there/u)
+})
+
+test('stasis bundle writes the root\'s bundle as stasis.config.json\'s format says, else as the bundle there is', withTmp(async (t, tmp) => {
+  t.mock.method(console, 'warn', () => {})
+  const cwd = project(tmp)
+  writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({ format: 'tgz' }))
+  await bundleCommand({ cwd, entries: ['src/a.js'] })
+  t.assert.deepStrictEqual([existsSync(join(cwd, 'stasis.tgz')), existsSync(join(cwd, 'stasis.code.br'))], [true, false])
+  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'], format: 'br' }), { message: "bundleCommand: --format=br disagrees with stasis.config.json's format, tgz" })
+  // No format: the stasis.tgz there, added to.
+  writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({}))
+  await bundleCommand({ cwd, entries: ['src/b.js'], add: true })
+  t.assert.deepStrictEqual([[...parseFile(join(cwd, 'stasis.tgz')).sources.keys()], existsSync(join(cwd, 'stasis.code.br'))], [['src/a.js', 'src/b.js'], false])
+  writeFileSync(join(cwd, 'stasis.code.br'), 'either\n')
+  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'] }), /stasis\.code\.br and stasis\.tgz are both there/u)
+  // A run's bundleFile naming a .stasis.tgz is no write of the build's, which writes its own output.
+  writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({ bundleFile: 'run.stasis.tgz' }))
+  await bundleCommand({ cwd, entries: ['src/a.js'], output: 'other.stasis.code.br' })
+  t.assert.ok(existsSync(join(cwd, 'other.stasis.code.br')))
+}))

@@ -63,13 +63,15 @@ relative to the cwd, so the bundle goes there: run it from the package's
 directory. `--output` names another path (relative to the cwd); `--output=-`
 streams the bundle to stdout and the summary to stderr.
 
-An `--output` named `stasis.tgz` or `<name>.stasis.tgz`, or `--format=tgz`
-(written to `stasis.tgz` where the `stasis.code.br` would go, without
-`--output`), writes a [`.stasis.tgz`](file-formats.md#stasistgz) instead: the
-lockfile of the bundle's files plus the files, which every command that reads
-a bundle accepts as that bundle. It records no `reason`, so `stasis audit
---reason` and `--why` have none to read. `--add` merges into one as into a
-`stasis.code.br`.
+An `--output` named `stasis.tgz` or `<name>.stasis.tgz`, `--format=tgz`, or
+`stasis.config.json`'s `format: "tgz"` writes a
+[`.stasis.tgz`](file-formats.md#stasistgz) instead: the lockfile of the
+bundle's files plus the files, which every command that reads a bundle accepts
+as that bundle. Without `--output`, it goes to the root's bundle, found as a
+run finds it ([discovery](file-formats.md#discovery)). `--format`, the config's
+`format` and the `--output`'s name must agree. It records no `reason`, so
+`stasis audit --reason` and `--why` have none to read. `--add` merges into one
+as into a `stasis.code.br`.
 
 `--add` merges the fresh build into the bundle already at `--output`; a file
 both carry with different content is a conflict and fails. With nothing on
@@ -1126,9 +1128,12 @@ stasis add [--lockfile-only] path/to/(file|dir) ...
 `stasis add` adds the listed files to the project's bundle(s) as they are,
 with no dependency resolution, for files the import graph never reaches. Its
 only option is `--lockfile-only` (below). The bundle files and resource
-allowlist come from `stasis.config.json` (`bundleFile`, `resourcesBundleFile`,
-`resources`, `brotliQuality`, all optional; the file itself is required). What
-it adds is held to its
+allowlist come from `stasis.config.json` (`bundleFile`, `format`,
+`resourcesBundleFile`, `resources`, `brotliQuality`, all optional; the file
+itself is required); without `bundleFile`, the bundle is the root's, found as
+a [run finds it](file-formats.md#discovery). A
+[`.stasis.tgz`](file-formats.md#stasistgz) bundle is read and written like a
+`stasis.code.br`. What it adds is held to its
 [allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules),
 as is what the bundles and lockfile it adds to already carry.
 
@@ -1140,7 +1145,8 @@ add leaves them, including the files they already carry. What those record of
 a dependency's [`integrity` and `patch`](file-formats.md#stasiscodebr) is
 checked against how it is installed and against each other, including a split
 bundle's half that no file is added to. The core CLI has it as
-`stasis-core add`, which doesn't read the package manager's install record.
+`stasis-core add`, which reads neither the package manager's install record
+nor a `.stasis.tgz`.
 
 A directory expands to every file under it, minus what a sweep leaves out:
 
@@ -1151,7 +1157,8 @@ A directory expands to every file under it, minus what a sweep leaves out:
   `stasis add src/examples` sweeps the directory it was pointed at, `stasis add
   src` skips an `examples` it merely found;
 - type declarations (`.d.ts`, `.d.mts`, `.d.cts`), `*.env` files, stasis's own
-  artifacts (`stasis.lock.json`, `*.stasis.lock.json`, `*stasis*.br`) and the
+  artifacts (`stasis.lock.json`, `*.stasis.lock.json`, `*stasis*.br`, `stasis.tgz`,
+  `*.stasis.tgz`) and the
   bundles this run writes to;
 - what a native walk leaves out: `*.md`, `*.log`, `*.map`, `*.flow` and
   `*.swiftdoc` files (and `*.bat` off Windows), `LICENSE`/`LICENCE`/

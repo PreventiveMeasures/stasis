@@ -135,7 +135,10 @@ export class State {
       this.#policy = inherited.policy
       this.#absorbed = inherited.absorbed
       assert.ok(this.config.bundleFile, 'sidecar State requires bundleFile')
-      if (this.config.writeBundle) for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key, 'sidecar ')
+      if (this.config.writeBundle) {
+        this.#refuseWritingTgz()
+        for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key, 'sidecar ')
+      }
       // frozenBundle too: it has its own attestation snapshot to build. What it absorbs reaches the parent.
       if (this.config.bundle) {
         const path = this.config.bundleFile
@@ -231,8 +234,7 @@ export class State {
     this.#holdToInstalled(this.#lock === null ? this.#bundlePath : this.#lockPath)
 
     if (this.config.writeBundle) {
-      // A .stasis.tgz found where none is named (Config holds a named one) is read, never written, by a State that writes.
-      assert.ok(!this.#claim || !isTgzName(this.#bundlePath), `stasis: ${this.#bundlePath} is a .stasis.tgz, which a run reads (bundle = load or frozen) and never writes`)
+      this.#refuseWritingTgz()
       for (const key of ['bundleFile', 'resourcesBundleFile']) this.#claimWritePath(key)
     }
     if (this.config.writeLockfile) this.#claimWritePath('lockFile')
@@ -915,6 +917,13 @@ export class State {
 
   get #bundlePath() {
     return this.config.bundleFile || this.#defaultBundleAt(this.root)
+  }
+
+  // A .stasis.tgz is read (bundle = load or frozen), never written: a State that writes (claims its paths) refuses one,
+  // named, its format's, or found; a build's, which writes its own output, doesn't.
+  #refuseWritingTgz() {
+    const tgz = [this.#bundlePath, this.config.resourcesBundleFile].find((file) => file !== undefined && isTgzName(file))
+    assert.ok(!this.#claim || tgz === undefined, `stasis: ${tgz} is a .stasis.tgz, which a run reads (bundle = load or frozen) and never writes`)
   }
 
   // Where none is named: the config's format's, else the stasis.code.br or stasis.tgz there, refused where both are for

@@ -11,6 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { addCommand } from '@exodus/stasis-core/add'
+import { parseFile } from '../stasis/src/parse.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -662,4 +663,40 @@ test('addCommand records .jsx/.tsx as source with no loader format, as the runti
   t.assert.equal(code.formats.has('src/App.jsx'), false)
   t.assert.equal(code.formats.has('src/Comp.tsx'), false)
   t.assert.equal(existsSync(join(tmp, 'dist/res.br')), false)
+}))
+
+test('stasis add reads and writes a .stasis.tgz: named by bundleFile, by stasis.config.json\'s format, or the stasis.tgz there; stasis-core add refuses one', withTmp((t, tmp) => {
+  const files = (rel) => [...parseFile(join(tmp, rel)).sources.keys()].toSorted()
+  const gzip = (rel) => readFileSync(join(tmp, rel)).subarray(0, 2).equals(Buffer.from([0x1f, 0x8b]))
+  seed(tmp, { bundleFile: 'dist/app.stasis.tgz' })
+  const first = runCli(stasisCli, ['add', 'src/a.js'], { cwd: tmp })
+  t.assert.equal(first.status, 0, first.stderr)
+  const added = runCli(stasisCli, ['add', 'src/b.cjs'], { cwd: tmp })
+  t.assert.equal(added.status, 0, added.stderr)
+  t.assert.deepStrictEqual([gzip('dist/app.stasis.tgz'), files('dist/app.stasis.tgz')], [true, ['src/a.js', 'src/b.cjs']], 'read back, added to, written again')
+
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ format: 'tgz' }))
+  t.assert.equal(runCli(stasisCli, ['add', 'src/a.js'], { cwd: tmp }).status, 0)
+  t.assert.deepStrictEqual([gzip('stasis.tgz'), files('stasis.tgz')], [true, ['src/a.js']])
+  // No format: the stasis.tgz there is the bundle, as a run finds it.
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({}))
+  t.assert.equal(runCli(stasisCli, ['add', 'src/b.cjs'], { cwd: tmp }).status, 0)
+  t.assert.deepStrictEqual([files('stasis.tgz'), existsSync(join(tmp, 'stasis.code.br'))], [['src/a.js', 'src/b.cjs'], false])
+
+  const core = runCli(coreCli, ['add', 'src/a.js'], { cwd: tmp })
+  t.assert.notEqual(core.status, 0)
+  t.assert.match(core.stderr, /stasis\.tgz is a \.stasis\.tgz, which stasis reads and writes and stasis-core can't \(it writes a stasis\.code\.br\)/u)
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ format: 'tgz', bundleFile: 'app.br' }))
+  const disagreeing = runCli(stasisCli, ['add', 'src/a.js'], { cwd: tmp })
+  t.assert.notEqual(disagreeing.status, 0)
+  t.assert.match(disagreeing.stderr, /stasis\.config\.json: format tgz names a \.stasis\.tgz, stasis\.tgz or <name>\.stasis\.tgz, not 'app\.br'/u)
+}))
+
+test('stasis add passes over a .stasis.tgz in a directory it sweeps, as over a stasis.code.br', withTmp((t, tmp) => {
+  seed(tmp, { resources: ['svg', 'png', 'txt', 'tgz'] })
+  writeFileSync(join(tmp, 'src', 'old.stasis.tgz'), Buffer.from([0x1f, 0x8b, 0]))
+  const r = runCli(stasisCli, ['add', 'src'], { cwd: tmp })
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.match(r.stderr, /skipped 1 auto-excluded/u)
+  t.assert.ok(!packedFiles(tmp, 'stasis.code.br').includes('src/old.stasis.tgz'))
 }))

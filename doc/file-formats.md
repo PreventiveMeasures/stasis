@@ -31,6 +31,7 @@ one.
 | `packageJSON` | boolean | `false` | `EXODUS_STASIS_PACKAGE_JSON` |
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
 | `brotliQuality` | integer `0`–`11` | `6` | `EXODUS_STASIS_BROTLI_QUALITY` |
+| `format` | `"br"`, `"tgz"`: the bundle's, a `stasis.code.br` or a [`.stasis.tgz`](#stasistgz); `bundleFile`, `--format` and `--output` must agree | the bundle there (see [Discovery](#discovery)) | `EXODUS_STASIS_FORMAT` |
 | `extra` | array of paths and glob patterns | unset | none |
 | `entries` | object of each entry's `stasis bundle` options, by its path or a glob pattern (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 | `define` | `"K=V"` or an array of them: every JS entry's `--define`s; no entry may then set its own `define` (see [Defines](bundle.md#defines---define)) | unset | none |
@@ -1733,11 +1734,13 @@ macro's input like any other, while the files are read from disk too, so a
 A gzipped tar of a `stasis.lock.json` at its top and exactly the files it
 attests (what `tar -czf` makes of what `stasis extract --lock=add` writes),
 named `stasis.tgz` or `<name>.stasis.tgz`. `stasis bundle` and `stasis
-github-bundle` write one with `--format=tgz` or an `--output` so named (`stasis
-run` writes none). `stasis validate`, `run` (`--bundle=load` or `frozen`),
-`build`, `audit`, `diff` and `sbom` read it as the bundle of its files, with
-its lockfile beside it; a tgz under any other name (by gzip's leading bytes),
-and anything else under its name, is refused. Its tar is read with
+github-bundle` write one with `--format=tgz` or an `--output` so named, and
+`stasis bundle` with `stasis.config.json`'s `format` too; `stasis add` adds to
+one (`stasis-core add` and `stasis run` write none). `stasis validate`, `run`
+(`--bundle=load` or `frozen`), `build`, `audit`, `diff` and `sbom` read it as
+the bundle of its files, with its lockfile beside it; a tgz under any other
+name (by gzip's leading bytes), and anything else under its name, is refused.
+Its tar is read with
 `@preventive/archive`, and it is refused, naming the path, unless it holds:
 
 - each file the lockfile attests, at its path from the tgz's top, with the
@@ -1946,6 +1949,13 @@ the sidecar at load.
 ## Discovery
 
 Stasis walks up from the run's cwd looking for `package.json`, stopping at a
-`.git` dir, `pnpm-workspace.yaml`, or `$PROJECT_CWD`. Any of the three stasis
-files in a directory without a sibling `package.json` is fatal, and they may
-appear in only one directory along the path.
+`.git` dir, `pnpm-workspace.yaml`, or `$PROJECT_CWD`. Any of the stasis files
+(`stasis.config.json`, `stasis.lock.json`, the bundle) in a directory without a
+sibling `package.json` is fatal, and they may appear in only one directory along
+the path.
+
+Unless a flag or `bundleFile` names it, the bundle is the one
+`stasis.config.json`'s `format` names (`stasis.code.br` or `stasis.tgz`), else
+whichever of `stasis.code.br` and a [`stasis.tgz`](#stasistgz) is there
+(`stasis.code.br` if neither; both is refused). `stasis run`, `stasis add` and
+`stasis bundle` (for its default `--output`) find it so.

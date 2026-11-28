@@ -199,12 +199,12 @@ test('classifyFormat: `.py`/`.pyi`/`.pyw` are python, code to the native capture
 // --- the directory-sweep exclusions (`stasis add <dir>`) ---------------------
 
 test('isStasisArtifactName: stasis own outputs, at any depth', (t) => {
-  for (const name of ['stasis.lock.json', 'dist/stasis.lock.json', 'app.stasis.lock.json', 'stasis.code.br', 'app.stasis.res.br', 'dist/stasis.code.br']) {
+  for (const name of ['stasis.lock.json', 'dist/stasis.lock.json', 'app.stasis.lock.json', 'stasis.code.br', 'app.stasis.res.br', 'dist/stasis.code.br', 'stasis.tgz', 'dist/app.stasis.tgz', 'APP.STASIS.TGZ']) {
     t.assert.equal(isStasisArtifactName(name), true, `${name} is a stasis artifact`)
   }
   // A `.br` without `stasis` in its NAME isn't one (a dir named `stasis-app/` doesn't make it one),
   // and neither is a same-stem source file.
-  for (const name of ['assets/data.br', 'stasis-app/data.br', 'stasis.config.json', 'stasis.js']) {
+  for (const name of ['assets/data.br', 'stasis-app/data.br', 'stasis.config.json', 'stasis.js', 'app.tgz', 'stasis.tgz.js']) {
     t.assert.equal(isStasisArtifactName(name), false, `${name} is not a stasis artifact`)
   }
 })
