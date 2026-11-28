@@ -2,43 +2,42 @@
 
 `stasis run` runs a Node entry under stasis's loader, which records every
 module the run loads into a lockfile (`stasis.lock.json`), a bundle
-(`stasis.code.br`), or both; verifies the run against ones recorded before;
-or serves the run from a bundle alone, with nothing read from disk. The flags
-are the keys of [`stasis.config.json`](file-formats.md#stasisconfigjson) and
-their `EXODUS_STASIS_*` environment variables: each sets its variable for the
-node process it spawns, and a variable already set to another value is a
-conflict. The modes are the flags' alone, save that a config file can pin
-`lock` to `frozen`, which a run must then be given. The zero-dependency core CLI
-runs the same loader as `stasis-core run`, without `--mock` and `--package-json`,
-and reads no package manager's record of the install, which `stasis run` holds
-the lockfile's and bundle's `integrity` and `patch` to, and records of the
-packages it captures anew (see [`integrity`](file-formats.md#stasiscodebr)).
+(`stasis.code.br`), or both; verifies the run against them; or serves the run
+from a bundle alone, with nothing read from disk.
+
+Each flag is a key of [`stasis.config.json`](file-formats.md#stasisconfigjson)
+and sets its `EXODUS_STASIS_*` environment variable for the node process; a
+variable already set to another value is a conflict. Modes come from flags
+only, except that a config file can pin `lock` to `frozen`, which the run must
+then be given.
+
+`stasis-core run` runs the same loader without `--mock` and `--package-json`,
+and doesn't read the package manager's install record, which `stasis run`
+holds [`integrity`](file-formats.md#stasiscodebr) and `patch` to.
 
 ```sh
 stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/(bundle.br|name.stasis.tgz)] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
 ```
 
-Files the run never loads, but which are to be attested anyway, are named in
-`stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson): a run that
-writes a lockfile or bundle (`add` or `replace`) adds them.
+Files to attest that the run never loads go in `stasis.config.json`'s
+[`extra`](file-formats.md#stasisconfigjson); a writing run (`add` or `replace`)
+adds them.
 
-Its `allowedPaths`, `disallowedPaths`, `allowedModules` and `disallowedModules`
-restrict what the run may load, read and record: a file one refuses fails its
-import or read as the run reaches it, and the run then writes nothing, even where
-the program catches the error. A lockfile or bundle the run loads that records
-one is refused before the entry runs. See
+`allowedPaths`, `disallowedPaths`, `allowedModules` and `disallowedModules`
+restrict what the run may load, read and record. A refused file fails its import
+or read, and the run writes nothing, even if the program catches the error. A
+lockfile or bundle that records one is refused before the entry runs. See
 [Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules).
 
-Its `excludeModules` names dependencies the run takes for absent: a resolution into
-one fails as one of a missing package does (`MODULE_NOT_FOUND`, or
-`ERR_MODULE_NOT_FOUND` for an `import`), which the program may catch, and nothing
-of it is recorded. Under `--fs` its files read as missing. A lockfile or bundle the
-run loads that records one is refused before the entry runs. See
-[Excluded modules](file-formats.md#excluded-modules).
+`excludeModules` names dependencies the run treats as absent: resolving one
+fails as for a missing package (`MODULE_NOT_FOUND`, or `ERR_MODULE_NOT_FOUND`
+for an `import`), and nothing of it is recorded. Under `--fs` their files read
+as missing. A lockfile or bundle that records one is refused before the entry
+runs. See [Excluded modules](file-formats.md#excluded-modules).
 
-Everything after the options goes to node as is: the entry and its arguments.
-The exit code is the entry's, or 128 plus the signal's number where a signal
-killed it. The effective configuration is printed to stderr first.
+Everything after the options goes to node as is. The exit code is the entry's,
+or 128 plus the signal number if a signal killed it. The effective
+configuration is printed to stderr first.
 
 | Flag | Meaning |
 | - | - |
@@ -76,19 +75,17 @@ stasis run --lock=add --bundle=add --mock app.js  # build without the app's side
 | `ignore` | Tolerate a file on disk without loading or writing it |
 | `load` | Bundle only: serve the recorded bytes instead of reading disk |
 
-At least one of `--lock` and `--bundle` is set. `--bundle=load` runs from the
-bundle alone with no `--lock`, or verified against the lockfile with
+At least one of `--lock` and `--bundle` is required. `--bundle=load` runs from
+the bundle alone with no `--lock`, or verified against the lockfile with
 `--lock=frozen` (`--lock=ignore` tolerates one on disk); never with `add` or
-`replace`. `--bundle=frozen` composes with any lock mode, and makes the bundle
-its own attestation, so a frozen bundle needs no sibling lockfile. Both files
-are looked up in the project root, see [discovery](file-formats.md#discovery).
+`replace`. `--bundle=frozen` works with any lock mode and needs no lockfile.
+Both files are looked up in the project root, see [discovery](file-formats.md#discovery).
 
 ## A .stasis.tgz
 
-`--bundle-file` may name a [`.stasis.tgz`](file-formats.md#stasistgz): the run
-serves the bundle of its files, as it would the `stasis.code.br` of them, with
-`--bundle=load` or `frozen`. It is never written: `add` and `replace` are
-refused.
+`--bundle-file` may name a [`.stasis.tgz`](file-formats.md#stasistgz), read
+with `--bundle=load` or `frozen` as a `stasis.code.br` would be. It is never
+written: `add` and `replace` are refused.
 
 ```sh
 stasis run --bundle=load --bundle-file=app.stasis.tgz app.js                 # run from the tgz alone
@@ -96,75 +93,58 @@ stasis run --lock=frozen --bundle=load --bundle-file=app.stasis.tgz app.js   # v
 stasis run --lock=ignore --bundle=frozen --bundle-file=app.stasis.tgz app.js # verify disk against the tgz
 ```
 
-It is read and held to its `stasis.lock.json` as the run starts, as a bundle
-is read: one that isn't exactly its lockfile's files fails the run before any
-of it runs. `--lock` is the project's lockfile, as with any bundle.
-`stasis.config.json`'s `bundleFile` may name one too; `stasis-core run`, which
-reads no tar, refuses it.
+At start, the tgz is checked against its own `stasis.lock.json`: one that isn't
+exactly its lockfile's files fails the run before anything runs. `--lock` is
+still the project's lockfile. `stasis.config.json`'s `bundleFile` may name a
+tgz too; `stasis-core run` refuses one.
 
 ## Native addons
 
-Node loads a native addon (a `.node` file) from disk by its path, as a process
-can't load one from memory, past the loader that sees every other module. So a
-run records the edge to an addon it loads and none of its bytes, as one an
-install builds differs from install to install; and `--bundle=load` resolves an
-addon by the bundle's edge, but it has to be on disk still.
+Node loads a native addon (a `.node` file) from disk, past the loader. A run
+records the edge to an addon, not its bytes; `--bundle=load` resolves it by
+that edge, but the addon must still be on disk.
 
-A lockfile or bundle may attest one all the same: [`stasis bundle`](bundle.md#native-addons)
-carries the addons it follows, as resources. A run holds such an addon to it as
-it loads, in every mode that reads the artifact (`add`, `frozen` and `load`):
-before the addon runs, its bytes on disk are compared to the ones the bundle
-carries, else to the hash the lockfile records, and another in its place is
-refused.
+[`stasis bundle`](bundle.md#native-addons) does carry the addons it follows, as
+resources. In every mode that reads the artifact (`add`, `frozen` and `load`),
+such an addon is checked before it runs against the bytes the bundle carries,
+else the hash the lockfile records, and refused if it differs.
 
 ```
 stasis: refusing to load the native addon native/lib_linux-x64_nodejs.node: it is not the one the lockfile records
 ```
 
-- It is held however it is loaded: by `require()`, by a call of
-  `process.dlopen()`, in a forked child process or in a worker.
-- The refusal is the load's own error, which the program may catch, as a
-  package that falls back from its addon to JavaScript does. The addon doesn't
-  run either way, and the run then writes nothing.
-- An addon neither artifact attests is loaded as it is, and none is recorded:
-  one built on install, or another platform's, breaks no run. `replace` reads
-  no artifact, so it holds no addon to one, and what it writes records none:
-  `stasis bundle` is what attests one.
-- In `node_modules` scope (`--dependencies`) the project's own addons are none
-  of the run's, as its other files aren't.
-- One loaded before the run has read its artifacts, as a
-  [preload](#preloads---import) loads its own, is held as soon as it has,
-  before the entry runs: the process keeps the one the preload loaded,
-  whatever requires it next. So a preload's addon is held wherever an artifact
-  attests it, though its modules are held only where the app reaches them.
-- The addon is read, and then Node opens it by its path: one put in its place
-  between the two is loaded unseen.
+- The check applies however the addon is loaded: `require()`,
+  `process.dlopen()`, a forked child process or a worker.
+- The refusal is the load's own error, which the program may catch. The addon
+  doesn't run either way, and the run writes nothing.
+- An addon neither artifact attests loads unchecked and isn't recorded.
+  `replace` checks no addon and records none; only `stasis bundle` attests one.
+- In `node_modules` scope (`--dependencies`) the project's own addons aren't
+  checked.
+- An addon a [preload](#preloads---import) loads before the artifacts are read
+  is checked once they are, before the entry runs.
+- The addon is read, then Node opens it by its path: one swapped in between
+  the two is loaded unchecked.
 
 ## Preloads (`--import`)
 
-`--import=./instrument.mjs` forwards a preload module to the node process
-running the entry, after stasis's own loader (repeatable), for a setup or
-instrumentation preload. A preload's own module graph is runner infrastructure
-like the loader itself: evaluated, not captured, so it stays out of the lockfile
-and bundle. Modules the app graph also reaches, or that execute through a
-`require()` pipeline a preload installs, are still attested like any other app
-code, so frozen replays and `--bundle=load` stay fail-closed. Under `--mock`,
-preloads run under its denials: one that spawns helper processes fails there.
+`--import=./instrument.mjs` (repeatable) passes a preload module to node,
+after stasis's own loader. A preload's own module graph is not captured.
+Modules the app also reaches, or that run through a `require()` pipeline a
+preload installs, are attested like other app code. Under `--mock`, preloads
+run under its denials: one that spawns helper processes fails.
 
 ## Mock (`--mock`)
 
-`--mock` captures the import graph by running the app with its side effects
-denied, failing closed: Node's `--permission` blocks filesystem writes outside
-the cwd (and the bundle targets' directories), child processes, workers, native
-addons and the inspector, and the network and timers are neutralized in JS,
-every callable of a denied builtin replaced by a thrower, so higher-level
-clients fall closed too. Reads stay open, so resolution works as in a plain
-run. It is for building, so it doesn't combine with `--bundle=load`.
+`--mock` captures the import graph with the app's side effects denied: Node's
+`--permission` blocks filesystem writes outside the cwd and the bundle targets'
+directories, child processes, workers, native addons and the inspector, and
+the network and timers throw. Reads stay open, so resolution works as usual.
+Not with `--bundle=load`.
 
 ## Child processes (`--child-process`)
 
-`--child-process` also attests the modules that forked child processes load,
-such as Metro's transform workers: each child forwards what it captured to the
-root process as a signed shard carrying keys and resolution edges only, whose
-content the root re-reads from its own disk, so a shard can't inject content.
-It takes effect with a writing `--lock` or `--bundle` mode.
+`--child-process` also attests the modules forked child processes load, such
+as Metro's transform workers. Each child sends the root process the paths and
+edges it captured, and the root reads their content from its own disk. It takes
+effect with a writing `--lock` or `--bundle` mode.
