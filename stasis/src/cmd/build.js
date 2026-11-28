@@ -15,7 +15,7 @@ import { assetData, assetModule } from '@preventive/rn/metro-assets.js'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { METRO_RELEASE_DEFINE } from '../define.js'
 import { FLOW_EXTS, hasFlowPragma, stripFlow } from '../flow.js'
-import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
+import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-resolver.js'
 import { parseFileWithKind } from '../parse.js'
 import { getParser, syntaxErrors } from '../scan.js'
 import { writeFile } from './output.js'
@@ -76,52 +76,43 @@ function resolveGlobalEsbuild() {
   return undefined
 }
 
-function assertBuildableArtifact(artifact, label) {
+// The recorded entry `entryArg` names (by its path from `cwd` too), else the artifact's only one, as long as it and
+// what it reaches can be built: another entry or a `stasis add` attachment doesn't block it.
+function buildableEntry(artifact, entryArg, { cwd, root, label }) {
   if (artifact.config.scope !== 'full') {
     throw new Error(
       `stasis build requires a full-scope artifact; ${label} is scope='${artifact.config.scope}'`
     )
   }
   if (artifact.entries.size === 0) throw new Error(`stasis build: ${label} declares no entries to build`)
-}
-
-// As esbuild loads them: every conditions bucket's edges, every platform's target (a Set visits what is added to it).
-function reachableFiles(entry, imports) {
-  const seen = new Set([entry])
-  for (const parent of seen) {
-    for (const byParent of imports.values()) {
-      for (const target of byParent.get(parent)?.values() ?? []) {
-        for (const file of typeof target === 'string' ? [target] : target.values()) seen.add(file)
-      }
-    }
+  const recorded = [...artifact.entries]
+  const list = recorded.map((e) => `  ${e}`).join('\n')
+  let entry = recorded[0]
+  if (entryArg === undefined) {
+    if (recorded.length !== 1) throw new Error(`stasis build: ${label} has ${recorded.length} entry points; pass one as the second argument:\n${list}`)
+  } else {
+    const candidates = new Set([entryArg, entryArg.replace(/^\.\//u, ''), relative(root, resolve(cwd, entryArg)).split(sep).join('/')])
+    entry = recorded.find((e) => candidates.has(e))
+    if (entry === undefined) throw new Error(`stasis build: '${entryArg}' is not an entry point of ${label}; available:\n${list}`)
   }
-  return seen
-}
-
-// Only what the entry reaches must be buildable: another entry or a `stasis add` attachment doesn't block it.
-function assertBuildableEntry(artifact, entry, label) {
   if (!JS_EXTENSIONS.has(extname(entry))) {
     throw new Error(`stasis build only builds JavaScript/TypeScript entries (esbuild); got non-JS entry '${entry}' in ${label}`)
   }
-  const reachable = reachableFiles(entry, artifact.imports ?? new Map())
+  // As esbuild loads them: every conditions bucket's edges, every platform's target (a Set visits what is added to it).
+  const reachable = new Set([entry])
+  for (const parent of reachable) {
+    for (const byParent of artifact.imports?.values() ?? []) {
+      for (const target of byParent.get(parent)?.values() ?? []) {
+        for (const file of typeof target === 'string' ? [target] : target.values()) reachable.add(file)
+      }
+    }
+  }
   for (const [file, format] of artifact.formats ?? new Map()) {
     if (reachable.has(file) && !BUILDABLE_FORMATS.has(format)) {
       throw new Error(`stasis build only supports JavaScript/TypeScript bundles (esbuild); ${label} carries a '${format}' file (${file})`)
     }
   }
-}
-
-function selectEntry(entryArg, entries, { cwd, root, label }) {
-  const recorded = [...entries]
-  const list = recorded.map((e) => `  ${e}`).join('\n')
-  if (entryArg === undefined) {
-    if (recorded.length === 1) return recorded[0]
-    throw new Error(`stasis build: ${label} has ${recorded.length} entry points; pass one as the second argument:\n${list}`)
-  }
-  const candidates = new Set([entryArg, entryArg.replace(/^\.\//u, ''), relative(root, resolve(cwd, entryArg)).split(sep).join('/')])
-  const match = recorded.find((e) => candidates.has(e))
-  if (match === undefined) throw new Error(`stasis build: '${entryArg}' is not an entry point of ${label}; available:\n${list}`)
-  return match
+  return entry
 }
 
 // A bundle-load State serving `bundle`, with no discovery on disk (no package.json, config or stray stasis.code.br).
@@ -142,7 +133,8 @@ const asBytes = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(sour
 // The bytes the artifact carries for `file`, verified by getFile.
 const readCarried = (state, file) => asBytes(state.getFile(pathToFileURL(resolve(state.root, file)).toString()).source)
 
-// Each Metro asset served as the module Metro builds of it, its require of the registry added as Metro adds it.
+// Each Metro asset served as the module Metro builds of it (@preventive/rn's), from the artifact's bytes, never disk,
+// its require of the registry added as Metro adds it.
 function metroAssetResource(state, platform, built) {
   const listing = bundleDirHost(state)
   const registryFor = assetRegistryResolver(platform, state.sources)
@@ -184,9 +176,10 @@ const chainTransforms = (first, second) => async (source, file) => {
   return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
 }
 
-// `entry`'s options in the stasis.config.json the artifact carries that say how its code is built, or null.
-function configEntryOptions(state, entry) {
-  if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return null
+// The build's `flags` under `entry`'s options in the stasis.config.json the artifact carries that say how its code is
+// built, where the flags given leave them unset (flow not under --babel, whose config compiles it), each taken said.
+function withConfigOptions(state, entry, flags) {
+  if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return flags
   const carried = `stasis build: the artifact's ${CONFIG_FILE}`
   let config
   try {
@@ -203,7 +196,7 @@ function configEntryOptions(state, entry) {
   const matches = (key) => isGlobPattern(key) && !hasNodeModulesSegment(entry) && posix.matchesGlob(entry, entryGlob(what(key), key))
   const keys = Object.keys(entries ?? {})
   const name = keys.find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry) ?? keys.find(matches)
-  if (name === undefined && !shared) return null
+  if (name === undefined && !shared) return flags
   const options = name === undefined ? {} : entries[name]
   const named = what(name)
   if (!isPlainObject(options)) throw new Error(`${named} must be an object of options`)
@@ -219,18 +212,40 @@ function configEntryOptions(state, entry) {
   const defineWhat = shared ? `${carried}: define` : `${named}: define`
   const own = shared ? keys.find((key) => isPlainObject(entries[key]) && Object.hasOwn(entries[key], 'define')) : undefined
   if (own !== undefined) throw new Error(`${defineWhat} can't be combined with entries ${JSON.stringify(own)}'s define`)
-  const define = {}
+  const configured = {}
   for (const pair of stringsOf(shared ? config.define : options.define, defineWhat)) {
     const eq = pair.indexOf('=')
     if (eq <= 0) throw new Error(`${defineWhat} must be KEY=VALUE (got '${pair}')`)
-    define[pair.slice(0, eq)] = pair.slice(eq + 1)
+    configured[pair.slice(0, eq)] = pair.slice(eq + 1)
   }
-  let platforms
+  let { loader, flow, define, metro } = flags
+  const taken = []
+  if (options.jsx === true && loader['.js'] === undefined) {
+    loader = { ...loader, '.js': 'jsx' }
+    taken.push('--loader=.js:jsx')
+  }
+  if (options.flow === true && !flow && !flags.babel) {
+    flow = true
+    taken.push('--flow')
+  }
+  const defined = Object.entries(configured).filter(([key]) => !Object.hasOwn(define, key)).map(([key, value]) => `--define=${key}=${value}`)
+  define = { ...configured, ...define }
+  if (!shared) taken.push(...defined)
   if (options.metro === true) {
-    platforms = [...new Set(stringsOf(options.platforms, `${named}: platforms`).flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
+    const platforms = [...new Set(stringsOf(options.platforms, `${named}: platforms`).flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
     if (platforms.length === 0) throw new Error(`${named} sets metro but names no platforms`)
+    const choices = platforms.map((platform) => `--metro=${platform}`).join(' or ')
+    const sets = `${CONFIG_FILE} bundles ${entry} for ${platforms.join(', ')}`
+    if (metro === undefined && platforms.length > 1) throw new Error(`stasis build: ${sets}: pass ${choices}`)
+    if (metro !== undefined && !platforms.includes(metro)) throw new Error(`stasis build: --metro=${metro}, but ${sets} alone: pass ${choices}`)
+    if (metro === undefined) {
+      metro = platforms[0]
+      taken.push(`--metro=${metro}`)
+    }
   }
-  return { name, jsx: options.jsx === true, flow: options.flow === true, define, shared, platforms }
+  if (taken.length > 0) console.warn(`[stasis] ${entry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(name)} sets`)
+  if (shared && defined.length > 0) console.warn(`[stasis] ${entry}: ${defined.join(' ')}, as ${CONFIG_FILE}'s define sets`)
+  return { loader, flow, define, metro }
 }
 
 // Run `stasis build`: esbuild over one recorded entry, following the artifact's recorded import graph exactly,
@@ -256,46 +271,15 @@ export async function buildCommand({
   }
   const artifactAbs = resolve(cwd, artifact)
   const { kind, artifact: parsed } = parseFileWithKind(artifactAbs)
-  assertBuildableArtifact(parsed, artifact)
-
   // Paths are the artifact's directory's, where a lockfile's sources are read and verified.
   const root = dirname(artifactAbs)
-  const selectedEntry = selectEntry(entry, parsed.entries, { cwd, root, label: artifact })
-  assertBuildableEntry(parsed, selectedEntry, artifact)
+  const selectedEntry = buildableEntry(parsed, entry, { cwd, root, label: artifact })
 
   const bundle = kind === 'lockfile' ? bundleFromLockfile(parsed, { root }) : parsed
   const state = loadStateForBundle(root, bundle)
   const entryPoint = resolve(state.root, selectedEntry)
 
-  // The config's options for the entry, under the flags given (flow not under --babel, whose config compiles it).
-  const configured = configEntryOptions(state, selectedEntry)
-  if (configured !== null) {
-    const taken = []
-    if (configured.jsx && loader['.js'] === undefined) {
-      loader = { ...loader, '.js': 'jsx' }
-      taken.push('--loader=.js:jsx')
-    }
-    if (configured.flow && !flow && !babel) {
-      flow = true
-      taken.push('--flow')
-    }
-    const defined = Object.entries(configured.define).filter(([key]) => !Object.hasOwn(define, key)).map(([key, value]) => `--define=${key}=${value}`)
-    define = { ...configured.define, ...define }
-    if (!configured.shared) taken.push(...defined)
-    const { platforms } = configured
-    if (platforms !== undefined) {
-      const choices = platforms.map((name) => `--metro=${name}`).join(' or ')
-      const what = `${CONFIG_FILE} bundles ${selectedEntry} for ${platforms.join(', ')}`
-      if (metro === undefined && platforms.length > 1) throw new Error(`stasis build: ${what}: pass ${choices}`)
-      if (metro !== undefined && !platforms.includes(metro)) throw new Error(`stasis build: --metro=${metro}, but ${what} alone: pass ${choices}`)
-      if (metro === undefined) {
-        metro = platforms[0]
-        taken.push(`--metro=${metro}`)
-      }
-    }
-    if (taken.length > 0) console.warn(`[stasis] ${selectedEntry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(configured.name)} sets`)
-    if (configured.shared && defined.length > 0) console.warn(`[stasis] ${selectedEntry}: ${defined.join(' ')}, as ${CONFIG_FILE}'s define sets`)
-  }
+  ;({ loader, flow, define, metro } = withConfigOptions(state, selectedEntry, { loader, flow, babel, define, metro }))
   // As `stasis bundle --metro` reads the files; METRO_RELEASE_DEFINE's names too, since outside Metro's
   // prelude `__DEV__` is no global at all.
   if (metro !== undefined) {
