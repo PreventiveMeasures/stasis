@@ -1764,6 +1764,44 @@ test('audit() asks a GitHub repo its record stamps private of its repository alo
   }
 ))
 
+test('audit() takes a private stamp from any record of the repository, one carrying no code, of another ecosystem, or the bundle\'s own', withFetch(
+  ({ url, opts }) => {
+    if (url === 'https://api.osv.dev/v1/querybatch') return json({ results: JSON.parse(opts.body).queries.map(() => ({})) })
+    throw new Error(`unexpected request: ${url}`)
+  },
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const top = { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': '' } }
+      const lib = (name, repo, files = { 'src/A.sol': '' }) => ({ name, version: '1.0.0', ecosystem: 'github', ...(repo && { repo }), files })
+      const write = (name, sources, extra = {}) => writeBundle(tmp, name, { ...ECOSYSTEMS_BUNDLE, modules: {}, sources: { '.': top, ...sources }, ...extra })
+      // Its foundry.toml alone, no code: no package of it to audit there, but its stamp all the same.
+      const manifestOnly = write('manifest.br', { 'lib/secret': lib('acme/secret', { github: 'acme/secret', directory: '', private: true }, { 'foundry.toml': '' }) })
+      const code = write('code.br', {
+        'lib/secret': lib('acme/secret'),
+        // Stamped by a Soldeer git dependency's record of the same repository, in another spelling.
+        'lib/forge': lib('acme/forge'),
+        'dependencies/forge-1.0.0': { name: 'forge', version: '1.0.0', ecosystem: 'soldeer', repo: { github: 'ACME/Forge', directory: '', private: true }, files: { 'foundry.toml': '' } },
+        'lib/open': lib('acme/open'),
+      })
+      // Stamped as the bundle's own repo.
+      const own = write('own.br', { 'lib/app': lib('acme/app') }, { repo: { github: 'acme/app', directory: '', private: true } })
+
+      t.assert.deepStrictEqual(collectPackages([manifestOnly]), [], 'no code of it there')
+      const stampedNames = (files) => collectPackages(files).filter((pkg) => pkg.private).map(({ name }) => name)
+      t.assert.deepStrictEqual(stampedNames([code]), ['acme/forge'])
+      t.assert.deepStrictEqual(stampedNames([code, manifestOnly]), ['acme/forge', 'acme/secret'])
+      t.assert.deepStrictEqual(stampedNames([own]), ['acme/app'])
+
+      await audit([code, manifestOnly, own], { github: githubClient(async () => []) })
+      const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
+      t.assert.deepStrictEqual(queries, [{ package: { name: 'acme/open', ecosystem: 'GitHub Actions' } }], 'the unstamped one alone')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
 // A dependency record, recording `github` as its repo where given.
 const depRecord = (name, version, github) => ({ name, version, ecosystem: 'npm', ...(github && { repo: { github } }), files: { 'index.js': '' } })
 // npm's registry answering the bulk advisories request with none, and for each package of `named`

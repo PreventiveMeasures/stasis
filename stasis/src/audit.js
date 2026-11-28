@@ -48,21 +48,39 @@ function unaudited({ ecosystem, version, vendoredIn }) {
   return undefined
 }
 
-// The dependencies whose real code `file` carries, `{ ecosystem, name, version, github }` (the repository recorded,
-// else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`. A GitHub
-// repo whose record stamps its repository private is `private: true`: its name, which OSV would be asked about as a
-// GitHub Action's, goes to its repository alone. Another ecosystem's repository reaches no database but GitHub.
-export function collectPackagesFromFile(file) {
+// The GitHub repositories `artifact` stamps private, in lowercase, as GitHub takes a name in any case: its own `repo`'s
+// and every dependency record's, whether or not the record carries code or a version, a GitHub repo record's name too.
+function stampedRepos(artifact) {
+  const stamped = new Set()
+  if (artifact.repo?.private === true && artifact.repo.github !== undefined) stamped.add(artifact.repo.github.toLowerCase())
+  for (const [dir, { name, ecosystem, repo }] of artifact.modules) {
+    if (repo?.private !== true) continue
+    stamped.add(repo.github.toLowerCase())
+    if (dependencyEcosystem(dir, ecosystem) === 'github' && typeof name === 'string') stamped.add(name.toLowerCase())
+  }
+  return stamped
+}
+
+// `file`'s packages (collectPackagesFromFile) and the repositories it stamps private (stampedRepos), from one parse.
+function packagesOf(file) {
   const { kind, artifact } = parseFileWithKind(file)
+  const stamped = stampedRepos(artifact)
   const records = auditedRecords(artifact.modules).filter(({ files, isEvidence }) => Object.keys(files).some(isEvidence))
-  return records.map(({ name, version, ecosystem, repo, files, host }) => {
+  const packages = records.map(({ name, version, ecosystem, repo, files, host }) => {
     if (host !== undefined) return { ecosystem, name, version, vendoredIn: host }
-    if (ecosystem === 'github') return { ecosystem, name, version, ...(repo?.private === true && { private: true }) }
+    if (ecosystem === 'github') return { ecosystem, name, version, ...(stamped.has(name.toLowerCase()) && { private: true }) }
     let github = repo?.github
     if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
     return { ecosystem, name, version, ...(github === undefined ? {} : { github }) }
   }).toArray()
+  return { packages, stamped }
 }
+
+// The dependencies whose real code `file` carries, `{ ecosystem, name, version, github }` (the repository recorded,
+// else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`. A GitHub
+// repo `file` stamps private anywhere (stampedRepos) is `private: true`: its name, which OSV would be asked about as a
+// GitHub Action's, goes to its repository alone. Another ecosystem's repository reaches no database but GitHub.
+export const collectPackagesFromFile = (file) => packagesOf(file).packages
 
 // Each dependency of `modules` the audit may count: first-party code never reaches a public registry.
 function* auditedRecords(modules) {
@@ -94,14 +112,15 @@ const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNu
 
 // Each package once, with the GitHub repository recorded for its name (none where two are), which advisories() asks
 // rather than look one up; a vendored one with `vendoredIn`, its hosts, and `vendoredOnly`, whether that's all of it.
-// A GitHub repo any record of which, in any file and any spelling, stamps it private is `private: true` everywhere.
+// A GitHub repo any of the files stamps private (stampedRepos) is `private: true` everywhere.
 export function collectPackages(files) {
   const byKey = new Map() // packageKey -> { pkg, hosts, only }
   const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
-  const stamped = new Set() // the GitHub repos stamped private, in lowercase, as GitHub takes a name in any case
+  const stamped = new Set() // stampedRepos of every file
   for (const file of files) {
-    for (const { github, vendoredIn, private: isPrivate, ...pkg } of collectPackagesFromFile(file)) {
-      if (isPrivate) stamped.add(pkg.name.toLowerCase())
+    const { packages, stamped: ofFile } = packagesOf(file)
+    for (const repo of ofFile) stamped.add(repo)
+    for (const { github, vendoredIn, private: _private, ...pkg } of packages) {
       const entry = upsert(byKey, packageKey(pkg, vendoredIn), () => ({ pkg, hosts: new Set(), only: true }))
       if (vendoredIn === undefined) entry.only = false
       else entry.hosts.add(vendoredIn)
