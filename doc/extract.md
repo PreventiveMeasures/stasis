@@ -36,16 +36,30 @@ records none).
 Without any stasis package installed, the repository's
 [`scripts/stasis-extract.mjs`](../scripts/stasis-extract.mjs) writes what
 `stasis extract --lock=none` writes, in one file with only Node's builtins:
-`node scripts/stasis-extract.mjs [--output=path/to/dir] path/to/bundle.stasis.code.br`.
+`node scripts/stasis-extract.mjs [--output=path/to/dir] path/to/(bundle.stasis.code.br|name.stasis.tgz)`.
 It reads only what decides what is written (the scope, the files, their formats and
 execute bits), so it checks nothing else of the bundle, and it takes v1 bundles only. It has no lockfile support: it refuses
 an output dir holding a `stasis.lock.json`, or, for a `<name>.stasis.code.br`
-bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. As
+or `<name>.stasis.tgz` bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. As
 `stasis extract` does, it refuses a bundle carrying a file of a name no bundle
 carries, a `stasis.lock.json` or `<name>.stasis.lock.json`, a package manager's
 hook or config, a Yarn Plug'n'Play file or `.git` (see [Untrusted input](#untrusted-input)), naming it:
 `extract: the bundle carries a forbidden file: node_modules/dep/.pnpmfile.cjs`. It is
 not published in any package.
+
+It reads a `.stasis.tgz`, told by its name alone as `stasis extract` tells one,
+with node:zlib and a tar reader of its own, as strictly as stasis reads one: each
+gzip member and then zeros alone (a tar of at most 1 GiB); each tar header's
+checksum, its body padded with zeros, then the two zero blocks of the end marker
+and zeros alone after them; regular files and directories alone, named by their
+header (with its ustar prefix), a GNU long name (`L`) or a pax header's `path`
+(`x`, whose times and owners it passes over and any other record of which it
+refuses), with no name twice or inside a file; anything else, a link, a device,
+a global or sparse header, refused. It then holds the tar to its
+`stasis.lock.json`: exactly the files it attests, each of the bytes its sha512
+integrity is of, the execute bit it attests, and code as UTF-8; no directory
+capture, nor content for a `stat:*` record. Where stasis takes them, it refuses a
+tar repeating an entry as it was, a pax record but those, and a global header.
 
 ## What it writes
 
