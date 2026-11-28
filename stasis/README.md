@@ -26,6 +26,7 @@ Lockfile can attest the bundle in a readable form, but that's not required - bun
 | Asserts only, files are read from disk | Loads or asserts (can be used as a lockfile)|
 | Modes: `add`, `replace`, `frozen`, `ignore` | Modes: `load`, `add`, `replace`, `frozen`, `ignore` |
 
+The main difference between lockfiles and bundles is that lockfiles contain integrities, and bundles contain full content.\
 See [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md).
 
 Both can be run in full scope (default) or just in `node_modules` scope.
