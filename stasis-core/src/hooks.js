@@ -20,32 +20,32 @@ const CJS_FORMATS = new Set(['commonjs', 'commonjs-typescript'])
 function assertNodeFormat(format, url) {
   if (NODE_FORMATS.has(format)) return
   if (SOURCE_LANGUAGE_FORMATS.has(format)) {
-    throw new Error(`[stasis] cannot execute a '${format}' bundle: ${format} bundles are produced for external analysis, not for 'stasis run --bundle=load' (${url})`)
+    throw new Error(`[stasis] cannot execute a '${format}' bundle (${url})`)
   }
   if (NATIVE_BUILD_FORMATS.has(format)) {
-    throw new Error(`[stasis] cannot execute a '${format}' file: native build inputs (podspec/gradle/Java/Kotlin/ObjC++/...) are attested for the CocoaPods/Gradle toolchain, not executable by Node (${url})`)
+    throw new Error(`[stasis] cannot execute a '${format}' file: a native build input (${url})`)
   }
   if (STYLESHEET_FORMATS.has(format)) {
-    throw new Error(`[stasis] cannot import a stylesheet ('${format}'): CSS is for a bundler's CSS loader (webpack's css-loader, Next.js, esbuild), not executable by Node (${url})`)
+    throw new Error(`[stasis] cannot import a stylesheet ('${format}') (${url})`)
   }
   if (RESOURCE_FORMATS.has(format)) {
-    throw new Error(`[stasis] cannot import a resource file ('${format}'): asset content is not executable JavaScript. Read it with fs (or your bundler's asset loader) instead (${url})`)
+    throw new Error(`[stasis] cannot import a resource file ('${format}'): read it with fs (${url})`)
   }
   if (format === 'patch') {
-    throw new Error(`[stasis] cannot execute a 'patch' file: a unified diff is applied by a patch step (pnpm patchedDependencies, patch-package, a build script), not run by Node (${url})`)
+    throw new Error(`[stasis] cannot execute a 'patch' file (${url})`)
   }
   if (format === 'directory') {
-    throw new Error(`[stasis] cannot import a directory listing ('directory'): a captured fs.readdirSync result is not executable JavaScript. Read it with fs.readdirSync instead (${url})`)
+    throw new Error(`[stasis] cannot import a directory listing ('directory'): read it with fs.readdirSync (${url})`)
   }
   // With no format, as an older bundle carries the code Metro builds.
   if (format === undefined || GENERIC_FORMATS.has(format)) {
     const carried = format === undefined ? 'with no format' : `as '${format}'`
-    throw new Error(`[stasis] cannot execute '${url}': the bundle carries it ${carried}, as it carries the code Metro builds from source, which is for Metro, not Node`)
+    throw new Error(`[stasis] cannot execute '${url}': the bundle carries it ${carried}, for Metro`)
   }
   if (STAT_FORMATS.has(format)) {
-    throw new Error(`[stasis] cannot import '${url}': the bundle carries only a payload-free stat record ('${format}', an fs.lstatSync/statSync capture attesting existence and kind) -- not the file's content. Capture a run that reads or imports it to bundle its bytes.`)
+    throw new Error(`[stasis] cannot import '${url}': the bundle carries only a payload-free stat record ('${format}')`)
   }
-  throw new Error(`[stasis] cannot execute '${url}': attested format '${format}' is not a Node loader format. The bundle may be tampered, produced by a newer stasis, or built for a non-Node consumer.`)
+  throw new Error(`[stasis] cannot execute '${url}': attested format '${format}' is not a Node loader format`)
 }
 
 // node:59666: restores require.cache/require.extensions the ESM->CJS translator's require omits.
@@ -349,8 +349,7 @@ function assertInfraMatchesBundle(url) {
   if (loaded === undefined) { infra.delete(url); return } // resolved but never loaded: the hooks will serve it
   const executed = Buffer.from(sourceOrDisk(loaded.source, url))
   if (!executed.equals(Buffer.from(state.getFile(url).source))) {
-    throw new Error(`[stasis] cannot serve '${url}' from the bundle: a preload already executed it from disk ` +
-      'before the entry, and those bytes differ from the attested ones -- refusing the divergent cached instance')
+    throw new Error(`[stasis] cannot serve '${url}' from the bundle: a preload already executed it from disk, with other bytes`)
   }
 }
 
@@ -551,8 +550,7 @@ function patchCjsResolution() {
     // An attested source the load hook never served ran from DISK: fail closed, before anything trusts the run.
     if (resolvedUrl !== undefined && state.config.loadBundle
         && !servedFromBundle.has(resolvedUrl) && state.isBundledSource(resolvedUrl)) {
-      throw new Error(`[stasis] '${resolvedUrl}' executed from disk, bypassing the attested bundle -- a require() pipeline ` +
-        'transplanted by a preload (e.g. tsx compiling CJS TypeScript) cannot serve bundle bytes and is refused under --bundle=load')
+      throw new Error(`[stasis] '${resolvedUrl}' executed from disk, bypassing the attested bundle (a preload's require() pipeline)`)
     }
     return result
   }

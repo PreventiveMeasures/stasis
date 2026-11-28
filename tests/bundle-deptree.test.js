@@ -96,8 +96,8 @@ describe('stasis bundle --deptree usage', { concurrency: 4 }, () => {
     writeTree(tmp, { 'a.js': '' })
     const metro = ['bundle', '--deptree', '--metro', '--platforms=ios']
     await Promise.all([
-      refused(t, [...metro, '--babel', 'a.js'], tmp, /^Error: --babel can't be combined with --deptree \(it runs the project's Babel config from disk, where --deptree installs nothing\)\n/u),
-      refused(t, [...metro, '--metro-resolver', 'a.js'], tmp, /^Error: --metro-resolver can't be combined with --deptree \(it runs the project's metro-resolver from disk, where --deptree installs nothing\)\n/u),
+      refused(t, [...metro, '--babel', 'a.js'], tmp, /^Error: --babel can't be combined with --deptree\n/u),
+      refused(t, [...metro, '--metro-resolver', 'a.js'], tmp, /^Error: --metro-resolver can't be combined with --deptree\n/u),
     ])
   }))
 

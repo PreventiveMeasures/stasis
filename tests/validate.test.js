@@ -1200,7 +1200,7 @@ test('validate: own code, a lockfile or the patches the bundle holds read of a c
     ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n', 'patches/ms@2.1.3.patch': MS_PATCH } }],
     ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\nTWO\nthree\n' } }],
   ]) })
-  const refused = { name: 'ValidateError', code: 'commit-not-in-history', message: `${fork} is in the history of no branch or tag of org/repo (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own` }
+  const refused = { name: 'ValidateError', code: 'commit-not-in-history', message: `${fork} is in the history of no branch or tag of org/repo: give --sha= a commit of its own` }
   await t.assert.rejects(validate(file, { client: repoClient(files), fetch: upstream() }), refused)
   await t.assert.rejects(validate(file, { client: repoClient(files), sha: fork, fetch: upstream() }), refused, 'one given, too')
   await t.assert.rejects(validate(file, { client: repoClient(files), own: false, fetch: upstream() }), refused, 'its lockfile read there')

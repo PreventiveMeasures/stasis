@@ -73,15 +73,15 @@ export const nonEmpty = (list) => Array.isArray(list) && list.length > 0
 export function checkCombinations(prefix, { metro, conditions, mainFields, platforms, metroResolver, babel, babelAliases, typescript, tsconfig }, partial = false) {
   const refusal = [
     [tsconfig !== undefined && !typescript && !partial, '--tsconfig is only valid with --typescript'],
-    [metro && nonEmpty(conditions), "--conditions can't be combined with --metro (it sets its own conditions)"],
-    [metro && mainFields !== undefined, "--mainFields can't be combined with --metro (it sets its own mainFields)"],
-    [metro && !nonEmpty(platforms) && !partial, '--metro requires --platforms (e.g. --platforms=ios,android)'],
+    [metro && nonEmpty(conditions), "--conditions can't be combined with --metro"],
+    [metro && mainFields !== undefined, "--mainFields can't be combined with --metro"],
+    [metro && !nonEmpty(platforms) && !partial, '--metro requires --platforms'],
     [!metro && nonEmpty(platforms) && !partial, '--platforms is only valid with --metro'],
     [metroResolver && !metro, '--metro-resolver is only valid with --metro'],
     [babel && !metro, '--babel is only valid with --metro'],
     [babelAliases !== undefined && !metro && !partial, '--babel-aliases is only valid with --metro'],
-    [babelAliases !== undefined && babel, "--babel-aliases can't be combined with --babel (both set the import aliases)"],
-    [typescript && metroResolver, "--typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)"],
+    [babelAliases !== undefined && babel, "--babel-aliases can't be combined with --babel"],
+    [typescript && metroResolver, '--typescript is not supported with --metro-resolver'],
   ].find(([refused]) => refused)
   if (refusal) throw new Error(`${prefix}${refusal[1]}`)
 }
@@ -150,26 +150,26 @@ function buildOptions(values, lang) {
   }
   options.cargoFeatures = parseFeatureList(values['cargo-features'] ?? [])
   if (values['cargo-features'] !== undefined && options.cargoFeatures.length === 0) {
-    throw new Error('--cargo-features must list at least one feature (e.g. --cargo-features=serde,app/tls)')
+    throw new Error('--cargo-features must list at least one feature')
   }
   options.cargoTarget ??= null
   if (options.cargoTarget !== null && !/^[\w.-]+$/u.test(options.cargoTarget)) {
-    throw new Error('--cargo-target must be a target triple or "host" (e.g. --cargo-target=aarch64-apple-darwin)')
+    throw new Error('--cargo-target must be a target triple or "host"')
   }
   if (scope && !SCOPES.has(scope)) throw new Error('--scope must be node_modules or full')
   if (scope !== undefined && scope !== 'full' && (values.mainFields !== undefined || metro)) {
-    throw new Error(`--scope=${scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
+    throw new Error(`--scope=${scope} is not supported with --mainFields or --metro`)
   }
-  options.conditions = listFlag(values.conditions, '--conditions must list at least one condition name (e.g. --conditions=react-native,browser)') ?? []
+  options.conditions = listFlag(values.conditions, '--conditions must list at least one condition name') ?? []
   // --metro parses JSX and Flow, as Metro's Babel does in every file.
   options.jsx ||= metro
   options.flow ||= metro
-  options.mainFields = listFlag(values.mainFields, '--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
+  options.mainFields = listFlag(values.mainFields, '--mainFields must list at least one field')
   // A platform name becomes an edge key, so no '/' (parsers reject it) or '*' (a reserved placeholder).
   for (const p of options.platforms) {
     if (p === '*' || p.includes('/')) throw new Error(`invalid --platforms value '${p}' (a platform name can't contain '/' or be '*')`)
   }
-  options.resources = listFlag(values.resources, '--resources must list at least one extension or filename (e.g. --resources=png,svg)')
+  options.resources = listFlag(values.resources, '--resources must list at least one extension or filename')
   parseResourcesOption('--resources', options.resources) // checked here, for a clean usage error
   checkCombinations('', options)
   if (values.define !== undefined) options.define = parseDefineFlags(null, values.define)
@@ -182,7 +182,7 @@ function outputOptions(values, { js, sol, jsAndSol }) {
   if (deptree && !js && !sol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
   // The CONSENT_FLAGS that run a program of the project's from disk, where --deptree installs nothing.
   for (const flag of deptree ? ['babel', 'metro-resolver'] : []) {
-    if (values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${CONSENT_FLAGS.get(flag)} from disk, where --deptree installs nothing)`)
+    if (values[flag]) throw new Error(`--${flag} can't be combined with --deptree`)
   }
   const brotliQuality = values['brotli-quality'] === undefined ? undefined : parseBrotliQuality('--brotli-quality', values['brotli-quality'])
   const add = Boolean(values.add)
@@ -229,7 +229,7 @@ function configDefine(config) {
   const entries = isPlainObject(config.entries) ? config.entries : {}
   const own = Object.keys(entries).find((entry) => isPlainObject(entries[entry]) && Object.hasOwn(entries[entry], 'define'))
   if (own !== undefined) {
-    throw new Error(`${what} can't be combined with entries ${JSON.stringify(own)}'s define: give every entry's in define, or each entry's in its own options`)
+    throw new Error(`${what} can't be combined with entries ${JSON.stringify(own)}'s define`)
   }
   return flags
 }
@@ -400,7 +400,7 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
     if (differing !== undefined) {
       const set = build.options[differing]
       const as = comparable(differing, set) === comparable(differing, DEFAULT_OPTIONS[differing]) ? `without --${OPTION_FLAGS[differing]}` : `with ${optionText(differing, set)}`
-      throw new Error(`${name}: ${optionText(differing, options[differing])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${as}: an entry it names is built with its options there`)
+      throw new Error(`${name}: ${optionText(differing, options[differing])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${as}`)
     }
     return build
   })

@@ -1154,7 +1154,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
     const pinsSubmodules = plan.packages.some((pkg) => pkg.ecosystem === 'github')
     ref = atCommit && (own || fromRepository || readsBeside || pinsSubmodules || fromDirectories || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
     if (ref === null) {
-      throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
+      throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()}: give --sha= a commit of its own`)
     }
   } catch (error) {
     const code = told(error)

@@ -40,7 +40,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
   const brotliQuality = brotliQualityOption(values['brotli-quality'], fail)
   const imports = values.import ?? []
-  if (imports.includes('')) fail('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
+  if (imports.includes('')) fail('Error: --import requires a module specifier')
   return {
     values,
     lock,
@@ -103,7 +103,7 @@ export async function addCli(argv, { label, fail }) {
   const lockfileOnly = argv.includes('--lockfile-only')
   const files = argv.filter((a) => a !== '--lockfile-only')
   if (files.length === 0) fail('Nothing to add: no file given')
-  if (files.some((a) => a.startsWith('-'))) fail('Error: add takes no option but --lockfile-only; its targets and resource allowlist come from stasis.config.json')
+  if (files.some((a) => a.startsWith('-'))) fail('Error: add takes no option but --lockfile-only')
   const { addCommand } = await import('./add.js')
   addCommand({ entries: files, lockfileOnly, logLabel: label })
 }

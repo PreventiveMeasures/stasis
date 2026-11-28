@@ -24,7 +24,7 @@ export class StasisRollup {
   constructor(options = {}, unsupported = undefined) {
     // Transforms run as ordinary rollup plugins after this one: refuse a port's esbuild-style bag, not drop it.
     assert.equal(unsupported, undefined,
-      'StasisRollup takes a single options argument -- there is no esbuild-style { loaders, transform } bag (run transforms as rollup plugins after this one)')
+      'StasisRollup takes a single options argument')
     this.#stasis = new PluginState('StasisRollup', 'rollup', ownOrResolvedState('StasisRollup', options))
     const { state } = this.#stasis
     if (!state) return // inert: rollup sees only `name`
@@ -42,9 +42,7 @@ export class StasisRollup {
     this.options = (inputOptions) => {
       if (typeof inputOptions.cache !== 'object' || inputOptions.cache === null) return null
       console.warn(
-        '[stasis] StasisRollup: ignoring the `cache` option for this build -- cached modules ' +
-        'bypass the stasis hooks, so their imports and bytes would go unattested at capture and ' +
-        'unverified at load'
+        '[stasis] StasisRollup: ignoring the `cache` option for this build'
       )
       return { ...inputOptions, cache: undefined }
     }
@@ -62,9 +60,7 @@ export class StasisRollup {
   // Rollup asset plugins read their files from disk in their own load hook, with no seam for attested bytes.
   #refuseResourceLoad(path) {
     throw new Error(
-      `StasisRollup: bundle=load can't serve resource '${path}' -- rollup asset plugins read ` +
-      'from disk directly, so attested replay is not possible; keep sources on disk and use a ' +
-      'capture/verify mode instead'
+      `StasisRollup: bundle=load can't serve resource '${path}'`
     )
   }
 
@@ -74,9 +70,7 @@ export class StasisRollup {
     const stripped = id.split(/[?#]/u, 1)[0]
     if (stripped !== id && existsSync(stripped)) {
       throw new Error(
-        `StasisRollup: can't attest suffixed module id '${id}' (the on-disk file '${stripped}' ` +
-        "with a '?'/'#' suffix) -- stasis can't persist suffixes; disable the plugin minting it " +
-        'or import the file directly'
+        `StasisRollup: can't attest suffixed module id '${id}' (the on-disk file '${stripped}' with a '?'/'#' suffix)`
       )
     }
   }

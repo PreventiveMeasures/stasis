@@ -696,12 +696,12 @@ test('readGitmodules reads what the library refuses submodule by submodule, warn
     [`${x}\turl = -oProxy=y\n`, [{ path: 'lib/x', url: 'https://github.com/o/x', branch: undefined }], [`x.url: twice, of which git's submodule commands read the first and git config the last, at line 4; ${lenient}`]],
     [`${x}\tpath = vendor/x\n`, [{ path: 'vendor/x', url: 'https://github.com/o/x', branch: undefined }, { path: 'lib/x', url: undefined, branch: undefined }], [
       `x.path: twice, of which git's submodule commands read the first and git config the last, at line 4; ${lenient}`,
-      '[submodule "x"]: path lib/x too, which git reads where it reads .gitmodules from a commit; still taking it as a dependency, unnamed',
+      '[submodule "x"]: path lib/x too; taking it as an unnamed dependency',
     ]],
     [`${x}[submodule "x"]\n\tpath = ./vendor/x/\n`, [{ path: 'vendor/x', url: undefined, branch: undefined }, { path: 'lib/x', url: undefined, branch: undefined }], [
       `x: a second section, at line 4, where git writes one; ${lenient}`,
       'x.path: "./vendor/x/" is not a relative path in normal form; still taking vendor/x as a dependency, unnamed',
-      '[submodule "x"]: path lib/x too, which git reads where it reads .gitmodules from a commit; still taking it as a dependency, unnamed',
+      '[submodule "x"]: path lib/x too; taking it as an unnamed dependency',
     ]],
     // A branch or url that doesn't read is dropped. A path that doesn't fails closed: its directory,
     // inside the repository, is still a dependency (unnamed); one outside it, the submodule is dropped.

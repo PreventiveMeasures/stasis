@@ -21,7 +21,7 @@ export function loadMinimatch(what) {
   try {
     version = require(`${MINIMATCH}/package.json`).version
   } catch (cause) {
-    throw new Error(`${needs}; install it (e.g. \`npm i ${MINIMATCH}@${MINIMATCH_MAJOR}\`)`, { cause })
+    throw new Error(`${needs}; install it`, { cause })
   }
   // Another package's, found where the optional one isn't installed.
   if (version.split('.')[0] !== MINIMATCH_MAJOR) throw new Error(`${needs}, not ${version}`)

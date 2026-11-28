@@ -26,7 +26,7 @@ const fileCount = (artifact) => artifact.modules.values().reduce((n, { files }) 
 
 function readAddConfig(baseDir) {
   const cfg = readJson(join(baseDir, CONFIG_FILE))
-  if (cfg === null) throw new Error(`add requires a ${CONFIG_FILE} (its bundleFile, resourcesBundleFile, and resources are all optional)`)
+  if (cfg === null) throw new Error(`add requires a ${CONFIG_FILE}`)
   const resources = parseResourcesOption(CONFIG_FILE, cfg.resources)
   if (cfg.brotliQuality !== undefined && !isBrotliQuality(cfg.brotliQuality)) {
     throw new Error(`${CONFIG_FILE}: brotliQuality must be an integer 0..11 (got ${JSON.stringify(cfg.brotliQuality)})`)

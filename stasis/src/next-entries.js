@@ -42,7 +42,7 @@ function pageExtensionsOf(configFile, label, host) {
   const take = (value) => {
     const list = value.type === 'ArrayExpression' ? value.elements.map(literalSpec) : []
     if (list.length === 0 || !list.every((ext) => ext && !/[/\\]/u.test(ext))) {
-      throw new Error(`${label} sets pageExtensions other than as a list of extensions (at offset ${value.start}), which can't be read without running it: name the app's entries instead`)
+      throw new Error(`${label} sets pageExtensions other than as a list of extensions (at offset ${value.start}): name the app's entries instead`)
     }
     lists.push(list)
   }
@@ -53,7 +53,7 @@ function pageExtensionsOf(configFile, label, host) {
     if (node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' && keyName(node.left.property, node.left.computed) === 'pageExtensions') take(node.right)
   })
   const [first, ...rest] = lists
-  if (rest.some((list) => list.join('\0') !== first.join('\0'))) throw new Error(`${label} sets pageExtensions to different lists, which can't be told apart without running it: name the app's entries instead`)
+  if (rest.some((list) => list.join('\0') !== first.join('\0'))) throw new Error(`${label} sets pageExtensions to different lists: name the app's entries instead`)
   return first ?? DEFAULT_PAGE_EXTENSIONS
 }
 
@@ -98,7 +98,7 @@ export function nextAppFiles(name, configFile, { host = diskHost, shown = (path)
   const pagesDir = findDir(host, dir, 'pages')
   if (appDir === undefined && pagesDir === undefined) return []
   if (appDir !== undefined && pagesDir !== undefined && dirname(appDir) !== dirname(pagesDir)) {
-    throw new Error(`${name}: ${shown(configFile)}: its app's pages and app directories are not in the same directory (${shown(pagesDir)}, ${shown(appDir)}), which Next refuses`)
+    throw new Error(`${name}: ${shown(configFile)}: its app's pages and app directories are not in the same directory (${shown(pagesDir)}, ${shown(appDir)})`)
   }
   const extensions = pageExtensionsOf(configFile, `${name}: ${shown(configFile)}`, host)
   const ext = `\\.(?:${extensions.map((e) => RegExp.escape(e)).join('|')})$`

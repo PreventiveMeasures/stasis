@@ -264,7 +264,7 @@ test("buildVfsBundle refuses stasis.config.json's lockfiles a tree can't be laid
     t.assert.deepStrictEqual(cache.calls, [], 'nothing fetched')
   }
   // A lockfile no tree is laid out of (yet).
-  await refused(configured({ ...TWO, 'ios/Podfile.lock': 'PODS: []\n' }, { lockfiles: ['pnpm-lock.yaml', 'ios/Podfile.lock'] }), {}, /^Error: buildVfsBundle: stasis\.config\.json's lockfiles names ios\/Podfile\.lock, which is none of pnpm-lock\.yaml, yarn\.lock, package-lock\.json, soldeer\.lock, the lockfiles a tree is laid out from$/u)
+  await refused(configured({ ...TWO, 'ios/Podfile.lock': 'PODS: []\n' }, { lockfiles: ['pnpm-lock.yaml', 'ios/Podfile.lock'] }), {}, /^Error: buildVfsBundle: stasis\.config\.json's lockfiles names ios\/Podfile\.lock, which is none of pnpm-lock\.yaml, yarn\.lock, package-lock\.json, soldeer\.lock$/u)
   // One above the root, which the Vfs has not: none is taken for it.
   await refused(configured(TWO, { lockfiles: ['pnpm-lock.yaml', '../tools/package-lock.json'] }), {}, /^Error: stasis\.config\.json's lockfiles names \.\.\/tools\/package-lock\.json, which climbs out of \/'s root$/u)
   // One that is not there.
@@ -287,7 +287,7 @@ test("buildVfsBundle refuses stasis.config.json's lockfiles a tree can't be laid
   // A package manager given, which the lockfiles name in its place.
   await refused(configured(TWO, { lockfiles: LOCKFILES }), { packageManager: 'pnpm' }, /^Error: buildVfsBundle: packageManager is given, and stasis\.config\.json's lockfiles names the lockfiles to lay out$/u)
   // lazy, which a Soldeer tree can't be.
-  await refused(configured({ ...TWO, ...under('contracts', SOLDEER) }, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'] }), { lazy: true }, /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; soldeer's is not$/u)
+  await refused(configured({ ...TWO, ...under('contracts', SOLDEER) }, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'] }), { lazy: true }, /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, not soldeer$/u)
   // Malformed.
   await refused(configured(TWO, { lockfiles: [] }), {}, /^TypeError: buildVfsBundle: stasis\.config\.json: lockfiles must be a non-empty array of paths$/u)
 })

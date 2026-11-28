@@ -22,12 +22,11 @@ const { mkdirSync, rmSync, writeFileSync } = fs
 
 const VERSION = corePackage.version
 const CAN_OBSERVE_EXECUTE_BITS = canObserveExecuteBits()
-const REBUNDLE = 'Re-bundle with the current stasis or `bundle=replace` against a v0-free starting point to upgrade.'
 
 // A .stasis.tgz as stasis's run-archived.js reads it; a tgz under another name, none.
 function servedBundleOf(bytes, path) {
   if (isTgzName(path)) {
-    assert.ok(globalThis[ARCHIVED], `stasis: ${path} is a .stasis.tgz, which \`stasis run\` reads (stasis-core runs a stasis.code.br)`)
+    assert.ok(globalThis[ARCHIVED], `stasis: ${path} is a .stasis.tgz, which only \`stasis run\` reads`)
     return globalThis[ARCHIVED](bytes, path)
   }
   assert.ok(!isGzip(bytes), `stasis: ${misnamedTgz(path)}`)
@@ -189,7 +188,7 @@ export class State {
 
     // The top-level package.json by default; a stasis.config.json opts a dir in.
     this.root = potentialRoots.at(-1)
-    assert.ok(this.root, `stasis: no package.json found at or above ${resolve(root)}; run stasis from within a project`)
+    assert.ok(this.root, `stasis: no package.json found at or above ${resolve(root)}`)
 
     // An explicit lockFile suppresses the per-rootDir probe, so a stale project-root lockfile can't shadow it.
     const explicitLockPath = this.config.lockFile
@@ -228,12 +227,10 @@ export class State {
       throw new Error('stasis.lock.json missing, can not use sources')
     }
     if (sources && this.#absorbsBundles) {
-      const bundle = this.#parseServedBundle(sources, sourcesPath, 'stasis run',
-        'Re-bundle with the current stasis (`stasis bundle`) or `stasis run --bundle=replace` against a v0-free starting point to upgrade.')
+      const bundle = this.#parseServedBundle(sources, sourcesPath)
       // assertEntry passes anything on an empty set: else any bundled file could run as the root.
       assert.ok(!this.config.full || bundle.entries.size > 0 || !bundle.hasCode,
-        `${sourcesPath}: a full-scope bundle carrying code must declare an entry to run ` +
-        `(an add-only attestation has none; run a bundle built by \`stasis bundle\`/\`stasis run\`)`)
+        `${sourcesPath}: a full-scope bundle carrying code must declare an entry to run`)
       this.#absorbBundle('code', bundle)
     }
     this.#absorbResourcesBundleFile()
@@ -306,7 +303,7 @@ export class State {
       const added = account && !account.locked ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))
       if (added === undefined) continue
       const fields = ATTESTED_METADATA.filter((field) => module[field] !== undefined).join(' and ')
-      assert.fail(`module '${dir}': its ${fields} is recorded of the files it was read with, not of ${moduleFileKey(dir, added)}, which this run adds and no install record tells of: record it anew (lock = replace)`)
+      assert.fail(`module '${dir}': its ${fields} is recorded of the files it was read with, not of ${moduleFileKey(dir, added)}, which this run adds: record it anew (lock = replace)`)
     }
   }
 
@@ -340,9 +337,9 @@ export class State {
   }
 
   // v0 has no per-file formats or import map: serving one widens the trust boundary.
-  #parseServedBundle(bytes, path, runner = 'stasis run', remedy = REBUNDLE) {
+  #parseServedBundle(bytes, path, runner = 'stasis run') {
     const bundle = servedBundleOf(bytes, path)
-    assert.equal(bundle.version, Bundle.VERSION, `${runner} requires a v1 bundle; ${path} is v${bundle.version}. ${remedy}`)
+    assert.equal(bundle.version, Bundle.VERSION, `${runner} requires a v1 bundle; ${path} is v${bundle.version}: re-bundle it`)
     assert.equal(bundle.config.scope, this.config.scope)
     this.#assertLoaded(bundle, path)
     return bundle
@@ -697,8 +694,7 @@ export class State {
     const module = upsert(this.modules, dir, () => moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, files: Object.create(null) }))
     if (module.name !== name || module.version !== version) {
       // Message built only on failure: addFile is hot, and the mismatch is a migration/drift event.
-      const hint = (module.version == null) === (version == null) ? '' : ' -- an artifact from an older stasis may record a ' +
-        'placeholder version for a workspace package without one; regenerate it (lock=replace / bundle=replace)'
+      const hint = (module.version == null) === (version == null) ? '' : '; regenerate it (lock=replace / bundle=replace)'
       assert.fail(`module identity mismatch for '${dir}': artifact records ` +
         `'${module.name}@${module.version ?? '(none)'}', package.json has '${name}@${version ?? '(none)'}'${hint}`)
     }
@@ -884,7 +880,7 @@ export class State {
     const path = fileURLToPath(url)
     const options = this.#readFileOptions(path, source)
     if (options === undefined) {
-      throw new Error(`addFsFile: ${path} is neither code nor a declared resource; add its extension or filename to the resources allowlist or stop reading it`)
+      throw new Error(`addFsFile: ${path} is neither code nor a declared resource; add its extension or filename to the resources allowlist`)
     }
     this.addFile(url, { source, ...options, fsRead: true })
   }
@@ -1031,8 +1027,7 @@ export class State {
     let source = (Bundle.isResourceFormat(format) ? this.resources : this.sources).get(file)
     if (source === undefined) {
       if (isStatFormat(format)) {
-        throw new Error(`stasis: only a payload-free stat record ('${format}') is attested for ${url} -- the capture ` +
-          "stat'd this path but never read or imported it, so the bundle has no bytes to serve")
+        throw new Error(`stasis: only a payload-free stat record ('${format}') is attested for ${url}`)
       }
       throw new Error(`stasis: file not attested in bundle: ${url}`)
     }
@@ -1127,8 +1122,8 @@ export class State {
     if (typeof file !== 'string') {
       if (!file.has(platform)) {
         const message = platform === undefined
-          ? `Resolution of '${spec}' from ${parent} is platform-specific (a --metro multi-platform bundle, which is Metro's to build); plain node has no platform to pick one by`
-          : `Resolution of '${spec}' from ${parent} is platform-specific and records no '${platform}' target (only ${[...file.keys()].join(', ')}): the bundle wasn't made for '${platform}'`
+          ? `Resolution of '${spec}' from ${parent} is platform-specific (a --metro multi-platform bundle)`
+          : `Resolution of '${spec}' from ${parent} is platform-specific and records no '${platform}' target (only ${[...file.keys()].join(', ')})`
         throw Object.assign(new Error(message), { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
       }
       file = file.get(platform)
@@ -1536,8 +1531,7 @@ export class State {
 
     assert.ok(this.#preloadRoot && this.#keyOf(this.#preloadRoot) !== undefined,
       `state.write() has imports referencing un-captured stasis-core files but no usable preloadRoot ` +
-      `(preloadRoot=${this.#preloadRoot ?? 'unset'}). The live load hook missed an in-scope target -- ` +
-      `investigate rather than silently patch: ${stasisCoreMissing.slice(0, 3).join(', ')}`)
+      `(preloadRoot=${this.#preloadRoot ?? 'unset'}): ${stasisCoreMissing.slice(0, 3).join(', ')}`)
 
     const PRELOAD_CONDITIONS = ['node', 'import', 'module-sync', 'node-addons']
     // Every stasis-core file already in sources too, to walk their transitive imports.

@@ -96,8 +96,7 @@ function metroDefaultSerializer() {
     }
   }
   throw new Error(
-    "StasisMetro: couldn't load Metro's default serializer (tried metro/src and " +
-    'metro/private). Pass your existing customSerializer to withStasis()/customSerializer() instead.',
+    "StasisMetro: couldn't load Metro's default serializer (tried metro/src and metro/private)",
     { cause }
   )
 }
@@ -121,10 +120,8 @@ export class StasisMetro {
     if (state && (state.config.writeLockfile || state.config.writeBundle)) {
       assert.ok(
         state.config.childProcess,
-        'StasisMetro: child-process capture must be enabled -- Metro transforms in worker processes, ' +
-        `and without it the toolchain they load (${WORKER_TOOLCHAIN}) ` +
-        'is never attested. Enable it: `stasis run --child-process ...`, EXODUS_STASIS_CHILD_PROCESS=1, ' +
-        'or "childProcess": true in stasis.config.json.'
+        'StasisMetro: child-process capture must be enabled (--child-process, EXODUS_STASIS_CHILD_PROCESS=1, ' +
+        'or "childProcess": true in stasis.config.json)'
       )
       // Opt the children into the loader's SIGTERM shard flush, else jest-worker's forceExit drops a shard. Keyed on
       // the preload's mode, which the shard channel follows; `||=` honours an explicit opt-out.
@@ -169,10 +166,8 @@ export class StasisMetro {
     // Nothing here can detect a cache hit, so say it once rather than silently under-attest.
     if (!this.#ownsConfig && this.needsTransforms) {
       console.warn(
-        "[stasis] StasisMetro: wired without withStasis(), so Metro's transform cache is outside " +
-        `stasis's control -- a cached transform skips the worker and the toolchain it loads ` +
-        `(${WORKER_TOOLCHAIN}) goes unattested. Wrap your config in withStasis(), or set ` +
-        '`cacheStores: []` yourself for every stasis build.'
+        "[stasis] StasisMetro: wired without withStasis(), so Metro's transform cache may leave " +
+        `${WORKER_TOOLCHAIN} unattested: wrap your config in withStasis(), or set \`cacheStores: []\``
       )
     }
     this.#capture(graph, preModules)
@@ -363,7 +358,7 @@ export class StasisMetro {
     if (!inScope(state, fileURL(modPath))) return
     for (const file of metroAssetFiles(modPath, platform, (this.#bundleDirs ??= bundleDirHost(state)))) {
       if (read.includes(file)) continue
-      throw new Error(`StasisMetro: '${file}', ${what} as the bundle carries it, is gone -- Metro would build the asset without it under load; restore it`)
+      throw new Error(`StasisMetro: '${file}', ${what} as the bundle carries it, is gone; restore it`)
     }
   }
 
@@ -377,8 +372,7 @@ export class StasisMetro {
     const { source } = state.getFile(url)
     if (realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) return
     throw new Error(
-      `StasisMetro: '${file}', ${what}, differs on disk from the bundle -- ` +
-      'Metro\'s build reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
+      `StasisMetro: '${file}', ${what}, differs on disk from the bundle: restore it, or run with --fs`
     )
   }
 }
@@ -396,8 +390,7 @@ export function withStasis(config = {}, options = {}) {
   const stores = config.cacheStores
   if (active && (typeof stores === 'function' || stores?.length > 0)) {
     console.warn(
-      '[stasis] StasisMetro: ignoring the `cacheStores` in your Metro config for this build -- a cached ' +
-      'transform skips the worker, leaving the toolchain it loads unattested'
+      '[stasis] StasisMetro: ignoring the `cacheStores` in your Metro config for this build'
     )
   }
   // Metro hands `transformer` to each worker's transformer as is.

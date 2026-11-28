@@ -193,8 +193,7 @@ export class StasisEsbuild {
       }
       // But a stylesheet URL's own query and fragment, esbuild's suffix of it, which load mode reads off the specifier.
       assert.ok(res.suffix === '' || (CSS_RESOLVE_KINDS.has(args.kind) && res.suffix === urlSuffix(specifier)),
-        `StasisEsbuild: a sibling plugin set res.suffix='${res.suffix}' on '${specifier}'; ` +
-        `stasis can't persist suffixes to the bundle. Disable that plugin or drop suffix from its resolve result.`)
+        `StasisEsbuild: a sibling plugin set res.suffix='${res.suffix}' on '${specifier}', which stasis can't persist`)
 
       let kind = 'skip'
       if (res.namespace === 'file' && !res.external) {

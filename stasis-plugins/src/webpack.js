@@ -176,8 +176,7 @@ export class StasisWebpack {
     // watchRun fires only under compiler.watch(), before the first build, so this refuses the whole session.
     compiler.hooks.watchRun.tap('Stasis', () => {
       throw new Error(
-        'StasisWebpack: watch mode is not supported for capture -- ' +
-        'run a one-shot build (watch rebuilds would silently attest stale content)'
+        'StasisWebpack: watch mode is not supported for capture -- run a one-shot build'
       )
     })
 

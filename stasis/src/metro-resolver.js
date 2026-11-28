@@ -58,8 +58,7 @@ export function createMetroResolver({ projectDir, platform, sourceExts, mainFiel
   try {
     metroResolver = createRequire(join(projectDir, 'noop.js'))('metro-resolver')
   } catch (cause) {
-    throw new Error(`StasisMetroResolver: couldn't load 'metro-resolver' from ${projectDir}. --metro-resolver resolves through the `
-      + 'project\'s own Metro; install it (it ships with react-native/metro) or drop --metro-resolver to use the built-in resolver.', { cause })
+    throw new Error(`StasisMetroResolver: couldn't load 'metro-resolver' from ${projectDir}; install it or drop --metro-resolver`, { cause })
   }
   const resolve = createRnMetroResolver({
     host: metroHost(host, mainFields), sourceExts, assetExts, assetResolutions, mainFields, conditionNames, conditionsByPlatform,

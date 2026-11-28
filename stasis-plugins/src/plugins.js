@@ -123,7 +123,7 @@ export const ownOrResolvedState = (label, options) =>
   (options instanceof State ? options : resolvePluginState(label, options, process.cwd()).state)
 
 export const unsupportedExtension = (label, what) =>
-  `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
+  `${label}: unsupported extension for ${what}; add its extension or filename to the plugin's resources option`
 
 // Refuse non-UTF-8 code rather than silently encode it as a resource.
 export function assertCodeUtf8(label, path, source) {
@@ -151,7 +151,7 @@ export class PluginState {
 
   // Dedupe is by path, so a rebuild with new bytes would emit them while the bundle and lockfile keep the old ones.
   // -> `refusal` for each build after the first
-  startBuild(refusal = `${this.label}: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)`) {
+  startBuild(refusal = `${this.label}: watch/rebuild is not supported for capture -- run a one-shot build`) {
     this.#builds += 1
     if (this.#builds === 1) return undefined
     return refusal

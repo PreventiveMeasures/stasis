@@ -9,7 +9,7 @@ const KINDS = new Set(['lockfile', 'bundle'])
 function digestOf(kind, format, value, hash) {
   if (kind === 'lockfile') return value
   if (typeof hash !== 'function') {
-    throw new Error('diff: a `hash` function is required to compare a bundle (its bytes are re-hashed into a lockfile-style digest)')
+    throw new Error('diff: a `hash` function is required to compare a bundle')
   }
   return hash(format === 'resource:base64' ? Buffer.from(value, 'base64') : value)
 }

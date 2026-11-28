@@ -126,7 +126,7 @@ test('npm: fails, as npm does, past a package declaring workspaces that are no g
     t.assert.equal(lockfileRoot(host(workspaces), 'npm', '/mid/e'), '/', JSON.stringify(workspaces))
   }
   for (const workspaces of ['e', true, {}, { packages: 'e' }, [1]]) {
-    t.assert.throws(() => lockfileRoot(host(workspaces), 'npm', '/mid/e'), (err) => err.message === '/mid/package.json: workspaces: expected a sequence of globs, which npm fails without', JSON.stringify(workspaces))
+    t.assert.throws(() => lockfileRoot(host(workspaces), 'npm', '/mid/e'), (err) => err.message === '/mid/package.json: workspaces: expected a sequence of globs', JSON.stringify(workspaces))
   }
 })
 

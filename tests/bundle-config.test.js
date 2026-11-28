@@ -207,7 +207,7 @@ test('bundlePlan refuses flags for named entries, and naming only some', withTmp
     { message: "stasis.config.json's entries name index.js but not b.js: bundle either the entries it names or others, not both" })
   writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { metro: true } } } })
   t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readConfigEntries(tmp) }),
-    { message: 'stasis.config.json: entries "index.js": --metro requires --platforms (e.g. --platforms=ios,android)' })
+    { message: 'stasis.config.json: entries "index.js": --metro requires --platforms' })
 }))
 
 test('bundlePlan takes an option that runs the project\'s code from the config only with its flag as consent', withTmp((t, tmp) => {
@@ -548,12 +548,12 @@ test('bundlePlan parses --define, and builds entries whose defines differ apart'
   t.assert.deepStrictEqual(plan.define, { __DEV__: false, 'process.env.NODE_ENV': 'production', LEVEL: 2, TAG: null })
   t.assert.equal(bundlePlan({ cwd: tmp, entries: ['index.js'], values: {} }).define, undefined)
   const refused = (values, entries, message) => t.assert.throws(() => bundlePlan({ cwd: tmp, entries, values }), { message })
-  refused({ define: ['__DEV__'] }, ['index.js'], '--define must be KEY=VALUE (e.g. --define=__DEV__=false), not "__DEV__"')
-  refused({ define: ['=false'] }, ['index.js'], '--define must be KEY=VALUE (e.g. --define=__DEV__=false), not "=false"')
+  refused({ define: ['__DEV__'] }, ['index.js'], '--define must be KEY=VALUE, not "__DEV__"')
+  refused({ define: ['=false'] }, ['index.js'], '--define must be KEY=VALUE, not "=false"')
   refused({ define: ['process.env.NODE_ENV=production'] }, ['index.js'],
-    '--define\'s value for process.env.NODE_ENV must be JSON: a string, quoted (--define=process.env.NODE_ENV=\'"production"\'), a number, true, false or null, not "production"')
+    '--define\'s value for process.env.NODE_ENV must be JSON (a quoted string, a number, true, false or null), not "production"')
   refused({ define: ['__DEV__=[]'] }, ['index.js'], '--define\'s value for __DEV__ must be a string, number, boolean or null, not []')
-  refused({ define: ['process.env["X"]=1'] }, ['index.js'], '--define names an identifier or a dotted path of them (e.g. __DEV__, process.env.NODE_ENV), not "process.env[\\"X\\"]"')
+  refused({ define: ['process.env["X"]=1'] }, ['index.js'], '--define names an identifier or a dotted path of them, not "process.env[\\"X\\"]"')
   refused({ define: ['A=1', 'A=2'] }, ['index.js'], '--define gives A a value twice')
   refused({ define: ['A=1'] }, ['src/A.sol'], '--define is only valid for JS bundles')
 
@@ -568,7 +568,7 @@ test('bundlePlan parses --define, and builds entries whose defines differ apart'
     { message: "--define can't be given for index.js, whose options stasis.config.json's entries set: set it there" })
   writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { define: [] } } } })
   t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readConfigEntries(tmp) }),
-    { message: 'stasis.config.json: entries "index.js": --define must give at least one KEY=VALUE (e.g. --define=__DEV__=false)' })
+    { message: 'stasis.config.json: entries "index.js": --define must give at least one KEY=VALUE' })
 }))
 
 test('CLI: stasis bundle --define leaves out the imports of the branches it keeps from running', withTmp(async (t, tmp) => {
@@ -613,10 +613,10 @@ test("readConfigEntries gives every JS entry the config's own define, which no e
   }
   // An entry's own, whichever entry, and whatever it gives.
   refused({ define: '__DEV__=false', entries: { 'src/a.js': {}, 'src/b.js': { define: [] } } },
-    'stasis.config.json: define can\'t be combined with entries "src/b.js"\'s define: give every entry\'s in define, or each entry\'s in its own options')
+    'stasis.config.json: define can\'t be combined with entries "src/b.js"\'s define')
   refused({ define: { __DEV__: false } }, 'stasis.config.json: define must be a string or an array of strings')
-  refused({ define: [] }, 'stasis.config.json: define: --define must give at least one KEY=VALUE (e.g. --define=__DEV__=false)')
-  refused({ define: ['__DEV__=yes'] }, 'stasis.config.json: define: --define\'s value for __DEV__ must be JSON: a string, quoted (--define=__DEV__=\'"production"\'), a number, true, false or null, not "yes"')
+  refused({ define: [] }, 'stasis.config.json: define: --define must give at least one KEY=VALUE')
+  refused({ define: ['__DEV__=yes'] }, 'stasis.config.json: define: --define\'s value for __DEV__ must be JSON (a quoted string, a number, true, false or null), not "yes"')
 }))
 
 test("bundlePlan builds every JS entry with the config's own define, named in its entries or not, and refuses --define beside it", withTmp((t, tmp) => {

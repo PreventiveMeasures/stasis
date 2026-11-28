@@ -230,7 +230,7 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     const split = await runCli(['build', '--loader=.js:jsx', '--output=split.js', 'app.code.br'], { cwd: app })
     t.assert.notEqual(split.status, 0)
     t.assert.match(split.stderr, /Resolution of '\.\/lib\/where' from index\.js is platform-specific/u)
-    t.assert.match(split.stderr, /pass --metro=PLATFORM \(e\.g\. --metro=ios\)/u)
+    t.assert.match(split.stderr, /pass --metro=PLATFORM$/mu)
 
     // A platform the bundle wasn't made for.
     const web = await runCli(['build', '--loader=.js:jsx', '--metro=web', '--output=web.js', 'app.code.br'], { cwd: app })
@@ -247,7 +247,7 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     const none = await runCli(['build', '--format=cjs', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
     t.assert.notEqual(none.status, 0)
     t.assert.match(none.stderr, /No loader is configured for "\.png" files: img\/logo\.png/u)
-    t.assert.match(none.stderr, /--loader=\.png:NAME .*or with --metro=PLATFORM/u)
+    t.assert.match(none.stderr, /--loader=\.png:NAME, or with --metro=PLATFORM/u)
 
     const dataurl = await runCli(['build', '--format=cjs', '--loader=.png:dataurl', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
     t.assert.equal(dataurl.status, 0, dataurl.stderr)
@@ -370,7 +370,7 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     // The shared app's bundle carries no stasis.config.json, so nothing sets --metro.
     const noMetro = await runCli(['build', '--loader=.js:jsx', '--assets-dest=dist', '--output=nometro.js', 'app.code.br'], { cwd: app })
     t.assert.notEqual(noMetro.status, 0)
-    t.assert.match(noMetro.stderr, /--assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it/u)
+    t.assert.match(noMetro.stderr, /--assets-dest requires --metro=PLATFORM/u)
     const two = await runCli(['build', '--metro=ios,android', '--output=out.js', 'missing.code.br'], { cwd: tmpdir() })
     t.assert.notEqual(two.status, 0)
     t.assert.match(two.stderr, /--metro takes one platform to build for/u)

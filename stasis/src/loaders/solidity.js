@@ -306,7 +306,7 @@ export function expandSolidityEntries(baseDir, entries, host = diskHost) {
   }
   if (out.size === 0) {
     if (entries.every((e) => host.stat(join(baseDir, e)) === null)) throw new Error(`No such file or directory: ${entries[0]}`)
-    throw new Error(`No .sol files under ${named.map(shown).join(', ')} (a directory entry stands for the Solidity sources under it)`)
+    throw new Error(`No .sol files under ${named.map(shown).join(', ')}`)
   }
   return [...out]
 }

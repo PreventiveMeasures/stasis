@@ -73,10 +73,10 @@ export function parseResourcesOption(label, resources) {
     if (typeof entry !== 'string') throw new TypeError(`${label}: resources entry must be a string, got ${typeof entry}`)
     const clean = entry.toLowerCase().replace(/^\./, '')
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(clean)) {
-      throw new Error(`${label}: resources entry '${entry}' is not a valid extension or filename (use e.g. 'png' or 'LICENSE')`)
+      throw new Error(`${label}: resources entry '${entry}' is not a valid extension or filename`)
     }
     if (CODE_EXTENSIONS.has(clean)) {
-      throw new Error(`${label}: resources entry '${entry}' is a code extension; remove it (code extensions are always tracked)`)
+      throw new Error(`${label}: resources entry '${entry}' is a code extension; remove it`)
     }
     out.add(clean)
   }
@@ -109,7 +109,7 @@ export function parseExtraOption(label, extra) {
     if (typeof entry !== 'string' || entry === '') {
       throw new TypeError(`${label}: extra entry must be a non-empty string, got ${JSON.stringify(entry)}`)
     }
-    if (entry === '!') throw new Error(`${label}: extra entry '!' needs a pattern to exclude (e.g. '!ios/Pods')`)
+    if (entry === '!') throw new Error(`${label}: extra entry '!' needs a pattern to exclude`)
     if (relativeEscapes(normalize(unnegated(entry)))) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }

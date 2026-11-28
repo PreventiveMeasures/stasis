@@ -145,6 +145,6 @@ test('a .yarnclean needs the optional minimatch, refused before anything is inst
   const [status] = await once(child, 'close')
   t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderr).toString('utf8')}`)
   const out = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
-  t.assert.equal(out.refused, "A .yarnclean, which cleans the node_modules a lockfile lays out, needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)")
+  t.assert.equal(out.refused, "A .yarnclean, which cleans the node_modules a lockfile lays out, needs the optional 'minimatch' 10 dependency; install it")
   t.assert.deepStrictEqual(out.comments.toSorted(), [`${QDIR}/index.js`, `${QDIR}/lib.js`, 'src/a.js'], 'no pattern, nothing to match')
 })

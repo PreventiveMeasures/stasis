@@ -120,7 +120,7 @@ test('--generate=prisma skips, with a warning, a project it cannot generate for'
 
 const SKIPPED = 'stasis generates the "prisma-client" provider\'s alone'
 // The warning that b's schema's generator `name` isn't generated: skipped, and where `committed`, taken as committed.
-const notGenerating = (name, committed) => `[stasis] prisma: not generating /packages/b/prisma/schema.prisma's generator ${name}: ${SKIPPED}${committed === undefined ? '' : `, and takes its output, ${committed}, as committed, not as \`prisma generate\` would write it`}`
+const notGenerating = (name, committed) => `[stasis] prisma: not generating /packages/b/prisma/schema.prisma's generator ${name}: ${SKIPPED}${committed === undefined ? '' : `, and takes its output, ${committed}, as committed`}`
 // The workspace with Pothos's types beside b's client, as its docs lay them out for the `prisma-client` generator:
 // its `output` (none where null) and `extra` lines, b's source `index` where given, and `files` besides.
 const withPothos = ({ output = '../src/generated/pothos-types.ts', extra = '', index, files = {} } = {}) => workspace({ files: {
@@ -429,7 +429,7 @@ test("the schema is the Prisma config's, read without running it, else schema.pr
 test('the generator is held to what `prisma generate` takes', async (t) => {
   const twice = { 'prisma/schema.prisma': `${schema()}\ngenerator other {\n  provider = "prisma-client"\n  output   = "../src/generated/prisma"\n}\n` }
   await t.assert.rejects(clients(twice), /^Error: prisma: \/src\/generated\/prisma is the output of more than one generator$/u)
-  await t.assert.rejects(clients({ 'prisma/schema.prisma': schema({ output: '../node_modules/.prisma/client' }) }), /output \/node_modules\/\.prisma\/client is in node_modules, which is laid out from the lockfile alone$/u)
+  await t.assert.rejects(clients({ 'prisma/schema.prisma': schema({ output: '../node_modules/.prisma/client' }) }), /output \/node_modules\/\.prisma\/client is in node_modules$/u)
   await t.assert.rejects(clients({ 'prisma/schema.prisma': schema().replace('"postgresql"', '"nope"') }), /^Error: prisma: \/prisma\/schema\.prisma: /u)
   await t.assert.rejects(clients({ 'prisma/schema.prisma': schema({ extra: '\n  runtime = "browser"' }) }), /Unknown target runtime: "browser"/u)
   // Names the engine takes and the generator refuses.
