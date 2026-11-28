@@ -28,8 +28,7 @@ export const resolutionCommit = (resolution) => {
 }
 
 // As pnpm hashes a patch: a sha256 in hex of its text with its CRLFs as LFs, or as it is.
-export const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text].map((one) => hash('sha256', one)))
-export const isPatchOf = (text, patchHash) => patchHashes(text).has(patchHash)
+export const isPatchOf = (text, patchHash) => [text.replaceAll('\r\n', '\n'), text].some((one) => hash('sha256', one) === patchHash)
 
 export const patchIntegrity = (patchHash) => (/^[\da-f]{64}$/u.test(patchHash ?? '') ? hexIntegrity('sha256', patchHash) : undefined)
 

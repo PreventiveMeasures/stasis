@@ -19,7 +19,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity, sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { isPatchOf, lfShebang, nameAt, patchHashes, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
+import { isPatchOf, lfShebang, nameAt, STORE_HASH, resolutionCommit, yarnDirectory } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { MAX_TAR_BYTES, parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -383,20 +383,8 @@ const byProblem = (a, b) => KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind) || (a.
 const byPackage = (a, b) => STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) || byText(packageKey)(a, b)
 const pnpmPatchName = (name, version) => `${name.replace('/', '__')}@${version}.patch`
 
-function patchesOf(plan) {
-  const byHash = new Map()
-  const byName = new Map()
-  for (const [path, text] of plan.patches) {
-    const held = { path, text }
-    const name = posix.basename(path)
-    for (const hash of patchHashes(text)) if (!byHash.has(hash)) byHash.set(hash, held)
-    if (!byName.has(name)) byName.set(name, held)
-  }
-  return { byHash, byName, byPath: plan.patches }
-}
-
-// A bundle's patch is own code: refused where the repository holds it otherwise (`verdicts`).
-async function patchOf(held, pkg, files, locked, verdicts, recorded, recordedFile) {
+// A bundle's patch (of `patches`, the plan's) is own code: refused where the repository holds it otherwise (`verdicts`).
+async function patchOf(patches, pkg, files, locked, verdicts, recorded, recordedFile) {
   const lock = locked?.of(pkg.name, pkg.version)
   const hash = lock === undefined ? recorded : lock?.hash
   let patch
@@ -404,13 +392,15 @@ async function patchOf(held, pkg, files, locked, verdicts, recorded, recordedFil
   // Where it is found, from the bundle root, as a record's `file` names it.
   let file
   try {
-    // Of the bundle's of its hash, the one its copies record, where it holds that.
-    const own = hash !== undefined && held.byPath.get(recordedFile)
-    const bundled = own && isPatchOf(own, hash) ? { path: recordedFile, text: own }
-      : hash !== undefined ? held.byHash.get(hash) : lock === undefined && held.byName.get(pnpmPatchName(pkg.name, pkg.version))
+    // Of the bundle's of its hash, the one its copies record, where it holds that, else the first; of none known, the
+    // first of pnpm's name for it.
+    const own = hash !== undefined && patches.get(recordedFile)
+    const bundled = own && isPatchOf(own, hash) ? [recordedFile, own]
+      : hash !== undefined ? patches.entries().find(([, held]) => isPatchOf(held, hash))
+        : lock === undefined && patches.entries().find(([path]) => posix.basename(path) === pnpmPatchName(pkg.name, pkg.version))
     if (bundled) {
-      patch = { ...(hash !== undefined && { hash }), path: bundled.path, from: 'bundle' }
-      ;({ text, path: file } = bundled)
+      ;[file, text] = bundled
+      patch = { ...(hash !== undefined && { hash }), path: file, from: 'bundle' }
     } else if (lock?.path) {
       patch = { hash, path: lock.path, from: locked.from }
       file = lock.file
@@ -471,7 +461,6 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
   const { promise: verdicts, resolve: checked } = Promise.withResolvers()
 
   const told = []
-  const bundled = patchesOf(plan)
   const fetching = eachOf(units, async ({ pkg, locked }) => {
     const of = packageKey(pkg)
     const tellPackage = (status, more) => told.push({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version, files: pkg.files.length, status, ...more })
@@ -557,7 +546,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       else if (lock?.from === 'local') candidates = await Promise.all(lock.directories.map((dir) => locked.tree(dir)))
       else {
         published = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity ?? recordedIntegrity)
-        ;({ patch, patched, unverified: unverifiedPatch = false, file: patchFile } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedPatch, dirs.map((dir) => pkg.patchFiles.get(dir)).find(Boolean)) : {})
+        ;({ patch, patched, unverified: unverifiedPatch = false, file: patchFile } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(plan.patches, pkg, published, locked, verdicts, recordedPatch, dirs.map((dir) => pkg.patchFiles.get(dir)).find(Boolean)) : {})
         candidates = patched && !unverifiedPatch ? [patched, published] : [published]
       }
     } catch (error) {
@@ -579,14 +568,14 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     let missed = 0
     let asPatched = 0
     let notVerified = 0
-    for (const copy of copies.values()) {
-      if (aliased.includes(copy[0].dir)) {
+    for (const [dir, copy] of copies) {
+      if (aliased.includes(dir)) {
         notVerified += copy.length
         continue
       }
       const missing = (candidate) => copy.filter((file) => !matches(file, candidate))
-      const patching = published !== undefined && Boolean(lockedPatch || pkg.recorded.has(copy[0].dir))
-      const heldTo = pinned ? [pinned.get(copy[0].dir)] : patched && patching ? [patched] : candidates
+      const patching = published !== undefined && Boolean(lockedPatch || pkg.recorded.has(dir))
+      const heldTo = pinned ? [pinned.get(dir)] : patched && patching ? [patched] : candidates
       // The first it is a copy of, else the first.
       const held = heldTo.find((candidate) => missing(candidate).length === 0) ?? heldTo[0]
       let misses = missing(held)
@@ -859,7 +848,7 @@ export function lockedBy(lockfiles) {
   // beside it (`../tools`), none, as no path of the bundle climbs out of its root.
   const above = (at) => at === '' || at.split('/').every((part) => part === '..')
   const depth = (at) => (at === '' ? 0 : above(at) ? -at.split('/').length : at.split('/').length)
-  const innermost = (of, dir) => of.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).reduce((inner, one) => (inner === undefined || depth(one.at) > depth(inner.at) ? one : inner), undefined)
+  const innermost = (of, dir) => of.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).toSorted((a, b) => depth(b.at) - depth(a.at))[0]
   const aloneOf = memoized((one) => lockedBy([one.given]))
   const locationIn = (one, dir) => (above(one.at) ? pathIn(one.root, dir) : dir.slice(one.at.length + 1))
   // The directories `one` installs a package of `name` from, by their paths in its own terms.
@@ -1031,16 +1020,16 @@ export async function installedNpmPackages(dir) {
     // As repositoryLockfiles tells it, but the flags validate takes in its place.
     throw new ValidateError(error.code, error.message.replace(/[:;] give --lockfile=path.*$/su, '').replace("which validate doesn't read", "which isn't read"))
   })
-  if (found === null) return null
-  const [{ path, text }] = found
-  return { path: at(path), packages: registryPackages(text, at(path)) }
+  return found && registryPackages(at(found[0].path), found[0].text)
 }
 
-function registryPackages(text, path) {
-  return [...lockOf(path, text).entries].filter(([, entries]) => entries.some((entry) => entry.from === 'registry')).map(([key]) => {
+// The registry's versions the lockfile at `path` locks.
+function registryPackages(path, text) {
+  const packages = [...lockOf(path, text).entries].filter(([, entries]) => entries.some((entry) => entry.from === 'registry')).map(([key]) => {
     const split = key.lastIndexOf('@')
     return { name: key.slice(0, split), version: key.slice(split + 1) }
   })
+  return { path, packages }
 }
 
 export async function lockedNpmPackages(dir) {
@@ -1055,8 +1044,7 @@ export async function lockedNpmPackages(dir) {
   }
   return Promise.all(named.filter((rel) => LOCKFILES.get(posix.basename(rel)) === 'npm').map(async (rel) => {
     const path = join(dir, ...rel.split('/'))
-    const lock = await readLockfileText((at) => readFile(at, 'utf8'), path)
-    return { path, name: rel, packages: registryPackages(lock, path) }
+    return { ...registryPackages(path, await readLockfileText((at) => readFile(at, 'utf8'), path)), name: rel }
   }))
 }
 
@@ -1085,11 +1073,13 @@ export function followingMoves(client, github) {
 }
 
 const MAX_COMPARED = 100
-// `none` for a 404: a commit GitHub has none of, or none in common with the ref; or a branch or directory it has none of.
-const unless404 = (none) => (error) => {
-  if (error instanceof HttpError && error.status === 404) return none
+// `none` for an error `isNone` holds of; any other thrown on.
+const unless = (isNone, none) => (error) => {
+  if (isNone(error)) return none
   throw error
 }
+// `none` for a 404: a commit GitHub has none of, or none in common with the ref; or a branch or directory it has none of.
+const unless404 = (none) => unless((error) => error instanceof HttpError && error.status === 404, none)
 
 // Null for none, as of a fork's, which GitHub serves through its name too. `branch`: one of the repository's the
 // commit is said to be of, asked before any other: at its head, or in its history, it is found in two requests at
@@ -1180,10 +1170,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
     return (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
   })
   // A directory that isn't there, as upstream tells it, holds `none`.
-  const absent = (none) => (error) => {
-    if (/has no directory at/u.test(error?.message ?? '')) return none
-    throw error
-  }
+  const absent = (none) => unless((error) => /has no directory at/u.test(error?.message ?? ''), none)
   const under = (path) => reading && (directory === '' || path === directory || path.startsWith(`${directory}/`))
   const tree = memoized((dir) => (under(dir) ? reading : repositoryFiles(repository, { commit, directory: dir }))
     .catch(absent(new Map()))
@@ -1215,10 +1202,8 @@ export async function validateRepository(plan, { repository = null, commit, dire
         ? await Promise.all(configured.filter((path) => LOCKFILES.has(posix.basename(path))).map(async (path) => ({ path, text: await readLockfileText(readRepository, path), git, ...ofRepository(path, [pathIn(repoDir(posix.dirname(path)), 'patches')]) })))
         : (await Promise.all([
           ecosystems.size > 0 ? repositoryLockfiles({ directory, ecosystems, list, read: readRepository }) : [],
-          directoriesAlone ? repositoryLockfiles({ directory, ecosystems: new Set(['npm']), list, read: readRepository }).catch((error) => {
-            if (error instanceof ValidateError && error.code === 'no-lockfile') return []
-            throw error
-          }) : [],
+          directoriesAlone ? repositoryLockfiles({ directory, ecosystems: new Set(['npm']), list, read: readRepository })
+            .catch(unless((error) => error instanceof ValidateError && error.code === 'no-lockfile', [])) : [],
           readsBeside ? besideLockfiles({ directory, names: beside, list, read: readRepository }) : [],
         ])).flat().map((one) => ({ ...one, git, ...ofRepository(one.path) }))
     const held = files && lockedBy(files)
@@ -1275,21 +1260,20 @@ export async function validate(file, { client, github, sha, directory, own = tru
   // Each read as it is held to, once the commit is: none where no package needs one.
   const lockfiles = Array.isArray(lockfile) ? lockfile.map((path) => ({ path, get text() { return readLocal(path) }, from: 'local', read: readLocal, root: where.directory })) : lockfile
   const repository = where.github === undefined ? null : followingMoves(client, where.github)
-  const generated = own && client && repository && where.commit !== undefined
-    ? async () => (await import('./vfs-bundle/github.js')).repoPrismaClients({ github: repository.name(), sha: where.commit, directory: where.directory, client })
-    : undefined
-  try {
-    return await validateRepository(plan, { repository, commit: where.commit, directory: where.directory }, { own, lockfile: lockfiles, fetch, deadline, generated, attested, client })
-  } catch (error) {
-    if (!(error instanceof ValidateError) || !['no-repository', 'no-commit'].includes(error.code)) throw error
-    const fromRepository = lockfile === true && fetchedEcosystems(plan).size > 0
+  // Refused as validateRepository refuses it, told of the file.
+  const fromRepository = lockfile === true && fetchedEcosystems(plan).size > 0
+  if ((own || fromRepository) && (repository === null || where.commit === undefined)) {
     const or = !own ? 'or --lockfile=path, or --no-lockfile to hold its dependencies to their registry alone'
       : fromRepository ? 'or, to validate its dependencies alone, --only-deps with --lockfile=path or --no-lockfile' : 'or --only-deps to validate its dependencies alone'
     const what = own ? 'its own code' : 'its lockfile'
-    throw error.code === 'no-repository'
+    throw repository === null
       ? new ValidateError('no-repository', `${file} records no repository to read ${what} of: give --github=owner/name and --sha=commit, ${or}`)
       : new ValidateError('no-commit', `${file} records no commit to read ${what} at: give --sha=commit, ${or}`)
   }
+  const generated = own && client
+    ? async () => (await import('./vfs-bundle/github.js')).repoPrismaClients({ github: repository.name(), sha: where.commit, directory: where.directory, client })
+    : undefined
+  return validateRepository(plan, { repository, commit: where.commit, directory: where.directory }, { own, lockfile: lockfiles, fetch, deadline, generated, attested, client })
 }
 
 const TONES = { differs: 'red', unexpected: 'red', invalid: 'red', unverified: 'yellow', incomplete: 'yellow', valid: 'green', generated: 'green' }

@@ -34,7 +34,7 @@ const TERMINAL_PACKAGES = new Set(['@babel/core', 'react-native', 'metro'])
 
 const EMPTY_GRAPH = { adjRev: new Map(), srcImporters: new Map() }
 
-// Each dir's evidence files (`evidence`) as collectReasons counts them. A copy a dependency ships is a module of its
+// Each dir's evidence files (`evidence`) as reasonIndex counts them. A copy a dependency ships is a module of its
 // own, so a chain can end at it, its files its host's evidence too.
 function moduleIndex(artifact) {
   const fileToDir = new Map()
@@ -219,7 +219,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
 
     for (const [key, dirs] of dirsByKey) {
       for (const targetDir of dirs) {
-        // The consumers that recorded any of the package's own evidence files, as collectReasons': one importing it
+        // The consumers that recorded any of the package's own evidence files, as reasonIndex's: one importing it
         // unrecorded is none.
         const own = fileReasons === null ? [''] : new Set(dirInfo.get(targetDir).evidence.values().flatMap((f) => fileReasons.get(f) ?? []))
         for (const bucket of own) {

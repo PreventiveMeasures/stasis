@@ -55,13 +55,12 @@ function compareComponents(a, b) {
 export function collectComponents(artifacts) {
   const seen = new Map()
   for (const artifact of artifacts) {
-    const records = [...artifact.modules]
     // An artifact where no bucket carries `ecosystem` predates the field: classifyScope tells deps apart.
-    const tagged = records.some(([, m]) => m.ecosystem !== undefined)
+    const tagged = artifact.modules.values().some((m) => m.ecosystem !== undefined)
     // Its ecosystem by its formats, PHP's Composer, any other npm: its untagged buckets', and every bucket's in an
     // artifact predating the per-dependency `ecosystem` field.
-    const fileEcosystem = [...(artifact.formats?.values?.() ?? [])].includes('php') ? 'composer' : 'npm'
-    for (const [dir, { name, version, ecosystem, vendored }] of records) {
+    const fileEcosystem = artifact.formats?.values?.().some((format) => format === 'php') ? 'composer' : 'npm'
+    for (const [dir, { name, version, ecosystem, vendored }] of artifact.modules) {
       if (!name) continue
       const eco = ecosystem ?? fileEcosystem
       const scope = ecosystem !== undefined ? 'dependency' : tagged ? 'workspace' : classifyScope(fileEcosystem, dir)
