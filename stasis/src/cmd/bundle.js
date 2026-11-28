@@ -12,13 +12,12 @@ import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec,
 import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, isFile, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
-import { createMetroResolver } from '../metro-resolver.js'
+import { ASSET_REGISTRY, createMetroResolver } from '../metro-resolver.js'
 import { withNextEntries } from '../next-entries.js'
 import { CSS_KINDS } from '../css.js'
-import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
-import { installedRecords, pinInstalled } from '../installed.js'
+import { installedRecords, nameAt, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
@@ -30,14 +29,8 @@ import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { added as addedTo } from '@preventive/rn/src/rn-config.js'
 import { globRegExp, isPathGlob, packagesOf, restrictionsOf } from '@preventive/rn/src/restrictions.js'
-import {
-  SOLIDITY_PACKAGE_MANIFESTS,
-  SOLIDITY_ROOT_MANIFESTS,
-  buildSolidityTree,
-  collectSolidityFilesFromDisk,
-  discoverSolidityConfig,
-  expandSolidityEntries,
-} from '../loaders/solidity.js'
+import { buildSolidityTree, collectSolidityFilesFromDisk, expandSolidityEntries } from '../loaders/solidity.js'
+import { SOLIDITY_PACKAGE_MANIFESTS, SOLIDITY_ROOT_MANIFESTS, discoverSolidityConfig } from '../loaders/foundry.js'
 import { decodeUtf8, solidityOwnership } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
@@ -52,7 +45,7 @@ import {
   loadComposerPackages,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
-import { bundledSummary, bundleFileOf, bundleFormat, checkLockfileOnly, heldSummary, lockedSummary, packagesLabel, stasisTgzOf, unpackedSummary, writeFile, writeOutput } from './output.js'
+import { bundleFileOf, bundleFormat, stasisTgzOf, summarize, unpackedSummary, writeFile, writeOutput } from './output.js'
 import { LANGUAGE_FLAGS, OPTION_FLAGS, checkCombinations, configuredBuilds, nonEmpty, withConfigDefine } from './bundle-options.js'
 import { withNpmToken } from './tokens.js'
 
@@ -910,7 +903,9 @@ const RN_CONFIG_LISTS = {
 const PATH_GLOBS = [listOf((value) => typeof value === 'string' && isPathGlob(value)), 'a list of globs of paths from the project root, each a directory\'s files too ("src", "src/**/*.js", "node_modules")']
 const isPackageGlob = (value) => typeof value === 'string' && /^(?:@[^/]+\/[^/]+|[^@/.][^/]*)$/u.test(value) && !value.includes('\\') && globRegExp(value) !== null
 const PACKAGE_GLOBS = [listOf(isPackageGlob), 'a list of globs of packages\' names ("react-native", "@react-native/*")']
-const RN_CONFIG_RESTRICTIONS = { allowedPaths: PATH_GLOBS, disallowedPaths: PATH_GLOBS, allowedModules: PACKAGE_GLOBS, disallowedModules: PACKAGE_GLOBS }
+const RESTRICTIONS = { allowedPaths: PATH_GLOBS, disallowedPaths: PATH_GLOBS, allowedModules: PACKAGE_GLOBS, disallowedModules: PACKAGE_GLOBS }
+// A section, an object of its own options.
+const RN_CONFIG_RESTRICTIONS = { ...RESTRICTIONS, development: RESTRICTIONS, production: RESTRICTIONS }
 
 // Throws where it isn't a JSON object, as rn-bundle refuses to build.
 function readRnConfig(baseDir, host) {
@@ -923,22 +918,14 @@ function readRnConfig(baseDir, host) {
 
 function rnOptions(config, options, prefix = '') {
   const taken = {}
-  for (const [key, [valid, what]] of Object.entries(options)) {
-    if (config[key] === undefined) continue
-    if (!valid(config[key])) throw new Error(`${RN_CONFIG_FILE}: ${prefix}${key} is ${what}, not ${JSON.stringify(config[key])}`)
-    taken[key] = config[key]
+  for (const [key, option] of Object.entries(options)) {
+    const value = config[key]
+    if (value === undefined) continue
+    const [valid, what] = Array.isArray(option) ? option : [isPlainObject, 'an object of options']
+    if (!valid(value)) throw new Error(`${RN_CONFIG_FILE}: ${prefix}${key} is ${what}, not ${JSON.stringify(value)}`)
+    taken[key] = Array.isArray(option) ? value : rnOptions(value, option, `${prefix}${key}.`)
   }
   return taken
-}
-
-function rnRestrictions(config) {
-  const restrictions = rnOptions(config, RN_CONFIG_RESTRICTIONS)
-  for (const mode of ['development', 'production']) {
-    if (config[mode] === undefined) continue
-    if (!isPlainObject(config[mode])) throw new Error(`${RN_CONFIG_FILE}: ${mode} is an object of options, not ${JSON.stringify(config[mode])}`)
-    restrictions[mode] = rnOptions(config[mode], RN_CONFIG_RESTRICTIONS, `${mode}.`)
-  }
-  return restrictions
 }
 
 // --metro: Metro's resolver lists as rn-bundle takes them from rn.config.json and the Metro config it loads
@@ -1075,7 +1062,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // Else the resolver's own.
   const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host, rnConfig) : {}
   // A --metro bundle builds as a release build does, so production's restrictions apply, not development's.
-  const restrict = rnConfig === null ? null : restrictionsOf(rnRestrictions(rnConfig), host.realpath(baseDir), false)
+  const restrict = rnConfig === null ? null : restrictionsOf(rnOptions(rnConfig, RN_CONFIG_RESTRICTIONS), host.realpath(baseDir), false)
   const metroTaken = new Set()
   // A resource that is no asset of Metro's reaches the build only as a transform's input, inlined by a Babel
   // plugin (`require('./messages.po')`): no edge to one, nor asset registry.
@@ -1627,12 +1614,10 @@ export async function buildVfsBundle({ lock, ...options } = {}) {
   if (lock !== undefined) assertOption('lock', lock)
   const host = vfsHost(options.vfs)
   const built = await buildFromLockfile('buildVfsBundle', host, options)
-  const at = posix.join(built.root, LOCK_FILE)
-  const mode = heldMode(lockModeOf(built.root, { EXODUS_STASIS_LOCK: lock }, host), at, { host })
-  const label = posix.relative('/', at)
-  if (heldToLockfile(() => built.lockfile, at, label, mode, { host, bundle: built.bundle, accounts: built.accounts }) !== undefined && mode === 'frozen') {
-    loadsBeside(built.bundle.serializedBytes(), { at: posix.join(built.root, BUNDLE_FILE), lockAbs: at, label, root: built.root, scope: built.bundle.config.scope, host })
-  }
+  const { bundle, accounts, root } = built
+  const at = posix.join(root, LOCK_FILE)
+  const held = heldOf({ bundle, lockfile: () => built.lockfile, accounts }, root, { env: { EXODUS_STASIS_LOCK: lock }, host, at, label: posix.relative('/', at) })
+  held.loads(bundle, { at: posix.join(root, BUNDLE_FILE) })
   return built
 }
 
@@ -1866,15 +1851,13 @@ function builtSince(since) {
   return ` (files ${files}${times.length > 0 ? `; ${times.join(', ')}` : ''})`
 }
 
-const packageName = (dir) => dir.slice(dir.lastIndexOf('/node_modules/') + '/node_modules/'.length)
-
 function reportedRounds(attempt, unpack) {
   let round = 0
   return [
     (reads) => {
       round++
       const since = counts()
-      const asked = () => (reads.asked.size === 0 ? ', the build' : `, asked for ${reads.asked.size} package${reads.asked.size === 1 ? '' : 's'}: ${[...reads.asked].slice(0, 5).map(packageName).join(', ')}${reads.asked.size > 5 ? ', …' : ''}`)
+      const asked = () => (reads.asked.size === 0 ? ', the build' : `, asked for ${reads.asked.size} package${reads.asked.size === 1 ? '' : 's'}: ${[...reads.asked].slice(0, 5).map(nameAt).join(', ')}${reads.asked.size > 5 ? ', …' : ''}`)
       return debugTimed(`Lazy round ${round}: built`, () => attempt(reads), () => `${builtSince(since)}${asked()}`)
     },
     (asked, read) => debugTimed(`Lazy round ${round}: unpacked`, () => unpack(asked, read)),
@@ -1897,8 +1880,7 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, ...g
 // Run `stasis bundle` (doc/bundle.md).
 export async function bundleCommand({ cwd = process.cwd(), output, format: asked, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
   if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=-')
-  checkLockfileOnly('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality, format: asked, named: true })
-  const format = bundleFormat('bundleCommand: ', { format: asked, output, brotliQuality })
+  const format = bundleFormat('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality, format: asked })
   const built = await buildOfCommand({ ...options, cwd, output, format, lockfile, lockfileOnly, add })
   const { root } = built
   // By default at the root, where `stasis run --bundle=load` discovers it: in cwd below the root it would root
@@ -1919,17 +1901,20 @@ export async function bundleCommand({ cwd = process.cwd(), output, format: asked
 
   const outAbs = target === '-' ? undefined : resolve(cwd, target)
   const lockAbs = lockData ? (lockfile === undefined ? held.at : resolve(cwd, lockfile)) : undefined
-  // The `what` at `abs` (`shown` as given) to add to, by `parse`, refused where its paths are another root's.
-  const existingAt = (what, shown, abs, parse) => {
+  // The `what` at `abs` (`shown` as given) to add to, by `parse`, refused where its paths are another root's;
+  // `lenient`: undefined where it can't be read.
+  const existingAt = (what, shown, abs, parse, lenient = false) => {
     let artifact
     try {
       artifact = parse(readFileSync(abs))
     } catch (cause) {
+      if (lenient) return undefined
       throw new Error(`bundleCommand: --add failed to read the existing ${what} at ${shown}`, { cause })
     }
     refuseOtherRoot(artifact, `the ${what} at ${shown}`, root, { cwd, at: abs })
     return artifact
   }
+  const parseLockfile = (buf) => Lockfile.parse(buf.toString('utf8'))
   // What the bundle on disk carried; undefined where nothing is merged.
   let mergedFrom
   if (add && existsSync(outAbs)) {
@@ -1961,7 +1946,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, format: asked
         if (!existsSync(lockAbs)) {
           throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockTarget}: the bundle at ${target} already carries files, and there's no existing lockfile to merge into`)
         }
-        existingLock = existingAt('lockfile', lockTarget, lockAbs, (buf) => Lockfile.parse(buf.toString('utf8')))
+        existingLock = existingAt('lockfile', lockTarget, lockAbs, parseLockfile)
         // It may record more than the bundle beside it (a broader run's capture).
         policy?.assertArtifact(existingLock, { hint: recordedIn(lockTarget), links })
         heldAsInstalled(existingLock, lockTarget)
@@ -1970,11 +1955,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, format: asked
     }
   } else if (add && lockData && mode !== 'replace' && existsSync(lockAbs)) {
     // No bundle to add to, but a lockfile: replaced, as one that can't be read is, unless rooted elsewhere.
-    let existingLock
-    try {
-      existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
-    } catch { /* replaced */ }
-    if (existingLock !== undefined) refuseOtherRoot(existingLock, `the lockfile at ${lockTarget}`, root, { cwd, at: lockAbs })
+    existingAt('lockfile', lockTarget, lockAbs, parseLockfile, true)
   }
 
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
@@ -1982,21 +1963,13 @@ export async function bundleCommand({ cwd = process.cwd(), output, format: asked
   // As a run loads it beside the lockfile: a .stasis.tgz's, by its content, as a stasis.code.br at the root.
   held?.loads(bundle, { bytes, at: format === 'tgz' ? undefined : outAbs })
   const files = [...bundle.sources.keys()]
-  const modules = bundle.modules
 
   const dest = lockfileOnly ? undefined : writeOutput(cwd, target, format === 'tgz' ? await stasisTgzOf(bundle) : compressBundleText(bytes, brotliQuality))
   if (lockData) writeFile(lockAbs, lockData)
   // The bundle's paths are relative to its root; shown relative to cwd, as `dest` is.
   const fromDir = posix.join(toPosix(relative(resolve(cwd), root)), outermostDir(files, root))
-  if (held?.read) console.warn(heldSummary(files.length, modules, fromDir, held.label))
-  if (lockfileOnly) {
-    if (lockData) console.warn(lockedSummary(files.length, modules, fromDir, lockTarget))
-  } else if (mergedFrom !== undefined) {
-    const added = files.length - mergedFrom
-    console.warn(`[stasis] Added ${added} file${added === 1 ? '' : 's'} (${files.length} total in ${packagesLabel(modules)}) from ${fromDir} to ${dest}`)
-  } else {
-    console.warn(bundledSummary(files.length, modules, fromDir, dest))
-  }
+  const added = mergedFrom === undefined ? undefined : files.length - mergedFrom
+  summarize(files.length, bundle.modules, fromDir, { held: held?.read ? held.label : undefined, dest, added, locked: lockData && lockTarget })
   // A stasis file written in a package below the root roots stasis run and stasis bundle there.
   const shown = (path) => relative(resolve(cwd), path) || '.'
   for (const file of [lockfileOnly ? undefined : outAbs, lockAbs]) {
@@ -2007,32 +1980,45 @@ export async function bundleCommand({ cwd = process.cwd(), output, format: asked
   }
 }
 
-// A build's lockfile held to the one `lockfile` names, else its project's, by its runs' lock mode.
-function heldOf({ bundle, lockfile: built, accounts }, root, { cwd, env, lockfile, add }) {
+// A build's lockfile held to the one at `at` (shown as `label`), by default the one `lockfile` names, else its
+// project's, by its runs' lock mode: the mode given (EXODUS_STASIS_LOCK, or stasis.config.json's pin), else frozen
+// where the lockfile is there, but under --add, which adds to what is there.
+function heldOf({ bundle, lockfile: built, accounts }, root, { cwd, env, lockfile, add, host = diskHost, at, label }) {
   if (!built) return undefined
-  const runs = lockModeOf(root, env)
-  const at = lockfile ? resolve(cwd, lockfile) : runs.file ?? join(root, LOCK_FILE)
-  const lock = heldMode(runs, at, { add })
-  const label = relative(resolve(cwd), at)
-  const hold = (other, options) => heldToLockfile(other, at, label, lock, options)
-  const fresh = hold(built, { bundle, accounts })
-  const loads = (written, { bytes, at: bundleAt = join(root, BUNDLE_FILE) } = {}) => {
-    if (lock === 'frozen') loadsBeside(bytes ?? written.serializedBytes(), { at: bundleAt, lockAbs: at, label, root, scope: written.config.scope })
-  }
-  return { lock, at, label, read: fresh !== undefined, lockfile: () => fresh ?? built(), hold, loads }
-}
-
-// The mode given (EXODUS_STASIS_LOCK, or stasis.config.json's pin), else frozen where the lockfile at `at` is there,
-// but under --add, which adds to what is there.
-const heldMode = ({ lock, given }, at, { host = diskHost, add = false } = {}) => (given || add || host.stat(at) === null ? lock : 'frozen')
-
-// The lock mode and EXODUS_STASIS_LOCK_FILE of a run at `root` that writes a bundle, as a build does.
-function lockModeOf(root, env, host = diskHost) {
+  // The lock mode and EXODUS_STASIS_LOCK_FILE of a run at `root` that writes a bundle, as a build does.
   const config = new Config({ env: { EXODUS_STASIS_LOCK: env.EXODUS_STASIS_LOCK, EXODUS_STASIS_LOCK_FILE: env.EXODUS_STASIS_LOCK_FILE }, bundle: 'replace' })
   const text = readFileSyncMaybe(root, CONFIG_FILE, 'utf-8', host)
   if (text !== null) config.loadConfig(text)
-  // A relative one of the working directory's, as a run reads it.
-  return { lock: config.lock, given: Boolean(env.EXODUS_STASIS_LOCK) || config.lock !== DEFAULT_LOCK, file: config.lockFile && resolve(config.lockFile) }
+  // A relative lock file of the working directory's, as a run reads it.
+  at ??= lockfile ? resolve(cwd, lockfile) : (config.lockFile && resolve(config.lockFile)) ?? join(root, LOCK_FILE)
+  const given = Boolean(env.EXODUS_STASIS_LOCK) || config.lock !== DEFAULT_LOCK
+  const lock = given || add || host.stat(at) === null ? config.lock : 'frozen'
+  label ??= relative(resolve(cwd), at)
+  const hold = (other, options) => heldToLockfile(other, at, label, lock, { host, ...options })
+  const fresh = hold(built, { bundle, accounts })
+  // That `written` (its serialized `bytes`), to be written at `bundleAt`, loads beside the lockfile as `stasis run
+  // --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths it names. Of a
+  // build of none (a Solidity one), nothing.
+  const loads = (written, { bytes, at: bundleAt = join(root, BUNDLE_FILE) } = {}) => {
+    if (lock !== 'frozen' || fresh === undefined) return
+    // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
+    const compressed = brotliCompressSync(bytes ?? written.serializedBytes(), { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
+    const readFile = (path) => {
+      if (path === bundleAt) return compressed
+      const data = host.readFile(path)
+      if (basename(path) !== CONFIG_FILE) return data
+      const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...rest } = JSON.parse(data.toString('utf8'))
+      return Buffer.from(JSON.stringify(rest))
+    }
+    const served = { ...host, readFile }
+    try {
+      // Rooted where the build is, as a run finding the lockfile there is: given explicitly, it roots nothing.
+      new State(root, { lock: 'frozen', lockFile: at, bundle: 'load', bundleFile: bundleAt, scope: written.config.scope, host: served, claim: false, env: { PROJECT_CWD: root } }) // eslint-disable-line no-new -- its constructor is the check
+    } catch (cause) {
+      throw new Error(`${label} (lock = frozen): ${cause.message}`, { cause })
+    }
+  }
+  return { lock, at, label, read: fresh !== undefined, lockfile: () => fresh ?? built(), hold, loads }
 }
 
 // `built()` held to the lockfile at `lockAbs` by `mode`: in add, agreeing with it on all both record; in frozen,
@@ -2072,27 +2058,6 @@ export function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, b
 // Each field `recorded` has is `repo`'s: `github` in any case, as GitHub takes it.
 const repoAttested = (recorded, repo) => Object.entries(recorded).every(([key, value]) => (key === 'github' ? sameGithub(value, repo.github) : value === repo[key]))
 const repoLabel = ({ github = '?', commit = '?', directory }) => `${github}@${commit}${directory ? `/${directory}` : ''}`
-
-// That the bundle of `serialized` (its bytes), to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis run
-// --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths it names.
-function loadsBeside(serialized, { at, lockAbs, label, root, scope, host = diskHost }) {
-  // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
-  const bytes = brotliCompressSync(serialized, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
-  const readFile = (path) => {
-    if (path === at) return bytes
-    const data = host.readFile(path)
-    if (basename(path) !== CONFIG_FILE) return data
-    const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...config } = JSON.parse(data.toString('utf8'))
-    return Buffer.from(JSON.stringify(config))
-  }
-  const served = { ...host, readFile }
-  try {
-    // Rooted where the build is, as a run finding the lockfile there is: given explicitly, it roots nothing.
-    new State(root, { lock: 'frozen', lockFile: lockAbs, bundle: 'load', bundleFile: at, scope, host: served, claim: false, env: { PROJECT_CWD: root } }) // eslint-disable-line no-new -- its constructor is the check
-  } catch (cause) {
-    throw new Error(`${label} (lock = frozen): ${cause.message}`, { cause })
-  }
-}
 
 // --add to an artifact whose paths are relative to another root would key its records and the build's apart, never
 // held to each other; one whose root (where its packages and entries are) can't be told is added to as ever.

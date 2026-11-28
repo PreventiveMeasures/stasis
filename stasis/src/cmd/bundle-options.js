@@ -6,7 +6,7 @@ import { CONFIG_FILE, entryGlob, hasNodeModulesSegment, isGlobPattern, isPlainOb
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
-import { bundleFormat, checkLockfileOnly } from './output.js'
+import { bundleFormat } from './output.js'
 
 export const BUNDLE_FLAGS = {
   mapping: { type: 'string' },
@@ -188,8 +188,7 @@ function outputOptions(values, { js, sol, jsAndSol }) {
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
   const lockfileOnly = Boolean(values['lockfile-only'])
-  checkLockfileOnly('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'], format: values.format, named: true })
-  bundleFormat('', { format: values.format, output: values.output, brotliQuality: values['brotli-quality'] })
+  bundleFormat('', { lockfileOnly, lockfile: values.lockfile, output: values.output, add, brotliQuality: values['brotli-quality'], format: values.format })
   return { output: values.output, format: values.format, lockfile: values.lockfile, lockfileOnly, brotliQuality, add, deptree }
 }
 
