@@ -26,12 +26,12 @@ const VENDOR_DIRS = {
   next: ['dist/compiled'], // the dependencies Next.js compiles in, ~140, each with a trimmed package.json
 }
 
-export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
-
 export const manifestIdentity = (pkg) => ({ name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) })
 
-// `below`: whether any package.json under `vendorDir` covers the file at all.
-export function vendoredPackageOf(rel, vendorDir, read) {
+// Undefined outside `hostName`'s vendor dirs; `below`: whether any package.json under the one `rel` is in covers it.
+export function vendoredPackageOf(rel, hostName, read) {
+  const vendorDir = VENDOR_DIRS[hostName]?.find((dir) => rel.startsWith(`${dir}/`))
+  if (vendorDir === undefined) return undefined
   let below = false
   for (let dir = posix.dirname(rel); dir.startsWith(`${vendorDir}/`); dir = posix.dirname(dir)) {
     const pkg = read(dir)
@@ -91,11 +91,10 @@ function findPackageMetadata(fileRelPath, read) {
   const hostPkg = nm === null ? undefined : read(`${nm.dir}/package.json`)
   const holds = hostPkg?.name && hostPkg.version
   // A file in a vendored package is its host's, as State#locateModule has it.
-  const vendorDir = holds ? vendorDirOf(hostPkg.name, nm.rel) : undefined
-  const { below, vendored } = vendorDir === undefined ? {} : vendoredPackageOf(nm.rel, vendorDir, (sub) => read(`${nm.dir}/${sub}/package.json`))
-  if (below) {
-    const { dir: sub, ...identity } = vendored ?? {}
-    return packageMetadata(nm.dir, hostPkg, true, vendored && { vendored: { [sub]: identity } })
+  const vendor = holds ? vendoredPackageOf(nm.rel, hostPkg.name, (sub) => read(`${nm.dir}/${sub}/package.json`)) : undefined
+  if (vendor?.below) {
+    const { dir: sub, ...identity } = vendor.vendored ?? {}
+    return packageMetadata(nm.dir, hostPkg, true, vendor.vendored && { vendored: { [sub]: identity } })
   }
   // Only below a package with a name and version, where the walk past it stops.
   const isHostsNested = (sub, pkg) => sub !== undefined && holds && (pkg.private === true || isPackagesManifest(`${nm.dir}/${sub}/package.json`, pkg, hostPkg))
