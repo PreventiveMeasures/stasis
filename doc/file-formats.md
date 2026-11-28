@@ -968,8 +968,9 @@ consumers such as the `@exodus/stasis/sbom` API.
 The built-in readers decompress a bundle whole and `Bundle.parse` its full JSON
 text, so their peak memory is several times the decompressed size. `readBundle`
 is an opt-in alternative that decompresses and parses chunk by chunk, so the
-decompressed bytes and the JSON text are never held at once. The stasis
-commands themselves still use the one-shot path.
+decompressed bytes and the JSON text are never held at once. It reads a
+[`.stasis.tgz`](#stasistgz) too. The stasis commands themselves still use the
+one-shot path.
 
 ```js
 import { readBundle } from '@exodus/stasis/bundle-reader'
@@ -981,12 +982,21 @@ const bundle = await readBundle('app.stasis.code.br')
 const meta = await readBundle('app.stasis.code.br', {
   onFile: async (file, contents, { signal, format }) => { /* ... */ },
 })
+
+// A .stasis.tgz, by its name, or as `format` says of bytes or chunks.
+const tgz = await readBundle(response.body, { format: 'tgz' })
 ```
 
 - `source` is a path or file `URL` object, the compressed bytes (any
   `ArrayBuffer` or view), or an (async) iterable of compressed chunks, such as a
   `Readable`. Bytes after the end of the brotli stream are refused, as the
   built-in readers refuse them, however the chunks split them.
+- `format` is the bundle's, as `stasis.config.json`'s is: `br`, a
+  `stasis.code.br`, or `tgz`, a `.stasis.tgz`. A path's is its name's
+  (`stasis.tgz` or `<name>.stasis.tgz` is a tgz), which `format` must agree
+  with; bytes or chunks are `br` unless it says `tgz`. A tgz is never told by
+  its bytes: gzip's leading bytes read as `br` are refused, as the built-in
+  readers refuse a tgz of another name.
 - `signal` aborts the read at once, including any `onFile` calls still queued.
   `onFile` gets it as `{ signal }`, so it can stop its own work.
 - Without `onFile`, it accepts exactly what `Bundle.parse` accepts and builds the
@@ -1011,6 +1021,18 @@ const meta = await readBundle('app.stasis.code.br', {
   - a repeated JSON key that carries file contents
   - a v0 bundle with `modules`
   - a non-string content value, or a `files` array instead of an object
+- A tgz is read as the built-in readers read one: gunzipped as it streams, each
+  gzip member and then zeros alone, a tar of at most 1 GiB. Without `onFile`,
+  its tar is unpacked whole, as theirs is, into the same `Bundle`
+  (`Bundle.fromTar`'s), refused alike. With `onFile`, the tar streams too
+  (`@preventive/archive`'s `unpackStream`), holding no file but the one in hand:
+  a file is passed once the `stasis.lock.json` has streamed by (stasis writes
+  it first; the files before it are held until it has) and it is one the
+  lockfile attests, of the bytes and execute bit it attests, its contents as
+  the bundle stores them and `format` the lockfile's. `Bundle.fromTar` then
+  judges the tar as it streamed, so this mode accepts and refuses what the
+  other does, but for a tar naming an entry twice, which a stream can't
+  compare with the first and the whole unpack takes where the two are the same.
 
 ### Source-language bundles (Solidity / PHP / Bash / Rust / TEAL)
 

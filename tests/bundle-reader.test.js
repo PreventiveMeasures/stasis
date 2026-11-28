@@ -3,11 +3,14 @@ import { createReadStream, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync, constants, gzipSync } from 'node:zlib'
 
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { readBundle } from '@exodus/stasis/bundle-reader'
+import { pack } from '@preventive/archive/tar.js'
+import { readStasisTgz, writeStasisTgz } from '../stasis/src/parse.js'
 import { collectComponents } from '../stasis/src/sbom.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -456,4 +459,224 @@ test('readBundle stops reading as soon as the JSON goes bad, and honors an abort
   t.assert.ok(pulled < chunks / 4, `pulled ${pulled} of ${chunks} chunks`)
 
   await t.assert.rejects(readBundle(buf, { signal: AbortSignal.abort() }), { name: 'AbortError' })
+})
+
+// --- .stasis.tgz ---
+
+// The bundle stasis reads of a .stasis.tgz (parse.js's) is the reference, and its refusal, told of no file.
+const tgzWhole = (buf) => readStasisTgz(buf, 'x').artifact
+function tgzRefusal(buf) {
+  try {
+    readStasisTgz(buf, 'x')
+  } catch (error) {
+    return { name: error.cause.name, message: error.cause.message }
+  }
+  throw new Error('not refused')
+}
+const tgzEntries = (bundle) => bundle.toTar({ integrityOf: sha512integrity })
+const utf8 = (data) => new TextEncoder().encode(data)
+
+test('readBundle reads a .stasis.tgz, by its name or format, from any source, into the Bundle stasis reads of it', withTmp(async (t, tmp) => {
+  const buf = writeStasisTgz(sampleBundle())
+  const whole = tgzWhole(buf)
+  for (const name of ['app.stasis.tgz', 'stasis.tgz']) writeFileSync(join(tmp, name), buf)
+  const file = join(tmp, 'app.stasis.tgz')
+  for (const [label, source, options] of [
+    ['path', file],
+    ['stasis.tgz', join(tmp, 'stasis.tgz')],
+    ['file URL', pathToFileURL(file)],
+    ['path, its format said', file, { format: 'tgz' }],
+    ['bytes', new Uint8Array(buf), { format: 'tgz' }],
+    ['ArrayBuffer', buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length), { format: 'tgz' }],
+    ['DataView', new DataView(buf.buffer, buf.byteOffset, buf.length), { format: 'tgz' }],
+    ['7-byte chunks', chunked(buf, 7), { format: 'tgz' }],
+    ['Readable', createReadStream(file, { highWaterMark: 1024 }), { format: 'tgz' }],
+  ]) {
+    const streamed = await readBundle(source, options)
+    t.assert.equal(streamed.serialize(), whole.serialize(), label)
+    t.assert.deepStrictEqual(streamed.sources, whole.sources, label)
+  }
+}))
+
+test('readBundle with onFile streams a .stasis.tgz\'s files in tar order, as the bundle stores them, its stasis.lock.json first or not', async (t) => {
+  const bundle = sampleBundle()
+  const [lock, ...files] = tgzEntries(bundle)
+  for (const [label, entries] of [['lockfile first', [lock, ...files]], ['lockfile last', [...files, lock]], ['lockfile between', [...files.slice(0, 3), lock, ...files.slice(3)]]]) {
+    const buf = gzipSync(pack([{ name: 'src/', type: 'directory' }, ...entries]))
+    const whole = tgzWhole(buf)
+    const seen = collect()
+    const meta = await readBundle(chunked(buf, 1000), { format: 'tgz', onFile: seen.onFile })
+    t.assert.deepStrictEqual(seen.files.map(([file]) => file), files.map(({ name }) => name), label)
+    t.assert.deepStrictEqual(new Map(seen.files), whole.sources, label)
+    t.assert.deepStrictEqual(seen.formats, new Map(files.map(({ name }) => [name, whole.formats.get(name)])), label)
+    t.assert.equal(new Map(seen.files).get('assets/logo.png'), bundle.modules.get('.').files['assets/logo.png'], `${label}: base64, as stored`)
+    // A contents-free Bundle of the rest.
+    t.assert.throws(() => meta.sources, /file contents are not retained/)
+    for (const field of ['version', 'config', 'entries', 'formats', 'imports', 'executable', 'repo']) t.assert.deepStrictEqual(meta[field], whole[field], `${label}: ${field}`)
+    const lists = (of) => [...of.modules].map(([dir, { files: bucket, ...info }]) => [dir, info, Object.keys(bucket)])
+    t.assert.deepStrictEqual(lists(meta), lists(whole), label)
+    t.assert.deepStrictEqual(collectComponents([meta]), collectComponents([whole]), label)
+  }
+  let inFlight = 0
+  let calls = 0
+  await readBundle(writeStasisTgz(bundle), {
+    format: 'tgz',
+    onFile: async () => {
+      t.assert.equal(inFlight++, 0, 'one at a time')
+      calls += 1
+      await new Promise((resolve) => setImmediate(resolve))
+      inFlight -= 1
+    },
+  })
+  t.assert.equal(calls, files.length)
+})
+
+test('readBundle refuses what stasis refuses of a .stasis.tgz, with its error, and passes onFile no file but of the bytes and execute bit its lockfile attests', async (t) => {
+  const bundle = new Bundle({
+    entries: new Set(['a.js']),
+    executable: new Set(['run.sh']),
+    formats: new Map([['a.js', 'module'], ['b.js', 'module'], ['run.sh', 'shell']]),
+    modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'a.js': 'a\n', 'b.js': 'b\n', 'run.sh': '#!/bin/sh\n' } }]]),
+  })
+  const [lock, a, b, run] = tgzEntries(bundle)
+  const lockOf = (edit) => {
+    const json = JSON.parse(new TextDecoder().decode(lock.data))
+    edit(json)
+    return { ...lock, data: utf8(JSON.stringify(json)) }
+  }
+  // Each tar, and the files onFile is passed of it before it is refused.
+  const cases = {
+    'a file of other bytes': [[lock, a, { ...b, data: utf8('B\n') }, run], ['a.js']],
+    'a file it does not attest': [[lock, a, b, run, { name: 'c.js', data: utf8('c\n') }], ['a.js', 'b.js', 'run.sh']],
+    'a file it attests missing': [[lock, a, run], ['a.js', 'run.sh']],
+    'an execute bit it does not attest': [[lock, a, b, { ...run, mode: 0o644 }], ['a.js', 'b.js']],
+    'code that is no UTF-8': [[lockOf((json) => (json.sources['.'].files['b.js'] = sha512integrity(Uint8Array.of(0xe9)))), a, { ...b, data: Uint8Array.of(0xe9) }, run], ['a.js']],
+    'a symlink': [[lock, a, b, run, { name: 'c.js', type: 'symlink', linkname: 'a.js' }], ['a.js', 'b.js', 'run.sh']],
+    'no lockfile': [[a, b, run], []],
+    'a lockfile under a directory': [[{ ...lock, name: 'package/stasis.lock.json' }, a, b, run], []],
+    'a lockfile that does not parse': [[{ ...lock, data: utf8('{') }, a, b, run], []],
+    'a directory capture': [[lockOf((json) => (json.formats.lib = 'directory')), a, b, run], []],
+    'content for a stat record': [[lockOf((json) => (json.formats['b.js'] = 'stat:file')), a, b, run], ['a.js', 'b.js', 'run.sh']],
+    'a file no bundle carries': [[lockOf((json) => (json.sources['.'].files['.npmrc'] = sha512integrity('x'))), a, b, run, { name: '.npmrc', data: utf8('x') }], ['a.js', 'b.js', 'run.sh', '.npmrc']],
+  }
+  for (const [label, [entries, passed]] of Object.entries(cases)) {
+    const buf = gzipSync(pack(entries))
+    const expected = tgzRefusal(buf)
+    await t.assert.rejects(readBundle(buf, { format: 'tgz' }), expected, label)
+    // As provisional as for a stasis.code.br, but for each file's own bytes and execute bit.
+    const seen = collect()
+    await t.assert.rejects(readBundle(chunked(buf, 100), { format: 'tgz', onFile: seen.onFile }), expected, `${label}, with onFile`)
+    t.assert.deepStrictEqual(seen.files.map(([file]) => file), passed, label)
+  }
+
+  // Past its streams: each gzip member, as gzip(1) reads them, then zeros alone; nothing but zeros past the tar's end.
+  const tar = pack([lock, a, b, run])
+  const tgz = gzipSync(tar)
+  const streams = {
+    'zeros past the gzip stream': Buffer.concat([tgz, Buffer.alloc(10)]),
+    'a second gzip member': Buffer.concat([gzipSync(tar.subarray(0, 1024)), gzipSync(tar.subarray(1024))]),
+    'a byte past the gzip stream': Buffer.concat([tgz, Buffer.from([0x41])]),
+    'a byte past zeros past it': Buffer.concat([tgz, Buffer.from([0, 0, 0x41])]),
+    'a gzip member past zeros past it': Buffer.concat([tgz, Buffer.alloc(3), gzipSync(new Uint8Array(0))]),
+    'zeros past the tar': gzipSync(Buffer.concat([tar, Buffer.alloc(4096)])),
+    'data past the tar': gzipSync(Buffer.concat([tar, Buffer.alloc(512, 0x41)])),
+    'a truncated gzip stream': tgz.subarray(0, tgz.length - 5),
+    'a truncated tar': gzipSync(tar.subarray(0, 1536)),
+    'no bytes': new Uint8Array(0),
+    'brotli': compressed(minimal({ 'a.js': 'A' })),
+  }
+  for (const [label, buf] of Object.entries(streams)) {
+    let expected
+    try {
+      expected = tgzWhole(buf).serialize()
+    } catch {
+      expected = tgzRefusal(buf)
+    }
+    // However the chunks split it; unpackStream says where in them it gave up, which unpack, given one, says otherwise.
+    const streamed = typeof expected === 'string' ? expected : { ...expected, message: new RegExp(`^${RegExp.escape(expected.message.replace(/ at byte \d+$/u, ''))}(?: at byte \\d+)?$`, 'u') }
+    for (const [split, source] of [['whole', () => buf], ['1-byte chunks', () => chunked(buf, 1)], ['7-byte chunks', () => chunked(buf, 7)]]) {
+      for (const onFile of [undefined, () => {}]) {
+        const what = `${label}, ${split}${onFile ? ', with onFile' : ''}`
+        const read = readBundle(source(), { format: 'tgz', onFile })
+        if (typeof expected !== 'string') await t.assert.rejects(read, onFile ? streamed : expected, what)
+        else if (onFile) t.assert.deepStrictEqual([...(await read).modules.keys()], ['.'], what)
+        else t.assert.equal((await read).serialize(), expected, what)
+      }
+    }
+  }
+})
+
+test('readBundle tells a .stasis.tgz by its name or format alone, and takes an entry the tar repeats as it was only reading it whole', withTmp(async (t, tmp) => {
+  const buf = writeStasisTgz(sampleBundle())
+  // gzip's leading bytes are refused as a stasis.code.br's, however few the first chunk holds.
+  for (const name of ['app.tgz', 'app.stasis.code.br', 'stasis.tgz.br']) {
+    writeFileSync(join(tmp, name), buf)
+    await t.assert.rejects(readBundle(join(tmp, name)), { message: `${join(tmp, name)} is a tgz, which is read as stasis.tgz or <name>.stasis.tgz alone` })
+  }
+  const nameless = { message: "the bundle is a tgz, which readBundle reads with format 'tgz' alone" }
+  for (const source of [buf, chunked(buf, 1)]) await t.assert.rejects(readBundle(source), nameless)
+  await t.assert.rejects(readBundle(buf, { format: 'br', onFile() {} }), nameless)
+  await t.assert.rejects(readBundle(join(tmp, 'app.tgz'), { format: 'tgz' }), { name: 'RangeError', message: `readBundle: format tgz names a .stasis.tgz, stasis.tgz or <name>.stasis.tgz, not '${join(tmp, 'app.tgz')}'` })
+  writeFileSync(join(tmp, 'app.stasis.tgz'), buf)
+  await t.assert.rejects(readBundle(join(tmp, 'app.stasis.tgz'), { format: 'br' }), { name: 'RangeError', message: `readBundle: format br names a stasis.code.br, not '${join(tmp, 'app.stasis.tgz')}', a .stasis.tgz's name` })
+  await t.assert.rejects(readBundle(buf, { format: 'zip' }), { message: 'readBundle: format must be br or tgz (got "zip")' })
+  await t.assert.rejects(readBundle(join(tmp, 'missing.stasis.tgz')), { code: 'ENOENT' })
+
+  // A repeat unpack takes, comparing it with the first; a stream keeps nothing to compare it with.
+  const [lock, ...files] = tgzEntries(sampleBundle())
+  const repeated = gzipSync(pack([lock, ...files, files[0]]))
+  t.assert.equal((await readBundle(repeated, { format: 'tgz' })).serialize(), tgzWhole(repeated).serialize())
+  await t.assert.rejects(readBundle(repeated, { format: 'tgz', onFile() {} }), /duplicate entry "assets\/logo\.png", which only the in-memory call can compare with the earlier one/)
+}))
+
+test('readBundle settles on an abort or a failure while a .stasis.tgz\'s source waits for more, and destroys it', async (t) => {
+  const buf = writeStasisTgz(sampleBundle())
+  const cases = [
+    ['an abort, the whole stream sent', buf, 'AbortError', (controller) => setTimeout(() => controller.abort(), 20)],
+    ['an abort, part of it sent', buf.subarray(0, 5), 'AbortError', (controller) => setTimeout(() => controller.abort(), 20)],
+    ['onFile failing', buf, 'disk full', () => {}, () => {
+      throw new Error('disk full')
+    }],
+  ]
+  for (const [label, sent, expected, start, onFile] of cases) {
+    const source = new Readable({ read() {} }) // never ends
+    source.push(sent)
+    const controller = new AbortController()
+    const read = readBundle(source, { format: 'tgz', signal: controller.signal, onFile })
+    start(controller)
+    let timer
+    try {
+      const pending = new Promise((resolve) => {
+        timer = setTimeout(resolve, 2000, 'still pending')
+      })
+      const error = (e) => (e.name === 'AbortError' ? e.name : e.message)
+      t.assert.equal(await Promise.race([read.then(() => 'resolved', error), pending]), expected, label)
+      t.assert.equal(source.destroyed, true, label)
+    } finally {
+      clearTimeout(timer)
+      source.destroy()
+    }
+  }
+
+  // At once, onFile still running, and it is passed no file more.
+  const controller = new AbortController()
+  let calls = 0
+  let timer
+  try {
+    await t.assert.rejects(readBundle(buf, {
+      format: 'tgz',
+      signal: controller.signal,
+      onFile: () => {
+        calls += 1
+        controller.abort()
+        return new Promise((resolve) => {
+          timer = setTimeout(resolve, 5000)
+        })
+      },
+    }), { name: 'AbortError' })
+  } finally {
+    clearTimeout(timer)
+  }
+  t.assert.equal(calls, 1)
+  await t.assert.rejects(readBundle(buf, { format: 'tgz', signal: AbortSignal.abort() }), { name: 'AbortError' })
 })
