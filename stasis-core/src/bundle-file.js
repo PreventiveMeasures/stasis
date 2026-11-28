@@ -7,13 +7,19 @@ function archived(path) {
   return globalThis[ARCHIVED]
 }
 
-// A bundle file's bundle, by its name: a .stasis.tgz's as stasis reads one, else brotli'd JSON's; a tgz of another name,
-// none.
-export function parseBundleFile(bytes, path) {
-  if (isTgzName(path)) return archived(path).read(bytes, path)
+// What reads a bundle file, `(bytes, path) => bundle`, by its name: a .stasis.tgz's as stasis reads one, else brotli'd
+// JSON's; a tgz of another name, none. Refuses before any byte is parsed, where a caller tells the two apart.
+export function bundleFileReader(bytes, path) {
+  if (isTgzName(path)) {
+    const tgz = archived(path)
+    return (tgzBytes, tgzPath) => tgz.read(tgzBytes, tgzPath)
+  }
   assert(!isGzip(bytes), `stasis: ${misnamedTgz(path)}`)
-  return parseBundleBytes(bytes)
+  return parseBundleBytes
 }
+
+// A bundle file's bundle, by its name (bundleFileReader's).
+export const parseBundleFile = (bytes, path) => bundleFileReader(bytes, path)(bytes, path)
 
 // A bundle file's bytes, by its name: a .stasis.tgz as stasis writes one, else brotli'd JSON at `brotliQuality`.
 export const bundleFileBytes = (bundle, path, brotliQuality) => (isTgzName(path) ? archived(path).write(bundle) : compressBundle(bundle, brotliQuality))

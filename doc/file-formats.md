@@ -1784,7 +1784,7 @@ attests, as `tar -czf` packs what `stasis extract --lock=add` writes, named
 `stasis.tgz` or `<name>.stasis.tgz`. `stasis bundle` and `stasis github-bundle`
 write one with `--format=tgz` or an `--output` so named (`stasis run` writes
 none). `stasis validate`, `run` (`--bundle=load` or `frozen`),
-`build`, `audit`, `diff` and `sbom` read it as the bundle of its files, its
+`build`, `extract`, `audit`, `diff` and `sbom` read it as the bundle of its files, its
 lockfile beside it; a tgz under any other name (gzip's leading bytes), and
 anything else under its name, is refused. Its tar is read with
 `@preventive/archive`, and it is refused, naming the path, unless it holds:

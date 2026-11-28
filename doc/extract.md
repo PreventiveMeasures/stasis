@@ -1,14 +1,18 @@
 # `stasis extract`
 
-`stasis extract` unpacks a `stasis.code.br` bundle back onto disk: it writes
+`stasis extract` unpacks a `stasis.code.br` bundle, or a
+[`.stasis.tgz`](file-formats.md#stasistgz), back onto disk: it writes
 every bundled source to its original project-relative path, verifying the
 bundle against the `stasis.lock.json` already there, or with `--lock=add` drops
 a matching one next to them. It is the inverse of `stasis bundle`. Because
 unpacking needs no scanner or loaders, the command also ships on the
-zero-dependency core CLI as `stasis-core extract` (identical flags and behaviour).
+zero-dependency core CLI as `stasis-core extract` (identical flags and behaviour),
+which reads a `stasis.code.br` alone: a tar is no zero-dependency work, so it
+refuses a `.stasis.tgz` (`stasis: app.stasis.tgz is a .stasis.tgz, which stasis
+reads and writes and stasis-core can't`).
 
 ```sh
-stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
+stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/(bundle.stasis.code.br|name.stasis.tgz)
 stasis-core extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
 ```
 
@@ -16,7 +20,18 @@ stasis-core extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|no
 | --- | --- |
 | `--output` / `-o` | Directory to extract into. Defaults to cwd; intermediate dirs are created as needed. |
 | `--lock=mode` | What extract does with the output dir's `stasis.lock.json`: `frozen`, `add`, `replace`, `ignore` or `none`, see [The lockfile](#the-lockfile---lock). Defaults to `frozen` when the file is there, else `none`. |
-| positional | The brotli-compressed `stasis.code.br` bundle to read. |
+| positional | The bundle to read: a brotli-compressed `stasis.code.br`, or, under its name alone (`stasis.tgz` or `<name>.stasis.tgz`), a `.stasis.tgz`. |
+
+A `.stasis.tgz` is read as every stasis command reads one: as the bundle of its
+files, held to the `stasis.lock.json` at its top (see
+[file-formats.md](file-formats.md#stasistgz)), so a tgz holding anything else
+fails before the first write, as any invalid bundle does. A tgz under any other
+name is refused (`stasis: app.br is a tgz, which is read as stasis.tgz or
+<name>.stasis.tgz alone`). Its files are then written, and its lockfile derived,
+as a `stasis.code.br`'s: `--lock=add` into a fresh directory writes what `tar
+-xzf` unpacks of a tgz stasis wrote, its lockfile derived anew, which is the one
+the tgz carries but for a `repo` it records (a lockfile derived of any bundle
+records none).
 
 Without any stasis package installed, the repository's
 [`scripts/stasis-extract.mjs`](../scripts/stasis-extract.mjs) writes what

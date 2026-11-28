@@ -1,8 +1,8 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
-import { parseBundleBytes } from './brotli.js'
 import { Bundle } from './bundle.js'
+import { bundleFileReader } from './bundle-file.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
 import { EXECUTE_BITS, canObserveExecuteBits, LOCK_FILE, LOCK_MODES, moduleFileKey, relativeEscapes } from './util.js'
@@ -33,12 +33,20 @@ function firstDifference(bundle, lock, path = '') {
 }
 
 // Bundle.parse and Lockfile.parse throw message-less asserts; wrap so the user learns which file failed.
-function parsedFile(what, path, parse, encoding) {
+function parsedFile(what, path, parse) {
   try {
-    return parse(readFileSync(path, encoding))
+    return parse()
   } catch (cause) {
     throw new Error(`extract: not a valid stasis ${what}: ${path}`, { cause })
   }
+}
+
+// By its name, as a run reads one: a .stasis.tgz through what stasis registers. One stasis-core can't read, or a tgz
+// of another name, is refused as it is, not as an invalid bundle.
+function parsedBundle(path) {
+  const bytes = parsedFile('bundle', path, () => readFileSync(path))
+  const read = bundleFileReader(bytes, path)
+  return parsedFile('bundle', path, () => read(bytes, path))
 }
 
 // Nothing recorded changes, execute bits too, but a payload-free stat:* record, which content of its kind upgrades.
@@ -96,7 +104,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   }
   const bundleAbs = resolve(cwd, bundleFile)
   if (!existsSync(bundleAbs)) throw new Error(`extract: bundle file not found: ${bundleAbs}`)
-  const bundle = parsedFile('bundle', bundleAbs, parseBundleBytes)
+  const bundle = parsedBundle(bundleAbs)
 
   // v0 bundles have null metadata, so no lockfile can be derived (serialize requires name+version).
   const withLockfile = bundle.version === Bundle.VERSION
@@ -154,7 +162,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   }
   const writesLock = lock === 'add' || lock === 'replace'
   const derived = withLockfile && (frozen || writesLock) ? lockfileFromBundle(bundle) : null
-  const onDisk = frozen || merging ? parsedFile('lockfile', lockAbs, (text) => Lockfile.parse(text), 'utf-8') : null
+  const onDisk = frozen || merging ? parsedFile('lockfile', lockAbs, () => Lockfile.parse(readFileSync(lockAbs, 'utf-8'))) : null
   // Every field of the lockfile must match, compared re-serialized, so formatting is free.
   const diff = frozen ? firstDifference(JSON.parse(derived.serialize()), JSON.parse(onDisk.serialize())) : null
   if (diff !== null) throw new Error(`extract: --lock=frozen: the bundle does not match ${lockAbs}: ${diff}`)
