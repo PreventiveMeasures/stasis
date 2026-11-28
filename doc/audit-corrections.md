@@ -1,13 +1,10 @@
 # Audit corrections
 
 `stasis audit` audits a package only when an artifact records some of its real
-code. Some packages ship a file with none of it, such as `ws`'s `browser.js`,
-a stub that only throws. A package recorded only through such a file, plus its
-manifest, is skipped.
-
-Those files are listed as plain data in `@exodus/stasis/audit-corrections`, so
-other tools (one reading bundles on a server, or walking a tree
-`@preventive/deptree` laid out) can apply the same rule.
+code. A package recorded only through its manifest and a file with none of it,
+such as `ws`'s `browser.js` (a stub that only throws), is skipped.
+`@exodus/stasis/audit-corrections` lists those files as plain data, for other
+tools to apply the same rule.
 
 ## What is corrected
 
@@ -29,13 +26,13 @@ isEvidenceFile('ws', '8.22.0', 'lib/websocket.js') // true
 isEvidenceFile('ws', '8.22.0', 'package.json') // false: a manifest
 ```
 
-- `isEvidenceFile(name, version, file, ecosystem = 'npm')` is the rule
+- `isEvidenceFile(name, version, file, ecosystem = 'npm')`: the rule
   `stasis audit` applies to every recorded file and import edge. A file is
   evidence unless it is a manifest of its ecosystem (`package.json` for npm,
-  `Cargo.toml` for a crate, and so on) or a corrected file at a version in its
-  range. `file` is relative to the package's directory.
-- `CORRECTIONS` is a frozen array of plain data, one entry per corrected file,
-  the same objects the audit reads:
+  `Cargo.toml` for a crate, …) or a corrected file at a version in its range.
+  `file` is relative to the package's directory.
+- `CORRECTIONS`: a frozen array of plain data, one entry per corrected file,
+  the objects the audit reads:
 
   ```js
   {
@@ -47,13 +44,11 @@ isEvidenceFile('ws', '8.22.0', 'package.json') // false: a manifest
   }
   ```
 
-  - `range` is the semver range the correction was verified for. A version
-    outside it, a pre-release the range excludes, or an unparsable version is
-    never corrected, so the package stays audited.
-  - `integrity` lists the sha512 of every distinct copy of `file` the versions
-    in `range` publish, in a stasis lockfile's `sha512-<base64>` form. A tool
-    holding the file's bytes can check they are one of these; a range alone
-    can't tell the real stub from other content at the same path:
+  - `range`: the semver range the correction was verified for. A version
+    outside it, or unparsable, is never corrected.
+  - `integrity`: the sha512 of every distinct copy of `file` the versions in
+    `range` publish, in a stasis lockfile's `sha512-<base64>` form, for a tool
+    holding the file's bytes to check:
 
     ```js
     import { createHash } from 'node:crypto'
@@ -64,7 +59,7 @@ isEvidenceFile('ws', '8.22.0', 'package.json') // false: a manifest
 
 ## Changing a correction
 
-A range is widened only after checking the file in every release the wider
-range adds, read from each release's registry tarball and held to its registry
-integrity. Any new copy of the file goes into `integrity`, and the boundary
-tests in `tests/audit.test.js` move to the new edge of the range.
+A range is widened only after checking the file in every release it adds, from
+its registry tarball held to its registry integrity; new copies go into
+`integrity`, and the boundary tests in `tests/audit.test.js` move to the new
+edge.
