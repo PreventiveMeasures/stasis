@@ -16,8 +16,8 @@ export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 export const installedAccounts = (modules, root, options) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root, options)) || new Map()
 
 // A stasis.lock.json and the files it attests, gzipped as a tar, as `stasis.tgz` or `<name>.stasis.tgz`. A tar is no
-// zero-dependency work, so stasis's run-archived.js registers here what reads and writes one
-// (`globalThis[ARCHIVED]`, `{ read(bytes, path), write(bundle) }`; bundle-file.js's).
+// zero-dependency work, so stasis's run-archived.js, else a bundler plugin, registers here what reads and writes one
+// (`globalThis[ARCHIVED]`, `{ read(bytes, path), write(bundle) }`, stasis-plugins' archived.js; bundle-file.js's).
 export const TGZ_FILE = 'stasis.tgz'
 export const ARCHIVED = Symbol.for('@exodus/stasis-core/archived')
 export const isTgzName = (path) => {

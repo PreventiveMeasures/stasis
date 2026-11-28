@@ -1785,9 +1785,10 @@ attests, as `tar -czf` packs what `stasis extract --lock=add` writes, named
 write one with `--format=tgz` or an `--output` so named (`stasis run` writes
 none). `stasis validate`, `run` (`--bundle=load` or `frozen`),
 `build`, `audit`, `diff` and `sbom` read it as the bundle of its files, its
-lockfile beside it; a tgz under any other name (gzip's leading bytes), and
-anything else under its name, is refused. Its tar is read with
-`@preventive/archive`, and it is refused, naming the path, unless it holds:
+lockfile beside it, as do the bundler plugins (`bundle: 'load'` or `'frozen'`,
+through `@exodus/stasis-plugins/archived`); a tgz under any other name (gzip's
+leading bytes), and anything else under its name, is refused. Its tar is read
+with `@preventive/archive`, and it is refused, naming the path, unless it holds:
 
 - each file the lockfile attests, at its path from the tgz's top, of the bytes
   its integrity is of and the execute bit it attests (any of `0o111`);

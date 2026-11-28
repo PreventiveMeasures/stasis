@@ -1,7 +1,8 @@
 import { compressBundle, parseBundleBytes } from './brotli.js'
 import { ARCHIVED, assert, isGzip, isTgzName, misnamedTgz } from './util.js'
 
-// What reads and writes a .stasis.tgz, which stasis registers (run-archived.js): stasis-core, importing nothing, has none.
+// What reads and writes a .stasis.tgz, which stasis (run-archived.js) and a bundler plugin register: stasis-core,
+// importing nothing, has none.
 function archived(path) {
   assert(globalThis[ARCHIVED], `stasis: ${path} is a .stasis.tgz, which stasis reads and writes and stasis-core can't (it writes a stasis.code.br)`)
   return globalThis[ARCHIVED]

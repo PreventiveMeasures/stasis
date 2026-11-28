@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict'
 import { isUtf8 } from 'node:buffer'
+import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 import { DEFAULT_LOCK, assertKnownKeys, assertOption } from '@exodus/stasis-core/config'
 import { ensureStateForLoader, isLoaderInstalled } from '@exodus/stasis-core/hooks'
 import { State } from '@exodus/stasis-core/state'
-import { classifyExtension, extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
+import { ARCHIVED, classifyExtension, extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
+
+// A State here reads a .stasis.tgz bundle through archived.js, as stasis-core can't. Loaded only where nothing has
+// registered a reader: `stasis run` preloads its own ahead of its loader, which would capture a build reaching that
+// copy without its graph.
+const require = createRequire(import.meta.url)
+globalThis[ARCHIVED] ??= require('./archived.js').archived
 
 // The Config options a plugin takes; not `lockFile`, as the lockfile is always the preload's.
 const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']

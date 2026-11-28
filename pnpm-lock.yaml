@@ -286,6 +286,9 @@ importers:
       '@exodus/stasis-core':
         specifier: 1.0.0-rc.6
         version: link:../stasis-core
+      '@preventive/archive':
+        specifier: ^1.4.1
+        version: 1.4.1(@noble/hashes@2.4.0)
 
 packages:
 

@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { State } from '@exodus/stasis-core/state'
 import { servedByBundle } from '@exodus/stasis-core/state-util'
-import { upsert } from '@exodus/stasis-core/util'
+import { ARCHIVED, upsert } from '@exodus/stasis-core/util'
 import { transformContext } from './metro-babel-transformer.js'
 
 // The worker half of StasisMetro, wired by withStasis() as `transformerPath` around the project's transformer. It
@@ -14,6 +14,10 @@ import { transformContext } from './metro-babel-transformer.js'
 // reads and hashes each file before this runs, so sources must stay on disk: attested bytes, fail closed on drift.
 
 const require = createRequire(import.meta.url)
+
+// A worker's load State reads a .stasis.tgz bundle through archived.js, where nothing registered a reader (as
+// plugins.js does).
+globalThis[ARCHIVED] ??= require('./archived.js').archived
 
 // The project's transformer: the `transformerPath` withStasis() replaced, else EXODUS_STASIS_METRO_BASE_TRANSFORMER,
 // else Metro's default, a name resolved from the project root first, as Metro requires it from its own dir. This

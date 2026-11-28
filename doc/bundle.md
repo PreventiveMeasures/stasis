@@ -67,9 +67,9 @@ A `--output` named `stasis.tgz` or `<name>.stasis.tgz`, or `--format=tgz`
 (written to `stasis.tgz` where the `stasis.code.br` would be, without
 `--output`), writes a [`.stasis.tgz`](file-formats.md#stasistgz) in its place:
 the lockfile of the bundle's files and each file, which every command that
-reads a bundle reads as that bundle. It records no `reason` (what `stasis
-audit --reason` and `--why` read), as a lockfile records none. `--add` merges
-into one as into a `stasis.code.br`.
+reads a bundle, and a bundler plugin's build, reads as that bundle. It records
+no `reason` (what `stasis audit --reason` and `--why` read), as a lockfile
+records none. `--add` merges into one as into a `stasis.code.br`.
 
 `--add` unions the fresh build into the bundle already on disk at `--output`,
 to merge more entries and their import graph into one bundle; a file both
