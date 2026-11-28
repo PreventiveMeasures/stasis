@@ -257,7 +257,7 @@ test('extract asserts the lockfile already in the output dir unless --lock=repla
   const lockText = readFileSync(join(outDir, 'stasis.lock.json'), 'utf8')
   const overwrite = run(['extract', '--lock=replace', '-o', outDir, bundlePath])
   t.assert.notEqual(overwrite.status, 0)
-  t.assert.match(overwrite.stderr, /extract: src\/entry\.js exists with other content, which extract never overwrites/)
+  t.assert.match(overwrite.stderr, /extract: src\/entry\.js exists with other content/)
   t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), lockText)
   rmSync(join(outDir, 'src'), { recursive: true })
   const replaced = run(['extract', '--lock=replace', '-o', outDir, bundlePath])

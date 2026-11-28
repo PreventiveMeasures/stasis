@@ -249,7 +249,7 @@ export function directoryEntryError(entries, cwd = process.cwd(), host = diskHos
   if (dirs.length === 0 || entries.every((e) => e.endsWith('.sol') || dirs.includes(e))) return null
   return absent.length > 0
     ? `no such file or directory: ${absent[0]}`
-    : `a directory entry is only supported for Solidity bundles (it stands for the .sol files under it): ${dirs[0]}`
+    : `a directory entry is only supported for Solidity bundles: ${dirs[0]}`
 }
 
 // Each kind of bundle: `is` an entry of it (`what` it is), and its build from disk, but a JS one's (buildJs).
@@ -677,10 +677,10 @@ function fieldBuildOptions(name, { cwd, scope, resources, packageJSON = false, h
   const resourcesGiven = resources !== undefined
   const config = scope === undefined || !resourcesGiven || !packageJSON ? readConfigFile(name, cwd, host) : null
   if (scope !== undefined && scope !== 'full') {
-    throw new Error(`${name}: --scope=${scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
+    throw new Error(`${name}: --scope=${scope} is not supported with --mainFields or --metro`)
   }
   if (scope === undefined && config?.scope !== undefined && config.scope !== 'full') {
-    throw new Error(`${name}: ${CONFIG_FILE} sets scope ${JSON.stringify(config.scope)}, which --mainFields and --metro don't support (they always build a full-scope bundle); pass --scope=full to override it`)
+    throw new Error(`${name}: ${CONFIG_FILE} sets scope ${JSON.stringify(config.scope)}, which --mainFields and --metro don't support; pass --scope=full`)
   }
   if (config?.packageJSON !== undefined && typeof config.packageJSON !== 'boolean') {
     throw new Error(`${name}: ${CONFIG_FILE} sets packageJSON ${JSON.stringify(config.packageJSON)}, which must be true or false`)
@@ -1158,7 +1158,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (split !== undefined) {
     throw new Error(
       `${split.spec} from ${displayPath(split.parentURL, baseDir)} resolves within the project root in one context and outside it, ` +
-      `at ${relative(baseDir, fileURLToPath(split.outsideURL))}, in another: a bundle can't leave out the one without serving the other in its place`
+      `at ${relative(baseDir, fileURLToPath(split.outsideURL))}, in another`
     )
   }
   if (restrict !== null && !voided()) refuseRestricted(usesEmpty && metroEmpty !== null ? [...metroTaken, metroEmpty] : metroTaken, restrict, host)
@@ -1441,8 +1441,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   for (const [key, { parentURL, spec }] of configMissed) {
     if (!resolutions.get(key.slice(0, key.indexOf('\0')))?.has(spec)) continue
     throw new Error(
-      `${spec} from ${displayPath(parentURL, baseDir)} resolves under Metro, for the app, and not under Node, for the ` +
-      "project's configs: a bundle can't keep Node's miss without serving Node Metro's file in its place"
+      `${spec} from ${displayPath(parentURL, baseDir)} resolves under Metro, for the app, and not under Node, for the project's configs`
     )
   }
 
@@ -1897,7 +1896,7 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, ...g
 
 // Run `stasis bundle` (doc/bundle.md).
 export async function bundleCommand({ cwd = process.cwd(), output, format: asked, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
-  if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
+  if (add && output === '-') throw new Error('bundleCommand: --add cannot be combined with --output=-')
   checkLockfileOnly('bundleCommand: ', { lockfileOnly, lockfile, output, add, brotliQuality, format: asked, named: true })
   const format = bundleFormat('bundleCommand: ', { format: asked, output, brotliQuality })
   const built = await buildOfCommand({ ...options, cwd, output, format, lockfile, lockfileOnly, add })
@@ -1960,7 +1959,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, format: asked
         // With none on disk the bundle's files can't be attested (their hashes live only in the missing
         // lockfile): refused rather than written under-attesting.
         if (!existsSync(lockAbs)) {
-          throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockTarget}: the bundle at ${target} already carries files a fresh lockfile wouldn't attest, and there's no existing lockfile to merge into. Write --lockfile alongside the bundle from the first build, or drop --lockfile.`)
+          throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockTarget}: the bundle at ${target} already carries files, and there's no existing lockfile to merge into`)
         }
         existingLock = existingAt('lockfile', lockTarget, lockAbs, (buf) => Lockfile.parse(buf.toString('utf8')))
         // It may record more than the bundle beside it (a broader run's capture).

@@ -134,7 +134,7 @@ let loaded
 export function loadGenerator() {
   if (loaded) return loaded
   let main
-  try { main = require.resolve(GENERATOR) } catch (cause) { throw new Error(`--generate=prisma needs the optional '${GENERATOR}' ${GENERATOR_VERSION} dependency; install it (e.g. \`npm i ${GENERATOR}@${GENERATOR_VERSION}\`)`, { cause }) }
+  try { main = require.resolve(GENERATOR) } catch (cause) { throw new Error(`--generate=prisma needs the optional '${GENERATOR}' ${GENERATOR_VERSION} dependency; install it`, { cause }) }
   const own = createRequire(main)
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
@@ -365,7 +365,7 @@ function committedOutput(host, generator, path) {
 
 const ours = (generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null
 const SKIPPED = `stasis generates the ${JSON.stringify(PROVIDER)} provider's alone`
-const notGenerating = (writer, why, committed) => `not generating ${writer}: ${why}${committed === undefined ? '' : `, and takes its output, ${committed}, as committed, not as \`prisma generate\` would write it`}`
+const notGenerating = (writer, why, committed) => `not generating ${writer}: ${why}${committed === undefined ? '' : `, and takes its output, ${committed}, as committed`}`
 
 // Not warned of: with no `output`, it writes types alone into its own package (a placeholder in node_modules), but
 // with `generateDatamodel = "true"` getDatamodel() too, code a bundle may run.
@@ -463,7 +463,7 @@ async function generateSchema({ host, path, prisma, say, skip }) {
       continue
     }
     const outputDir = outputOf(generator, path)
-    if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
+    if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules`)
     const client = { host, version: prisma.version, prismaDir: posix.dirname(prisma.file) }
     const peer = loadGenerator().peer(client)
     const options = generatorOptions(peer, host, generator.config, outputDir)

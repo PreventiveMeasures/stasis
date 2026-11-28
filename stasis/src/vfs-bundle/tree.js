@@ -124,7 +124,7 @@ function npmWorkspaceRoot(host, dir, os) {
     const declared = readJson(join(above, 'package.json'), host)?.workspaces
     if (!declared) return false
     const globs = Array.isArray(declared.packages) ? declared.packages : declared
-    if (!Array.isArray(globs) || globs.some((glob) => typeof glob !== 'string')) throw new Error(`${join(above, 'package.json')}: workspaces: expected a sequence of globs, which npm fails without`)
+    if (!Array.isArray(globs) || globs.some((glob) => typeof glob !== 'string')) throw new Error(`${join(above, 'package.json')}: workspaces: expected a sequence of globs`)
     return findNpmWorkspaces({ project: projectView(host, above), os: os ?? process.platform }).includes(relative(above, dir))
   })
 }
@@ -234,7 +234,7 @@ export function treeHost(tree, project, reads) {
 }
 
 export function checkLazy(name, packageManager) {
-  if (!PACKAGE_MANAGERS[packageManager].lazy) throw new Error(`${name}: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; ${packageManager}'s is not`)
+  if (!PACKAGE_MANAGERS[packageManager].lazy) throw new Error(`${name}: lazy is taken with pnpm and npm alone, not ${packageManager}`)
 }
 
 export const lazyTaken = (project, packageManager, cwd) => PACKAGE_MANAGERS[packageManager].lazy === true && !yarnclean(project, cwd)?.keeps
@@ -324,7 +324,7 @@ function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu
   if (there !== undefined) throw new Error(`${there} is there already, and the tree is laid out from ${file} alone, over nothing installed: remove it first`)
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
   const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
-  if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take: what it keeps of one package turns on what the others hold, which a lazy tree has not fetched`)
+  if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take`)
   const root = project.realpath(found)
   const build = async () => {
     const built = await pm.build(view, version, file, { os, cpu, libc, client, cache, lazy, production: !installDevDependencies })
@@ -343,7 +343,7 @@ function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu
 
 export const lockfilesManagers = (name, lockfiles) => lockfiles.map((path) => {
   const found = PACKAGE_MANAGER_NAMES.find((pm) => lockfileOf(pm) === posix.basename(path))
-  if (found === undefined) throw new Error(`${name}: ${CONFIG_FILE}'s lockfiles names ${path}, which is none of ${PACKAGE_MANAGER_NAMES.map(lockfileOf).join(', ')}, the lockfiles a tree is laid out from`)
+  if (found === undefined) throw new Error(`${name}: ${CONFIG_FILE}'s lockfiles names ${path}, which is none of ${PACKAGE_MANAGER_NAMES.map(lockfileOf).join(', ')}`)
   return found
 })
 

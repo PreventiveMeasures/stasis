@@ -2738,7 +2738,7 @@ test('buildBundle --metro refuses a specifier one platform resolves within the r
     const options = { cwd: tmp, entries: ['index.js'], metro: true }
     await t.assert.rejects(
       () => buildBundle({ ...options, platforms: ['ios', 'android'] }),
-      /\.\/dep from index\.js resolves within the project root in one context and outside it, at .*dep\.js, in another: a bundle can't leave out the one without serving the other in its place/,
+      /\.\/dep from index\.js resolves within the project root in one context and outside it, at .*dep\.js, in another/,
     )
     // Each alone has nothing to split.
     t.assert.equal(importTarget(await buildBundle({ ...options, platforms: ['ios'] }), 'index.js', './dep'), 'dep.ios.js')
@@ -3159,7 +3159,7 @@ cliTest('CLI: a --metro bundle fails closed under plain --bundle=load', withTmp(
   // Its code carries a generic format, being Metro's to build -> a clear error from Node, not a crash.
   const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${out}`, 'src/entry.js'], { cwd: fieldsFixture })
   t.assert.notEqual(load.status, 0)
-  t.assert.match(load.stderr, /cannot execute '.*src\/entry\.js': the bundle carries it as 'generic-javascript', as it carries the code Metro builds from source, which is for Metro, not Node/)
+  t.assert.match(load.stderr, /cannot execute '.*src\/entry\.js': the bundle carries it as 'generic-javascript', for Metro/)
 }))
 
 cliTest('CLI: a --metro bundle verifies clean against its own companion lockfile at load (no ERR_ASSERTION)', withTmp(async (t, tmp) => {
@@ -3553,7 +3553,7 @@ cliTest('--mainFields/--metro take --scope, else the cwd\'s stasis.config.json s
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'node_modules' }))
   const fromConfig = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.notEqual(fromConfig.status, 0)
-  t.assert.match(fromConfig.stderr, /stasis\.config\.json sets scope "node_modules", which --mainFields and --metro don't support .*; pass --scope=full to override it/)
+  t.assert.match(fromConfig.stderr, /stasis\.config\.json sets scope "node_modules", which --mainFields and --metro don't support; pass --scope=full$/m)
   t.assert.ok(!existsSync(outPath))
   await t.assert.rejects(
     () => buildBundle({ cwd: tmp, entries: ['src/entry.js'], mainFields: ['react-native', 'browser', 'main'] }),

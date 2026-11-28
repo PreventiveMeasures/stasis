@@ -14,7 +14,7 @@ export function parseDefine(name, define) {
   if (define === undefined) return new Map()
   if (!isPlainObject(define)) throw usageError(name, "define must be an object of each name's value", TypeError)
   for (const [key, value] of Object.entries(define)) {
-    if (!NAME.test(key)) throw usageError(name, `--define names an identifier or a dotted path of them (e.g. __DEV__, process.env.NODE_ENV), not ${JSON.stringify(key)}`)
+    if (!NAME.test(key)) throw usageError(name, `--define names an identifier or a dotted path of them, not ${JSON.stringify(key)}`)
     if (!(value === null || ['string', 'boolean'].includes(typeof value) || Number.isFinite(value))) {
       throw usageError(name, `--define's value for ${key} must be a string, number, boolean or null, not ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`)
     }
@@ -24,17 +24,17 @@ export function parseDefine(name, define) {
 
 // `--define=KEY=VALUE` texts -> parseDefine's object. VALUE is JSON, as esbuild's --define takes it.
 export function parseDefineFlags(name, texts) {
-  if (texts.length === 0) throw usageError(name, '--define must give at least one KEY=VALUE (e.g. --define=__DEV__=false)')
+  if (texts.length === 0) throw usageError(name, '--define must give at least one KEY=VALUE')
   const define = {}
   for (const text of texts) {
     const eq = text.indexOf('=')
-    if (eq <= 0) throw usageError(name, `--define must be KEY=VALUE (e.g. --define=__DEV__=false), not ${JSON.stringify(text)}`)
+    if (eq <= 0) throw usageError(name, `--define must be KEY=VALUE, not ${JSON.stringify(text)}`)
     const key = text.slice(0, eq)
     if (Object.hasOwn(define, key)) throw usageError(name, `--define gives ${key} a value twice`)
     try {
       define[key] = JSON.parse(text.slice(eq + 1))
     } catch {
-      throw usageError(name, `--define's value for ${key} must be JSON: a string, quoted (--define=${key}='"production"'), a number, true, false or null, not ${JSON.stringify(text.slice(eq + 1))}`)
+      throw usageError(name, `--define's value for ${key} must be JSON (a quoted string, a number, true, false or null), not ${JSON.stringify(text.slice(eq + 1))}`)
     }
   }
   parseDefine(name, define)

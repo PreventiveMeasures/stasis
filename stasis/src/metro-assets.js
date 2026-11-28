@@ -27,8 +27,7 @@ export function assetRegistryResolver(platform, carried) {
     const root = roots.size === 1 ? [...roots][0] : nearest(rel)
     if (root !== undefined) return pick(root)
     if (roots.size === 0) {
-      throw new Error(`stasis build: --metro builds '${rel}' into a module requiring ${ASSET_REGISTRY}, which the artifact `
-        + 'doesn\'t carry; bundle it with `stasis bundle --metro --resources=...` from a project with react-native installed')
+      throw new Error(`stasis build: --metro builds '${rel}' into a module requiring ${ASSET_REGISTRY}, which the artifact doesn't carry`)
     }
     throw new Error(`stasis build: --metro found several ${ASSET_REGISTRY} for '${rel}', none of them nearest: ${[...roots].join(', ')}`)
   }

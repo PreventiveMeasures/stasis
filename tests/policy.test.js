@@ -138,7 +138,7 @@ test('parsePolicy refuses what is no list of patterns within the config\'s direc
 })
 
 test('parsePolicy supports simple patterns alone, refusing any other a glob may read otherwise', (t) => {
-  const refused = (key, pattern) => t.assert.throws(() => parsePolicy('cfg', { [key]: [pattern] }), { message: `cfg: ${key}: ${JSON.stringify(pattern)} is not supported: a pattern is names of letters, digits and \`_.@+-\`, with \`*\`, \`?\`, \`**\` as a whole name and \`{a,b}\` lists (none nested); match any other character with \`?\`` }, pattern)
+  const refused = (key, pattern) => t.assert.throws(() => parsePolicy('cfg', { [key]: [pattern] }), { message: `cfg: ${key}: ${JSON.stringify(pattern)} is not supported: use letters, digits, \`_.@+-\`, \`*\`, \`?\`, \`**\` and unnested \`{a,b}\`` }, pattern)
   const unsupported = [
     'src\\a.js', 'app/[id].tsx', 'x]y', 'a[[:digit:]]', // a class, an escape
     '@(a|b).js', '!(a)', '{@,x}(a)', '(group)/page.js', 'a$b', 'a b', 'a,b', // an extglob, and what one is made of
@@ -342,7 +342,7 @@ test('buildVfsBundle (stasis github-bundle) holds the bundle to the config\'s ru
 test('a module pattern is the shape of a name: one segment, or a scope\'s two', (t) => {
   for (const pattern of ['left-pad', '@babel/core', '@babel/*', '@scope/**', '**', 'lodash.*', '{left,right}']) parsePolicy('cfg', { disallowedModules: [pattern] })
   for (const pattern of ['node_modules/evil', './evil', 'a/b/c', '{left,node_modules/evil}', '@scope/', '..']) {
-    t.assert.throws(() => parsePolicy('cfg', { disallowedModules: [pattern] }), { message: `cfg: disallowedModules: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")` }, pattern)
+    t.assert.throws(() => parsePolicy('cfg', { disallowedModules: [pattern] }), { message: `cfg: disallowedModules: ${JSON.stringify(pattern)} is no package name or pattern of names` }, pattern)
   }
 })
 

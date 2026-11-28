@@ -144,7 +144,7 @@ async function assertOwnCommit(name, client, github, sha, branch) {
     if (error instanceof ValidateError) throw new Error(`${name}: ${error.message}`, { cause: error })
     throw error
   }
-  if (ref === null) throw new Error(`${name}: ${sha} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give a commit of its own`)
+  if (ref === null) throw new Error(`${name}: ${sha} is in the history of no branch or tag of ${repository.name()}: give a commit of its own`)
 }
 
 // `own`: a given sha is held to the repo's history (assertOwnCommit), before anything else is fetched. Without

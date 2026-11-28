@@ -332,7 +332,7 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     await writeFile(join(tmp, 'src', 'shared.mjs'), "export const v = 'TAMPERED'\n")
     const poisoned = await run(['run', '--lock=ignore', '--bundle=load', '--import', './preload.mjs', 'src/entry.mjs'], { cwd: tmp })
     t.assert.notEqual(poisoned.status, 0)
-    t.assert.match(poisoned.stderr, /divergent cached instance/)
+    t.assert.match(poisoned.stderr, /a preload already executed it from disk, with other bytes/)
     t.assert.doesNotMatch(poisoned.stdout, /TAMPERED/)
 
     // Without the preload the bundle serves the attested bytes; the tampered disk is irrelevant.

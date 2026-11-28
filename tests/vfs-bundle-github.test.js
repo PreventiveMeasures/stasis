@@ -87,7 +87,7 @@ test("buildGitHubBundle holds a commit given by its sha to the repo's history, r
   t.assert.equal(await own({ history: { main: [], release: [RELEASE, SHA] } }), SHA, "in another branch's history")
   // A fork's, which GitHub serves through the repo's name too: in the history of none of its branches or tags.
   const fork = fakeClient(files, { history: { main: [], release: [RELEASE] }, tags: { 'v1.0.0': TAGGED } })
-  await t.assert.rejects(build({ client: fork, entries: ['src/a.js'] }), { message: `buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB} (a fork's, say, which GitHub serves through its name too): give a commit of its own` })
+  await t.assert.rejects(build({ client: fork, entries: ['src/a.js'] }), { message: `buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB}: give a commit of its own` })
   t.assert.deepStrictEqual(methods(fork), ['getRepoHead', 'compareCommits', 'listRepoTags', 'listRepoBranches', 'compareCommits'], 'nothing listed or downloaded')
   // More other branches than are compared, none of those compared having it: refused, as one left might.
   const many = fakeClient(files, { history: Object.fromEntries([['main', []], ...Array.from({ length: 101 }, (_, i) => [`b${i}`, [String(i).padStart(40, 'e')]])]) })
@@ -117,7 +117,7 @@ test("buildGitHubBundle builds a branch's head, and holds a commit said to be of
   t.assert.equal((await build({ client: fakeClient(files, { history }), branch: 'gone', entries: ['src/a.js'] })).bundle.repo.commit, SHA)
   // A fork's is refused whatever branch it is said to be of; a branch to bundle the head of that isn't there, as GitHub refuses it.
   const fork = fakeClient(files, { history: { main: [], release: [RELEASE] } })
-  await t.assert.rejects(build({ client: fork, branch: 'release', entries: ['src/a.js'] }), { message: `buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB} (a fork's, say, which GitHub serves through its name too): give a commit of its own` })
+  await t.assert.rejects(build({ client: fork, branch: 'release', entries: ['src/a.js'] }), { message: `buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB}: give a commit of its own` })
   t.assert.ok(!methods(fork).includes('getRepoTarball'), 'nothing downloaded')
   await t.assert.rejects(build({ client: fakeClient(files, { history }), sha: undefined, branch: 'gone', entries: ['src/a.js'] }), { name: 'HttpError', status: 404 })
 })
@@ -242,7 +242,7 @@ test('suggestedEntries resolves the entries as the build does with metro, platfo
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios', 'android', 'web'] }), ['index.ios.js', 'index.android.js', 'index.js'])
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app) }), ['index.js'])
   // Checked as the build checks them.
-  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(app), metro: true }), /^Error: suggestedEntries: --metro requires --platforms \(e\.g\. --platforms=ios,android\)$/u)
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(app), metro: true }), /^Error: suggestedEntries: --metro requires --platforms$/u)
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf(app), platforms: ['ios'] }), /^Error: suggestedEntries: --platforms is only valid with --metro$/u)
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'], conditions: ['x'] }), /^Error: suggestedEntries: --conditions can't be combined with --metro/u)
   await t.assert.rejects(suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(app), metro: true, platforms: ['a/b'] }), /^Error: suggestedEntries: invalid platform 'a\/b'/u)
@@ -635,7 +635,7 @@ test("buildGitHubBundle takes a glob pattern in stasis.config.json's entries as 
   const one = await build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js'] })
   t.assert.deepStrictEqual([...one.bundle.sources.keys()].toSorted(), ['apps/a/src/a.android.js', 'apps/a/src/a.ios.js', 'apps/a/src/index.js'])
   await t.assert.rejects(build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js'], platforms: ['ios'] }),
-    /^Error: buildVfsBundle: --platforms=ios is given, but stasis\.config\.json's entries build "apps\/\*\/src\/index\.js" with --platforms=ios,android: /u)
+    /^Error: buildVfsBundle: --platforms=ios is given, but stasis\.config\.json's entries build "apps\/\*\/src\/index\.js" with --platforms=ios,android$/u)
   await t.assert.rejects(build({ client: fakeClient(repo()), entries: ['apps/a/src/index.js', 'main.js'] }), /stasis\.config\.json's entries name apps\/a\/src\/index\.js but not main\.js/u)
   // An entry's rules are its pattern's, named once.
   await t.assert.rejects(build({ client: fakeClient(repo({ 'apps/*/src/index.js': { ...metro, allowedPaths: ['apps'] } })) }), /^Error: buildVfsBundle: stasis\.config\.json: entries "apps\/\*\/src\/index\.js": allowedPaths does not allow lib\/shared\.js$/u)
@@ -658,7 +658,7 @@ test("buildGitHubBundle builds stasis.config.json's entries with the options it 
   const typed = await build({ client: fakeClient({ ...ts, 'tsconfig.json': json({ compilerOptions: { paths: { '~/*': ['./src/*'] } } }), 'src/a.ts': "import '~/b.js'\n", 'src/b.ts': 'export default 1\n' }), tsconfig: 'tsconfig.json' })
   t.assert.deepStrictEqual([...typed.bundle.sources.keys()].toSorted(), ['src/a.ts', 'src/b.ts'], '--tsconfig, its --typescript the entry\'s')
   // Options given for entries it doesn't name are checked on their own, once the tree shows nothing completes them.
-  await t.assert.rejects(build({ client: fakeClient(configuredRepo()), entries: ['main.js'], metro: true }), /^Error: buildVfsBundle: --metro requires --platforms \(e\.g\. --platforms=ios,android\)$/u)
+  await t.assert.rejects(build({ client: fakeClient(configuredRepo()), entries: ['main.js'], metro: true }), /^Error: buildVfsBundle: --metro requires --platforms$/u)
   const { 'stasis.config.json': _config, ...bare } = configuredRepo()
   await t.assert.rejects(build({ client: fakeClient(bare), platforms: ['ios'] }), /^Error: buildGitHubBundle: --platforms is only valid with --metro$/u)
   await t.assert.rejects(build({ client: fakeClient(bare), packageManager: undefined, tsconfig: 'x.json' }), /^Error: buildGitHubBundle: --tsconfig is only valid with --typescript$/u)
@@ -681,11 +681,11 @@ test("buildGitHubBundle refuses an option given that stasis.config.json's entrie
   }
   await Promise.all(Object.entries(refused).map(async ([message, { config, ...options }]) => {
     const files = configuredRepo(config && { './cli.js': Object.values(config)[0] })
-    const pattern = new RegExp(`^Error: buildVfsBundle: ${RegExp.escape(message)}: an entry it names is built with its options there$`, 'u')
+    const pattern = new RegExp(`^Error: buildVfsBundle: ${RegExp.escape(message)}$`, 'u')
     // By default, before buildVfsBundle sees them, by buildGitHubBundle.
     await t.assert.rejects(build({ client: fakeClient(files), ...options }), options.entries ? pattern : new RegExp(pattern.source.replace('buildVfsBundle', 'buildGitHubBundle'), 'u'), message)
   }))
-  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(configuredRepo()), jsx: true }), /^Error: suggestedEntries: --jsx is given, but stasis\.config\.json's entries build "\.\/cli\.js" without --jsx: /u, 'as the build checks it')
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(configuredRepo()), jsx: true }), /^Error: suggestedEntries: --jsx is given, but stasis\.config\.json's entries build "\.\/cli\.js" without --jsx$/u, 'as the build checks it')
   // One it sets alike is no other: the same platforms in another order, jsx and flow, which metro
   // turns on, or a define of the same value.
   const same = await build({ client: fakeClient(configuredRepo()), entries: ['index.js'], metro: true, platforms: ['android', 'ios', 'ios'], jsx: true, flow: true })
@@ -719,7 +719,7 @@ test("buildGitHubBundle builds every JS entry with stasis.config.json's own defi
   ].map(([config, options, by]) => t.assert.rejects(build({ client: fakeClient(repo(config)), define: { __DEV__: true }, ...options }),
     new RegExp(`^Error: ${by}: ${RegExp.escape(other)}$`, 'u'), JSON.stringify([config, options]))))
   await t.assert.rejects(build({ client: fakeClient(repo({ define: '__DEV__=false', entries: { './cli.js': { define: '__DEV__=true' } } })) }),
-    /^Error: buildGitHubBundle: stasis\.config\.json: define can't be combined with entries "\.\/cli\.js"'s define: /u)
+    /^Error: buildGitHubBundle: stasis\.config\.json: define can't be combined with entries "\.\/cli\.js"'s define$/u)
 })
 
 test("buildGitHubBundle refuses stasis.config.json's entries that run a program: no option allows them", async (t) => {
@@ -1300,7 +1300,7 @@ test('buildGitHubBundle needs the optional minimatch for extra and a pattern in 
   const [status] = await once(child, 'close')
   t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderr).toString('utf8')}`)
   const out = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
-  const refusal = "A glob over a Vfs (stasis.config.json's extra, or a pattern in its entries) needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)"
+  const refusal = "A glob over a Vfs (stasis.config.json's extra, or a pattern in its entries) needs the optional 'minimatch' 10 dependency; install it"
   t.assert.equal(out.refused, refusal)
   t.assert.equal(out.config, refusal, '`!` entries alone, without `!stasis.config.json`, still name the config')
   t.assert.equal(out.empty, refusal, 'no entries still name the config')
@@ -1796,7 +1796,7 @@ test("stasis github-bundle --sha refuses a commit of no branch's or tag's histor
   await mkdir(out)
   const { status, stderr } = await githubBundleCli([GITHUB, `--sha=${SHA}`, '--lockfile', 'src/a.js'], { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), STASIS_TEST_CLIENT: JSON.stringify({ history: { main: [] } }), STASIS_CACHE_DIR: '', XDG_CACHE_HOME: join(tmp, 'cache') } })
   t.assert.equal(status, 1, stderr)
-  t.assert.ok(stderr.includes(`Error: buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB} (a fork's, say, which GitHub serves through its name too): give a commit of its own\n`), stderr)
+  t.assert.ok(stderr.includes(`Error: buildGitHubBundle: ${SHA} is in the history of no branch or tag of ${GITHUB}: give a commit of its own\n`), stderr)
   t.assert.deepStrictEqual(await readdir(out), [], 'no bundle or lockfile written')
 })
 

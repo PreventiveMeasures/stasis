@@ -508,7 +508,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const listed = checksumOf(dir)?.files[fileRel.slice(dir.length + 1)]
     if (typeof listed === 'string') {
       const actual = createHash('sha256').update(buf).digest('hex')
-      if (actual !== listed) throw new Error(`${fileRel} isn't the file ${dir}/.cargo-checksum.json lists (sha256 ${actual}, listed ${listed}): changed since \`cargo vendor\`, which cargo refuses to build`)
+      if (actual !== listed) throw new Error(`${fileRel} isn't the file ${dir}/.cargo-checksum.json lists (sha256 ${actual}, listed ${listed}): changed since \`cargo vendor\``)
     }
     verified.add(fileRel)
   }

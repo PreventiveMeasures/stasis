@@ -72,7 +72,7 @@ function alreadyInPlace(abs, file, content, bundleId) {
   }
   if (`${stats.dev}:${stats.ino}` === bundleId) throw new Error(`extract: ${file} is the bundle being extracted`)
   if (!stats.isFile()) throw new Error(`extract: ${file} exists and is not a file`)
-  if (!readFileSync(abs).equals(Buffer.from(content))) throw new Error(`extract: ${file} exists with other content, which extract never overwrites`)
+  if (!readFileSync(abs).equals(Buffer.from(content))) throw new Error(`extract: ${file} exists with other content`)
   return true
 }
 
@@ -115,7 +115,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   const frozen = lock === 'frozen'
   if (frozen && !lockPresent) throw new Error(`extract: --lock=frozen needs ${lockAbs}`)
   if (lock === 'none' && lockPresent) {
-    throw new Error(`extract: unexpected ${lockAbs} with --lock=none (frozen checks the bundle against it, add merges the bundle into it, replace replaces it, ignore leaves it alone)`)
+    throw new Error(`extract: unexpected ${lockAbs} with --lock=none`)
   }
   if (lockPresent && !withLockfile && lock !== 'ignore') {
     throw new Error(`extract: a legacy v0 bundle can not ${{ frozen: 'be checked against', add: 'be added to', replace: 'replace' }[lock]} ${lockAbs}`)
@@ -204,10 +204,10 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   const lockNote = frozen ? `, verified against ${LOCK_FILE}` : merging ? `, added to ${LOCK_FILE}` : ''
   console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${andLock} to ${outDir}${lockNote}`)
   if (chmodFailures > 0) {
-    console.warn(`[${logLabel}] Warning: could not set file modes on ${chmodFailures} file(s) (the filesystem may not support them); contents were written`)
+    console.warn(`[${logLabel}] Warning: could not set file modes on ${chmodFailures} file(s); contents were written`)
   }
   if (!withLockfile && writesLock) {
-    console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version, so ${LOCK_FILE} can not be restored and was not written`)
+    console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version; ${LOCK_FILE} not written`)
   }
   return { dir: outDir, files: writes.length, executable: executables, inPlace: inPlace.size, lock }
 }

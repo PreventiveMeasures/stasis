@@ -47,12 +47,7 @@ async function importEsbuild() {
     if (cause?.code !== 'ERR_MODULE_NOT_FOUND' && cause?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause
     const globalMain = resolveGlobalEsbuild()
     if (!globalMain) {
-      throw new Error(
-        'stasis build requires esbuild, which could not be found.\n' +
-        'Install it as a dev dependency (npm i -D esbuild / pnpm add -D esbuild / yarn add -D esbuild) ' +
-        'or globally (npm i -g esbuild).',
-        { cause }
-      )
+      throw new Error('stasis build requires esbuild, which could not be found', { cause })
     }
     mod = await import(pathToFileURL(globalMain).href)
   }
@@ -84,8 +79,7 @@ function resolveGlobalEsbuild() {
 function assertBuildableArtifact(artifact, label) {
   if (artifact.config.scope !== 'full') {
     throw new Error(
-      `stasis build requires a full-scope artifact; ${label} is scope='${artifact.config.scope}'. ` +
-      `node_modules-scope artifacts omit the entry and workspace code, so there is nothing to build.`
+      `stasis build requires a full-scope artifact; ${label} is scope='${artifact.config.scope}'`
     )
   }
   if (artifact.entries.size === 0) throw new Error(`stasis build: ${label} declares no entries to build`)
@@ -249,16 +243,16 @@ export async function buildCommand({
   if (!output) throw new Error('stasis build: --output is required (a .js/.cjs/.mjs file, or a directory)')
   if (!Array.isArray(external)) throw new Error('stasis build: external must be an array of esbuild patterns')
   if (metro !== undefined && (typeof metro !== 'string' || !/^[^/,]+$/u.test(metro))) {
-    throw new Error(`stasis build: --metro takes the platform to build for, e.g. --metro=ios (got '${metro}')`)
+    throw new Error(`stasis build: --metro takes one platform to build for (got '${metro}')`)
   }
   if (flow && babel) {
-    throw new Error('stasis build: --babel hands the project\'s Babel config each file as it is, Flow included, for it to compile; --flow strips Flow before esbuild without it -- pass one')
+    throw new Error("stasis build: --flow and --babel don't combine: pass one")
   }
   // --platform=hermes is stasis's target, esbuild's 'neutral': code downleveled to Hermes' dialect, and no ESM.
   const hermes = platform === 'hermes'
   format ??= hermes ? 'iife' : 'esm'
   if (hermes && format === 'esm') {
-    throw new Error('stasis build: --platform=hermes cannot emit ESM (Hermes has no import/export); use --format=iife (the hermes default) or cjs')
+    throw new Error('stasis build: --platform=hermes cannot emit ESM; use --format=iife or cjs')
   }
   const artifactAbs = resolve(cwd, artifact)
   const { kind, artifact: parsed } = parseFileWithKind(artifactAbs)
@@ -310,7 +304,7 @@ export async function buildCommand({
     define = { ...Object.fromEntries(Object.entries(METRO_RELEASE_DEFINE).map(([key, value]) => [key, JSON.stringify(value)])), ...define }
   }
   if (assetsDest !== undefined && metro === undefined) {
-    throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')
+    throw new Error('stasis build: --assets-dest requires --metro=PLATFORM')
   }
 
   const esbuild = await importEsbuild()
@@ -350,12 +344,11 @@ export async function buildCommand({
     const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
     if (unloaded !== undefined) {
       process.stderr.write(
-        `[stasis] Build a "${unloaded}" resource with --loader=${unloaded}:NAME (an esbuild loader: dataurl, file, text, ...), ` +
-        `or with --metro=PLATFORM as the asset module Metro builds of it\n`
+        `[stasis] Build a "${unloaded}" resource with --loader=${unloaded}:NAME, or with --metro=PLATFORM\n`
       )
     }
     if (metro === undefined && err.errors.some((e) => e.detail?.code === 'ERR_STASIS_PLATFORM_SPECIFIC')) {
-      process.stderr.write('[stasis] A --metro multi-platform bundle builds for one platform at a time: pass --metro=PLATFORM (e.g. --metro=ios)\n')
+      process.stderr.write('[stasis] A --metro multi-platform bundle builds for one platform at a time: pass --metro=PLATFORM\n')
     }
     throw new Error(`stasis build failed: esbuild reported ${err.errors.length} error(s)`, { cause: err })
   })
@@ -369,8 +362,7 @@ export async function buildCommand({
   for (const { path } of writes) {
     if (attested.has(path)) {
       throw new Error(
-        `stasis build: refusing to write '${relative(cwd, path)}' -- it is a source the artifact records; ` +
-        `choose an --output${assetsDest === undefined ? '' : '/--assets-dest'} path outside the artifact's own files`
+        `stasis build: refusing to write '${relative(cwd, path)}' -- it is a source the artifact records`
       )
     }
   }

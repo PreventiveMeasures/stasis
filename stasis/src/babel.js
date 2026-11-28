@@ -36,8 +36,7 @@ function resolveFromProject(projectDir, deps, flag, command) {
   try {
     return deps.map((dep) => projectRequire.resolve(dep))
   } catch (cause) {
-    throw new Error(`${command}: ${flag} needs ${deps.join(', ')} installed in the project `
-      + `(e.g. \`npm i -D ${deps.join(' ')}\`); resolution failed from ${projectDir}`, { cause })
+    throw new Error(`${command}: ${flag} needs ${deps.join(', ')} installed in the project; resolution failed from ${projectDir}`, { cause })
   }
 }
 

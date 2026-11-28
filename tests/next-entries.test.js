@@ -125,7 +125,7 @@ test('nextAppFiles takes src/app and src/pages where the app has none of its own
   }), ['src/app/page.tsx', 'src/instrumentation-client.ts', 'src/instrumentation.ts', 'src/pages/index.tsx', 'src/proxy.ts'])
   // An app directory of its own is the app's, its src/ one left alone; the client's instrumentation at the root.
   t.assert.deepStrictEqual(filesOf(join(tmp, 'b'), { 'app/page.tsx': '', 'src/app/page.tsx': '', 'instrumentation-client.js': '' }), ['app/page.tsx', 'instrumentation-client.js'])
-  t.assert.throws(() => filesOf(join(tmp, 'c'), { 'app/page.tsx': '', 'src/pages/index.tsx': '' }), /^Error: t: .*next\.config\.mjs: its app's pages and app directories are not in the same directory \(.*src\/pages, .*app\), which Next refuses$/u)
+  t.assert.throws(() => filesOf(join(tmp, 'c'), { 'app/page.tsx': '', 'src/pages/index.tsx': '' }), /^Error: t: .*next\.config\.mjs: its app's pages and app directories are not in the same directory \(.*src\/pages, .*app\)$/u)
   // None at all: no app, the config alone.
   t.assert.deepStrictEqual(filesOf(join(tmp, 'd'), { 'src/index.ts': '', 'pages.ts': '' }), [])
 }))
@@ -150,9 +150,9 @@ test('nextAppFiles takes the pageExtensions the config lists, and refuses those 
     call: "export default { pageExtensions: ['tsx', 'ts'].concat(['mdx']) }\n",
   }
   for (const [what, source] of Object.entries(refused)) {
-    t.assert.throws(() => filesOf(join(tmp, what), { 'app/page.tsx': '', 'next.config.mjs': source }), /^Error: t: .*next\.config\.mjs sets pageExtensions other than as a list of extensions \(at offset \d+\), which can't be read without running it: name the app's entries instead$/u, what)
+    t.assert.throws(() => filesOf(join(tmp, what), { 'app/page.tsx': '', 'next.config.mjs': source }), /^Error: t: .*next\.config\.mjs sets pageExtensions other than as a list of extensions \(at offset \d+\): name the app's entries instead$/u, what)
   }
-  t.assert.throws(() => filesOf(join(tmp, 'twice'), { 'app/page.tsx': '', 'next.config.mjs': "const a = { pageExtensions: ['tsx'] }\nexport default { ...a, pageExtensions: ['ts'] }\n" }), /sets pageExtensions to different lists, which can't be told apart without running it/u)
+  t.assert.throws(() => filesOf(join(tmp, 'twice'), { 'app/page.tsx': '', 'next.config.mjs': "const a = { pageExtensions: ['tsx'] }\nexport default { ...a, pageExtensions: ['ts'] }\n" }), /sets pageExtensions to different lists: name the app's entries instead/u)
   // An extension that is no JS/TS (MDX) is refused where a file has it, only.
   const mdx = "export default { pageExtensions: ['tsx', 'mdx'] }\n"
   t.assert.deepStrictEqual(filesOf(join(tmp, 'mdx'), { 'app/page.tsx': '', 'next.config.mjs': mdx }), ['app/page.tsx'])

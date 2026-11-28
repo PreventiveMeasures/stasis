@@ -143,7 +143,7 @@ function gitmodulesLeniently(text) {
       if (path === null || taken.has(path)) continue
       taken.add(path)
       submodules.push({ path, url: undefined, branch: undefined })
-      notes.push(`${header}: path ${path} too, which git reads where it reads .gitmodules from a commit; still taking it as a dependency, unnamed`)
+      notes.push(`${header}: path ${path} too; taking it as an unnamed dependency`)
     }
   }
   return { submodules, notes }

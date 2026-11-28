@@ -22,8 +22,7 @@ const isSimple = (pattern) => SIMPLE.test(pattern) && !/[^/]\*\*|\*\*[^/]/u.test
 // As a shell expands brace lists, but for an empty alternative, which Node's glob drops (`{src,}` is `src` alone).
 function alternativesOf(label, pattern) {
   if (!isSimple(pattern)) {
-    throw new Error(`${label}: ${JSON.stringify(pattern)} is not supported: a pattern is names of letters, digits ` +
-      'and `_.@+-`, with `*`, `?`, `**` as a whole name and `{a,b}` lists (none nested); match any other character with `?`')
+    throw new Error(`${label}: ${JSON.stringify(pattern)} is not supported: use letters, digits, \`_.@+-\`, \`*\`, \`?\`, \`**\` and unnested \`{a,b}\``)
   }
   let out = ['']
   for (const [, text, list] of pattern.matchAll(/([^{]*)(?:\{([^}]*)\})?/gu)) {
@@ -79,7 +78,7 @@ function modulePattern(label, pattern) {
     const segments = alternative.split('/')
     return segments.length <= 2 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
   }
-  if (!alternatives.every(named)) throw new Error(`${label}: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")`)
+  if (!alternatives.every(named)) throw new Error(`${label}: ${JSON.stringify(pattern)} is no package name or pattern of names`)
   const regex = compile(alternatives)
   return { pattern, test: (name) => name === pattern || regex.test(name) }
 }

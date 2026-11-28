@@ -304,7 +304,7 @@ test('CLI: extract on a v0 bundle warns that the lockfile was not written', with
   const r = runCli(['extract', '--lock=add', '-o', outDir, bundlePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /\[stasis\] Extracted 1 file\(s\) to /)
-  t.assert.match(r.stderr, /legacy v0 bundle records no package name\/version, so stasis\.lock\.json can not be restored/)
+  t.assert.match(r.stderr, /legacy v0 bundle records no package name\/version; stasis\.lock\.json not written/)
   t.assert.ok(!existsSync(join(outDir, 'stasis.lock.json')))
 }))
 
@@ -747,7 +747,7 @@ test('extract never overwrites a file with other bytes, in any lock mode, writin
     writeFileSync(join(outDir, 'src', 'b.js'), 'old\n')
     t.assert.throws(
       () => extractCommand({ bundleFile: bundlePath, output: outDir, lock }),
-      /extract: src\/b\.js exists with other content, which extract never overwrites/,
+      /extract: src\/b\.js exists with other content/,
     )
     t.assert.equal(readFileSync(join(outDir, 'src', 'b.js'), 'utf8'), 'old\n')
     t.assert.ok(!existsSync(join(outDir, 'src', 'a.js')) && !existsSync(join(outDir, 'stasis.lock.json')), 'nothing may be written')

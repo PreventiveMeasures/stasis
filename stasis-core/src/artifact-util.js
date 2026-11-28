@@ -548,8 +548,7 @@ export function parseBuckets(json, what, fields = MODULE_METADATA) {
 // Unique across buckets: hashes, attestation lookups and a bundle's `sources` key on the flat path.
 export function checkedFileKeys(modules, formats, { what, regenerate, checkFiles }) {
   const flatKeys = flatFileKeys(modules, what, (key) => assert(false,
-    `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
-    `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`))
+    `duplicate file key '${key}' across ${what} buckets; regenerate the ${regenerate}`))
   checkFiles?.(flatKeys, formats)
   return flatKeys
 }
@@ -685,9 +684,7 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
         `${label}: module '${dir}' name mismatch ('${existing.name}' vs '${info.name}')`)
       assert(existing.version === info.version,
         `${label}: module '${dir}' version mismatch ('${existing.version}' vs '${info.version}')` +
-        ((existing.version == null) === (info.version == null) ? '' :
-          ` -- an artifact from an older stasis may record a placeholder version for a workspace ` +
-          `package without one; regenerate it (bundle=replace / lock=replace)`))
+        ((existing.version == null) === (info.version == null) ? '' : '; regenerate it (bundle=replace / lock=replace)'))
       // An npm record and an npm:directory one are of one package manager: whether it installed the package from a
       // directory is attested (withMetadataOf), an older stasis's record of one, attesting nothing, taken to it.
       assert(ecosystemFamily(existing.ecosystem) === ecosystemFamily(info.ecosystem),
@@ -708,9 +705,7 @@ export function mergeModuleMaps(a, b, label, { held = false } = {}) {
   }
   // Bucketing can change between releases, which per-dir absorption can't see: never WRITE what the next parse rejects.
   flatFileKeys(out, label, (key, owner, dir) => assert(false,
-    `${label}: file '${key}' is bucketed under both '${owner}' and '${dir}' -- module bucketing ` +
-    `changed between the artifacts (a workspace package without a version now owns its own ` +
-    `bucket); regenerate the artifact (bundle=replace / lock=replace)`))
+    `${label}: file '${key}' is bucketed under both '${owner}' and '${dir}'; regenerate the artifact (bundle=replace / lock=replace)`))
   return out
 }
 
