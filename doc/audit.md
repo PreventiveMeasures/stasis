@@ -115,7 +115,7 @@ stub). Where it is queried depends on the ecosystem the artifact tags it with
 | `cargo` | crates vendored from a registry | OSV |
 | `composer` | Composer packages | OSV, and Packagist's advisories (with the FriendsOfPHP ones OSV lacks); a dev version (`dev-main`, `1.x-dev`) is listed as not audited |
 | `soldeer` | Soldeer packages | the advisories their GitHub repository publishes: for a git dependency the one its artifact records, else the one Soldeer's registry names |
-| `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes, and OSV's records of it as a GitHub Action |
+| `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes, and OSV's records of it as a GitHub Action, unless its repo is stamped private (see [OSV and private packages](#osv-and-private-packages)) |
 | `cargo-git`, `cargo-unknown` | crates vendored from git, or with no `.cargo-checksum.json` | nothing: listed as not audited, never sent to OSV |
 | `npm:directory` | npm packages installed from a directory (a `file:` one) | nothing: listed as not audited, its name never sent to a public database |
 
@@ -200,6 +200,13 @@ doesn't answer for. The name decides, not the version. A public name is cached
 for a month in the user cache directory (below).
 
 npm's registry is queried for every npm package, private ones included.
+
+A GitHub repo dependency (ecosystem `github`) is sent to OSV by its
+repository's name, as a GitHub Action, unless any record of it in the files,
+in any spelling and whether or not it carries code, stamps its `repo`
+`"private": true` (see `repo` in [file formats](file-formats.md)): then it is
+checked against its repository's advisories alone. No build writes the stamp.
+Other ecosystems send OSV package names, never a repository's.
 
 ## Repository advisories
 

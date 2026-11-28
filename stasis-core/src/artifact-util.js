@@ -62,9 +62,18 @@ export const REPO_FIELDS = {
   github: (v) => typeof v === 'string' && GITHUB_REPO.test(v),
   directory: (v) => typeof v === 'string' && v.length <= 1024 && (v === '' || REPO_DIRECTORY.test(v)),
   commit: (v) => typeof v === 'string' && GIT_SHA.test(v),
+  // A stamp that the repository isn't public, `true` alone: no build detects one, so none says it is public.
+  private: (v) => v === true,
 }
 
 export const sameGithub = (a, b) => a?.toLowerCase() === b?.toLowerCase()
+
+// `repo` stamped private where `other`, of the same repository, is: a merge dropping the stamp would send its name
+// where it must not go. Undefined where `repo` takes nothing.
+export const stampedRepo = (repo, other) => {
+  if (repo === undefined || repo.private === true || other?.private !== true || !sameGithub(repo.github, other.github)) return undefined
+  return Object.freeze({ ...repo, private: true })
+}
 
 // Messages are built on failure alone: a dependency's `repo` is checked on every parse and write.
 export const normalizeBlock = (block, fields, what) => {
@@ -267,6 +276,8 @@ function withOf(record, other, what, attests, adds) {
       if (filled) (added ??= {})[field] = filled
     } else if (adds && record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
+  const stamped = stampedRepo(record.repo, other.repo)
+  if (stamped) (added ??= {}).repo = stamped
   for (const field of adds ? DIR_FIELDS : []) {
     if (other[field] === undefined || Object.keys(other[field]).every((sub) => Object.hasOwn(record[field] ?? {}, sub))) continue
     ;(added ??= {})[field] = Object.freeze(fromEntries([...Object.entries(other[field]), ...Object.entries(record[field] ?? {})]))

@@ -48,18 +48,39 @@ function unaudited({ ecosystem, version, vendoredIn }) {
   return undefined
 }
 
-// The dependencies whose real code `file` carries, `{ ecosystem, name, version, github }` (the repository recorded,
-// else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`.
-export function collectPackagesFromFile(file) {
+// The GitHub repositories `artifact` stamps private, in lowercase, as GitHub takes a name in any case: its own `repo`'s
+// and every dependency record's, whether or not the record carries code or a version, a GitHub repo record's name too.
+function stampedRepos(artifact) {
+  const stamped = new Set()
+  if (artifact.repo?.private === true && artifact.repo.github !== undefined) stamped.add(artifact.repo.github.toLowerCase())
+  for (const [dir, { name, ecosystem, repo }] of artifact.modules) {
+    if (repo?.private !== true) continue
+    stamped.add(repo.github.toLowerCase())
+    if (dependencyEcosystem(dir, ecosystem) === 'github' && typeof name === 'string') stamped.add(name.toLowerCase())
+  }
+  return stamped
+}
+
+// `file`'s packages (collectPackagesFromFile) and the repositories it stamps private (stampedRepos), from one parse.
+function packagesOf(file) {
   const { kind, artifact } = parseFileWithKind(file)
+  const stamped = stampedRepos(artifact)
   const records = auditedRecords(artifact.modules).filter(({ files, isEvidence }) => Object.keys(files).some(isEvidence))
-  return records.map(({ name, version, ecosystem, repo, files, host }) => {
+  const packages = records.map(({ name, version, ecosystem, repo, files, host }) => {
     if (host !== undefined) return { ecosystem, name, version, vendoredIn: host }
-    let github = ecosystem === 'github' ? undefined : repo?.github
+    if (ecosystem === 'github') return { ecosystem, name, version, ...(stamped.has(name.toLowerCase()) && { private: true }) }
+    let github = repo?.github
     if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
     return { ecosystem, name, version, ...(github === undefined ? {} : { github }) }
   }).toArray()
+  return { packages, stamped }
 }
+
+// The dependencies whose real code `file` carries, `{ ecosystem, name, version, github }` (the repository recorded,
+// else a bundled package.json's), or for a copy a dependency ships `{ ecosystem, name, version, vendoredIn }`. A GitHub
+// repo `file` stamps private anywhere (stampedRepos) is `private: true`: its name, which OSV would be asked about as a
+// GitHub Action's, goes to its repository alone. Another ecosystem's repository reaches no database but GitHub.
+export const collectPackagesFromFile = (file) => packagesOf(file).packages
 
 // Each dependency of `modules` the audit may count: first-party code never reaches a public registry.
 function* auditedRecords(modules) {
@@ -91,11 +112,15 @@ const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNu
 
 // Each package once, with the GitHub repository recorded for its name (none where two are), which advisories() asks
 // rather than look one up; a vendored one with `vendoredIn`, its hosts, and `vendoredOnly`, whether that's all of it.
+// A GitHub repo any of the files stamps private (stampedRepos) is `private: true` everywhere.
 export function collectPackages(files) {
   const byKey = new Map() // packageKey -> { pkg, hosts, only }
   const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
+  const stamped = new Set() // stampedRepos of every file
   for (const file of files) {
-    for (const { github, vendoredIn, ...pkg } of collectPackagesFromFile(file)) {
+    const { packages, stamped: ofFile } = packagesOf(file)
+    for (const repo of ofFile) stamped.add(repo)
+    for (const { github, vendoredIn, private: _private, ...pkg } of packages) {
       const entry = upsert(byKey, packageKey(pkg, vendoredIn), () => ({ pkg, hosts: new Set(), only: true }))
       if (vendoredIn === undefined) entry.only = false
       else entry.hosts.add(vendoredIn)
@@ -110,7 +135,8 @@ export function collectPackages(files) {
   return [...byKey.values()]
     .map(({ pkg, hosts, only }) => {
       const github = repos.get(`${pkg.ecosystem}:${pkg.name}`)
-      return { ...pkg, ...(github ? { github } : {}), ...(hosts.size === 0 ? {} : { vendoredIn: [...hosts].toSorted(), vendoredOnly: only }) }
+      const isPrivate = pkg.ecosystem === 'github' && stamped.has(pkg.name.toLowerCase())
+      return { ...pkg, ...(github ? { github } : {}), ...(isPrivate && { private: true }), ...(hosts.size === 0 ? {} : { vendoredIn: [...hosts].toSorted(), vendoredOnly: only }) }
     })
     .toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
@@ -254,7 +280,8 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   if (asked.length === 0 && others.length === 0) {
     return { packages, skipped, advisories: [], rows: [], npmMalware: [], why, whyDeep, whyFull, reason }
   }
-  const query = (list) => list.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] }))
+  // A private GitHub repo is `internal` to advisories(): asked of its repository alone, its name sent to OSV never.
+  const query = (list) => list.map(({ version, vendoredIn: _in, vendoredOnly: _only, private: isPrivate, ...pkg }) => ({ ...pkg, versions: [version], ...(isPrivate && { internal: true }) }))
   let result, elsewhere
   try {
     ;[result, elsewhere] = await Promise.all([
@@ -264,7 +291,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself.
     if (cause?.code === 'ERR_ASSERTION') throw cause
-    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(others.length > 0 ? ['npm'] : []), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
+    const sources = new Set([...asked.flatMap((pkg) => (pkg.private ? ['GitHub'] : SOURCES[pkg.ecosystem])), ...(others.length > 0 ? ['npm'] : []), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
     throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
   const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOfPkg(pkg), pkg]))

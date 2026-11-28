@@ -102,6 +102,10 @@ test('Bundle rejects an invalid repo block on parse and on construction', (t) =>
     { commit: 'g'.repeat(40) },
     { commit: 'abc1234' },
     { commit: 42 },
+    { github: 'o/n', private: false },
+    { github: 'o/n', private: 'true' },
+    { github: 'o/n', private: 1 },
+    { github: 'o/n', private: null },
   ]
   for (const repo of bad) {
     t.assert.throws(() => Bundle.parse(withRepoJSON(repo)), undefined, `parse: ${JSON.stringify(repo)}`)
@@ -130,6 +134,23 @@ test('Bundle carries repo through withReason, and merge keeps only agreeing fiel
     'GitHub names are case-insensitive: the existing spelling is kept')
   t.assert.equal(base({}).repo, undefined, 'an empty block is no block')
   t.assert.equal(JSON.parse(base({}).serialize()).repo, undefined)
+})
+
+test('Bundle round-trips a private stamp last, and keeps it in a merge where either side stamps the repository', (t) => {
+  const full = { github: 'o/n', directory: 'x', commit: SHA1 }
+  const stamped = { commit: SHA1, private: true, github: 'o/n', directory: 'x' }
+  const json = JSON.parse(base(stamped).serialize())
+  t.assert.deepStrictEqual(Object.keys(json.repo), ['github', 'directory', 'commit', 'private'], 'canonical key order')
+  t.assert.deepStrictEqual({ ...Bundle.parse(JSON.stringify(json)).repo }, { ...full, private: true })
+  t.assert.deepStrictEqual({ ...Bundle.parse(withRepoJSON({ private: true })).repo }, { private: true }, 'optional as every field is')
+  t.assert.deepStrictEqual({ ...base(stamped).merge(base(full)).repo }, { ...full, private: true }, 'no build stamps one again: kept')
+  t.assert.deepStrictEqual({ ...base(full).merge(base(stamped)).repo }, { ...full, private: true }, 'stamped by the added side: taken')
+  t.assert.deepStrictEqual({ ...base(stamped).merge(base({ ...full, commit: SHA256 })).repo }, { github: 'o/n', directory: 'x', private: true },
+    'another commit: the commit dropped, the stamp kept')
+  t.assert.deepStrictEqual({ ...base(stamped).merge(base({ ...full, github: 'O/N' })).repo }, { ...full, private: true }, 'any spelling of the name')
+  t.assert.equal(base(stamped).merge(base({ ...full, github: 'o/other' })).repo, undefined, "another repo's: reset, stamp and all")
+  t.assert.equal(base(stamped).merge(base()).repo, undefined, 'added from an undetected place: reset')
+  t.assert.equal(base({ private: true }).merge(base({ private: true })).repo, undefined, 'naming no repository: none to keep it for')
 })
 
 test('repo never reaches a lockfile', (t) => {

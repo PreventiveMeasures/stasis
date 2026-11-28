@@ -145,8 +145,8 @@ const REMOVED = '-'
 const ADDED = '+'
 const CHANGED = '*'
 
-// `owner/name`, its commit and directory where recorded: `owner/name@0123abc (packages/x)`.
-const repoLabel = ({ github, commit, directory }) => `${github ?? '?'}${commit ? `@${commit.slice(0, 7)}` : ''}${directory ? ` (${directory})` : ''}`
+// `owner/name`, its commit, directory and private stamp where recorded: `owner/name@0123abc (packages/x) private`.
+const repoLabel = ({ github, commit, directory, private: stamped }) => `${github ?? '?'}${commit ? `@${commit.slice(0, 7)}` : ''}${directory ? ` (${directory})` : ''}${stamped ? ' private' : ''}`
 
 const patchLabel = (patch) => (patch ? `${patch.integrity}${patch.file ? ` (${patch.file})` : ''}` : 'none')
 

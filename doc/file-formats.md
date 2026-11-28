@@ -691,7 +691,8 @@ bundle: node_modules/dep/.npmrc is a file no bundle may carry
   dependency's `package.json` or another artifact's record. A run fills it in
   where a record has none, and a merge (`stasis add`, `--add`, `bundle = add`)
   takes the side that records one, or the existing bundle's whole where both
-  do (a `commit` only the added side records is dropped). `stasis audit` uses
+  do (a `commit` only the added side records is dropped; a `private` stamp
+  either side gives the same repository is kept). `stasis audit` uses
   it to look up advisories, and for a record with none, the one its bundled
   `package.json` names by the same rules (see the `stasis` README).
 - An npm dependency record may carry `patch` after `integrity`: the patch pnpm
@@ -812,6 +813,9 @@ bundle: node_modules/dep/.npmrc is a file no bundle may carry
     missing `directory` means "unknown", never "the root".
   - `commit` must be a full lowercase git object id (a 40-hex SHA-1 or a 64-hex
     SHA-256).
+  - `private` must be `true`: the repository isn't public. No build writes it.
+    `stasis audit` never sends a GitHub repo dependency stamped so to OSV (see
+    [audit](audit.md#osv-and-private-packages)).
 
   Unknown keys and invalid values are rejected on both serialize and parse. A
   `Bundle` freezes the value it holds; assigning a new one validates it. The
@@ -821,7 +825,8 @@ bundle: node_modules/dep/.npmrc is a file no bundle may carry
   `stasis bundle --add`, `stasis run` with `bundle = add`) keeps only the fields
   that agree between the existing bundle and the new build, and none if
   `github` differs or the new build has none: the same repository and directory
-  at a different commit keeps `github` and `directory` and drops `commit`.
+  at a different commit keeps `github` and `directory` and drops `commit`. A
+  `private` stamp is kept where either side gives it to the same repository.
 
   Bundles written by `stasis run` (and the bundler plugins), `stasis bundle` and
   `stasis add` fill in `repo` automatically, from git first:

@@ -25,6 +25,7 @@ import {
   serializedParts,
   sortedByPath,
   splitNodeModulesPath,
+  stampedRepo,
   upsert,
 } from './artifact-util.js'
 import { Lockfile } from './lockfile.js'
@@ -99,7 +100,11 @@ const agreed = (a, b, key, same) => {
   return fromEntries(Object.entries(a).filter(([field, value]) => field === key || value === b[field]))
 }
 
-export const mergeRepo = (a, b) => agreed(a, b, 'github', sameGithub)
+// The fields both agree on, and a `private` stamp either side gives the repository.
+export const mergeRepo = (a, b) => {
+  const merged = agreed(a, b, 'github', sameGithub)
+  return stampedRepo(merged, b) ?? stampedRepo(merged, a) ?? merged
+}
 
 // An older stasis's `root: true` is read as unknown: it recorded one from a package.json's claim too.
 const parsedRepo = (repo) => {
