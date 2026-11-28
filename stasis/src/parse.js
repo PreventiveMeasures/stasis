@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs'
-import { gunzipSync } from 'node:zlib'
+import { gunzipSync, gzipSync } from 'node:zlib'
 
 import { brotliDecompressStrict } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { isGzip, isTgzName, misnamedTgz } from '@exodus/stasis-core/util'
-import { unpack } from '@preventive/archive/tar.js'
+import { pack, unpack } from '@preventive/archive/tar.js'
 
 // As upstream's tree verification bounds a tarball.
 export const MAX_TAR_BYTES = 2 ** 30
@@ -67,3 +67,6 @@ export function readStasisTgz(bytes, file) {
     throw new Error(`${file}: ${cause.message}`, { cause })
   }
 }
+
+// A .stasis.tgz of `bundle`: Bundle#toTar's tar, packed with @preventive/archive and gzipped.
+export const writeStasisTgz = (bundle) => gzipSync(pack(bundle.toTar({ integrityOf: sha512integrity })))

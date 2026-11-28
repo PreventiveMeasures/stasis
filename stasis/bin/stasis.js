@@ -267,6 +267,7 @@ if (command === '-v' || command === '--version') {
   })
 } else if (command === 'add') {
   await import('../src/run-installed.js')
+  await import('../src/run-archived.js')
   await addCli(argv, { label: 'stasis', fail })
 } else if (command === 'build') {
   const options = {
