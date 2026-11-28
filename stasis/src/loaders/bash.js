@@ -2,13 +2,7 @@
 // inside the bundle root must resolve to an in-set script, else it is `missing`; everything else (PATH
 // commands, `$VAR` paths, absolute or escaping paths) is best-effort and dropped.
 
-import { isUtf8 } from 'node:buffer'
-import { join } from 'node:path'
-
-import { diskHost } from '@exodus/stasis-core/host'
-import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
-import { isFile } from '../resolve-typescript.js'
-import { applyToDir } from './paths.js'
+import { applyToDir, collectFromDisk, isFileIn, utf8Of } from './paths.js'
 
 // The capture class excludes backtick, `(` and `)` so a ref inside a command substitution
 // (`` `source x.sh` ``, `$(bash x.sh)`) doesn't swallow the closing delimiter.
@@ -33,11 +27,7 @@ export function extractBashCalls(content) {
 // A bash reference as a baseDir-relative POSIX path. Existence is checked against `knownFiles`
 // (tree mode) or the filesystem under `baseDir` (walk mode); with neither, nothing exists.
 export function resolveBashCall(ref, fromFile, { knownFiles, baseDir } = {}) {
-  const present = (p) => {
-    if (!p) return false
-    if (knownFiles) return knownFiles.has(p)
-    return Boolean(baseDir) && isFile(join(baseDir, p))
-  }
+  const present = (p) => Boolean(p) && isFileIn(p, knownFiles, baseDir)
   // Null when it escapes baseDir or names baseDir itself.
   const resolveRel = (r) => applyToDir(fromFile, r.split('/')) || null
 
@@ -76,39 +66,6 @@ export function buildBashTree(sources) {
     resolutions.set(path, specMap)
   }
   return { sources, resolutions, missing }
-}
-
-// `bytes` of a `what` file as UTF-8: one that isn't is refused rather than carried with U+FFFD in it.
-export const utf8Of = (what) => (bytes, relPath) => {
-  if (!isUtf8(bytes)) throw new Error(`${what} is not valid UTF-8: ${relPath}`)
-  return bytes.toString('utf8')
-}
-
-// The files `entries` reach under `baseDir` through `host`, wave by wave, each `decode`d, `refsOf(relPath, content)`
-// the paths each one reaches in turn. One whose read fails with a code `skipped` has is warned of as it says and left
-// out without aborting the walk.
-export function collectFromDisk(baseDir, entries, { decode, skipped, host = diskHost }, refsOf) {
-  const sources = new Map()
-  const realBase = host.realpath(baseDir)
-  const read = (relPath) => {
-    try {
-      assertRealPathWithinBase(realBase, baseDir, relPath, host)
-      return [relPath, decode(host.readFile(join(baseDir, relPath)), relPath)]
-    } catch (err) {
-      if (!Object.hasOwn(skipped, err.code)) throw err
-      console.warn(`${skipped[err.code]}: ${relPath}`)
-      return null
-    }
-  }
-  for (let wave = entries; wave.length > 0;) {
-    const reads = [...new Set(wave)].filter((p) => !sources.has(p)).map(read)
-    wave = []
-    for (const [relPath, content] of reads.filter(Boolean)) {
-      sources.set(relPath, content)
-      for (const ref of refsOf(relPath, content)) wave.push(ref)
-    }
-  }
-  return sources
 }
 
 // A slash ref can resolve to a directory (`source ./lib`).

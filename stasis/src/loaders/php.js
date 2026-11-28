@@ -7,8 +7,7 @@ import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundl
 import { archiveIntegrity, isPlainObject, memoized, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
-import { collectFromDisk, utf8Of } from './bash.js'
-import { ancestors, applyToDir, isDotRelative } from './paths.js'
+import { ancestors, applyToDir, collectFromDisk, isDotRelative, utf8Of } from './paths.js'
 import { readUtf8OrNull } from './solidity-ownership.js'
 import { nameErrors } from './toml.js'
 
