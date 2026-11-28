@@ -1204,9 +1204,9 @@ test('Config format: br or tgz, of stasis.config.json, a flag or EXODUS_STASIS_F
   t.assert.equal(configured.format, 'tgz')
   t.assert.equal(new Config({ bundle: 'load', lock: 'none', format: 'tgz', bundleFile: 'dist/app.stasis.tgz' }).format, 'tgz')
   t.assert.throws(() => new Config({ format: 'zip' }), /Invalid format: zip/)
-  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'tgz', bundleFile: 'app.br' }), { message: "format=tgz names a .stasis.tgz, stasis.tgz or <name>.stasis.tgz, not 'app.br'" })
-  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'br', bundleFile: 'app.stasis.tgz' }), { message: "format=br names a stasis.code.br, not 'app.stasis.tgz', a .stasis.tgz's name" })
-  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none' }).loadConfig(json({ format: 'tgz', bundleFile: 'app.br' })), /format=tgz names a \.stasis\.tgz/)
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'tgz', bundleFile: 'app.br' }), { message: "format=tgz, but 'app.br' isn't a .stasis.tgz" })
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none', format: 'br', bundleFile: 'app.stasis.tgz' }), { message: "format=br, but 'app.stasis.tgz' is a .stasis.tgz" })
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'none' }).loadConfig(json({ format: 'tgz', bundleFile: 'app.br' })), /format=tgz, but 'app\.br' isn't a \.stasis\.tgz/)
   // A State that writes refuses a .stasis.tgz (run-tgz.test.js), not Config: a build's State writes nothing.
   t.assert.equal(new Config({ bundle: 'replace', lock: 'none', format: 'tgz', bundleFile: 'app.stasis.tgz' }).format, 'tgz')
   // As every key, a flag or the env can't override the file's.

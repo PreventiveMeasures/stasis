@@ -24,7 +24,7 @@ export const isTgzName = (path) => {
   const base = basename(path)
   return base === TGZ_FILE || base.endsWith(`.${TGZ_FILE}`)
 }
-export const misnamedTgz = (path) => `${path} is a tgz, which is read as ${TGZ_FILE} or <name>.${TGZ_FILE} alone`
+export const misnamedTgz = (path) => `${path}: a tgz must be named ${TGZ_FILE} or <name>.${TGZ_FILE}`
 
 // A bundle's format (stasis.config.json's `format`): `br`, brotli'd JSON (stasis.code.br), or `tgz` (stasis.tgz).
 export const BUNDLE_FORMATS = new Set(['br', 'tgz'])
@@ -33,16 +33,14 @@ export const formatOf = (file) => (isTgzName(file) ? 'tgz' : 'br')
 // Refused, `what` (`format`, `--format=tgz`) said of it, where `format` disagrees with the bundle file `file` names.
 export function assertFormatOf(file, format, what) {
   if (format === undefined || file === undefined || formatOf(file) === format) return
-  throw new RangeError(format === 'tgz'
-    ? `${what} names a .stasis.tgz, stasis.tgz or <name>.stasis.tgz, not '${file}'`
-    : `${what} names a stasis.code.br, not '${file}', a .stasis.tgz's name`)
+  throw new RangeError(`${what}, but '${file}' ${format === 'tgz' ? "isn't" : 'is'} a .stasis.tgz`)
 }
 // The bundle file's name in a directory where none is named: `format`'s, else whichever of stasis.code.br and
 // stasis.tgz `exists(name)` finds there (stasis.code.br where neither is), refused where both are.
 export function defaultBundleName(format, exists) {
   if (format !== undefined) return bundleFileOf(format)
   if (!exists(TGZ_FILE)) return BUNDLE_FILE
-  if (exists(BUNDLE_FILE)) throw new Error(`stasis: ${BUNDLE_FILE} and ${TGZ_FILE} are both there: remove one, or name the one with ${CONFIG_FILE}'s format or bundleFile`)
+  if (exists(BUNDLE_FILE)) throw new Error(`stasis: both ${BUNDLE_FILE} and ${TGZ_FILE} exist; set format or bundleFile in ${CONFIG_FILE}`)
   return TGZ_FILE
 }
 // gzip's magic. No stasis bundle starts so: brotli's first byte would ask a 16 MiB window, where stasis writes zlib's 4 MiB.

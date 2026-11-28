@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-import { BUNDLE_FORMATS, CONFIG_FILE, defaultBundleName, formatOf, isGzip, isTgzName } from '@exodus/stasis-core/util'
+import { BUNDLE_FORMATS, CONFIG_FILE, defaultBundleName, formatOf, isGzip, isTgzName, misnamedTgz } from '@exodus/stasis-core/util'
 
 export function writeFile(abs, data) {
   mkdirSync(dirname(abs), { recursive: true })
@@ -11,7 +11,7 @@ export function writeFile(abs, data) {
 // `target` from `cwd`, or `-` for stdout: a .stasis.tgz's name gzip's bytes alone, and gzip's that name alone. -> where
 // it went, for the summary
 export function writeOutput(cwd, target, data) {
-  if (target !== '-' && isTgzName(target) !== isGzip(data)) throw new Error(isTgzName(target) ? `${target} names a .stasis.tgz, which this writes none of` : `${target}: a .stasis.tgz is named stasis.tgz or <name>.stasis.tgz`)
+  if (target !== '-' && isTgzName(target) !== isGzip(data)) throw new Error(isTgzName(target) ? `${target}: only a .stasis.tgz may have this name` : misnamedTgz(target))
   if (target === '-') {
     process.stdout.write(data)
     return '<stdout>'
@@ -57,15 +57,15 @@ export function bundleFormat(prefix, { format, configured, output, brotliQuality
   for (const [value, what] of [[format, '--format'], [configured, `${CONFIG_FILE}'s format`]]) {
     if (value !== undefined && !BUNDLE_FORMATS.has(value)) throw new Error(`${prefix}${what} must be br or tgz (got '${value}')`)
   }
-  if (format !== undefined && configured !== undefined && format !== configured) throw new Error(`${prefix}--format=${format} disagrees with ${CONFIG_FILE}'s format, ${configured}`)
+  if (format !== undefined && configured !== undefined && format !== configured) throw new Error(`${prefix}--format=${format}, but ${CONFIG_FILE} sets format=${configured}`)
   const asked = format ?? configured
-  const what = format !== undefined ? `--format=${format}` : `${CONFIG_FILE}'s format ${configured}`
+  const what = format !== undefined ? `--format=${format}` : `${CONFIG_FILE}: format=${configured}`
   const named = output === undefined || output === '-' ? undefined : formatOf(output)
-  if (asked === 'tgz' && named === 'br') throw new Error(`${prefix}${what} writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got '${output}')`)
-  if (asked === 'br' && named === 'tgz') throw new Error(`${prefix}${what} writes a stasis.code.br, not --output=${output}, a .stasis.tgz's name`)
+  if (asked === 'tgz' && named === 'br') throw new Error(`${prefix}${what}, but --output=${output} isn't a .stasis.tgz`)
+  if (asked === 'br' && named === 'tgz') throw new Error(`${prefix}${what}, but --output=${output} is a .stasis.tgz`)
   const found = output === undefined && asked === undefined && exists !== undefined ? formatOf(defaultBundleName(undefined, exists)) : undefined
   const resolved = asked ?? named ?? found ?? 'br'
-  if (resolved === 'tgz' && brotliQuality !== undefined) throw new Error(`${prefix}--brotli-quality compresses a stasis.code.br, not a .stasis.tgz`)
+  if (resolved === 'tgz' && brotliQuality !== undefined) throw new Error(`${prefix}--brotli-quality doesn't apply to a .stasis.tgz`)
   return resolved
 }
 

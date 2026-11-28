@@ -32,7 +32,7 @@ function readAddConfig(baseDir) {
     throw new Error(`${CONFIG_FILE}: brotliQuality must be an integer 0..11 (got ${JSON.stringify(cfg.brotliQuality)})`)
   }
   if (cfg.format !== undefined && !BUNDLE_FORMATS.has(cfg.format)) throw new Error(`${CONFIG_FILE}: format must be br or tgz (got ${JSON.stringify(cfg.format)})`)
-  assertFormatOf(cfg.bundleFile || undefined, cfg.format, `${CONFIG_FILE}: format ${cfg.format}`)
+  assertFormatOf(cfg.bundleFile || undefined, cfg.format, `${CONFIG_FILE}: format=${cfg.format}`)
   // Named, else the format's, else the stasis.code.br or stasis.tgz there, as a run finds it.
   const bundleFile = cfg.bundleFile || defaultBundleName(cfg.format, (name) => existsSync(join(baseDir, name)))
   const resourcesBundleFile = cfg.resourcesBundleFile

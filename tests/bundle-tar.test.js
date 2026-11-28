@@ -37,16 +37,16 @@ test('Bundle.fromTar: refuses a tar other than exactly its stasis.lock.json\'s f
   const refused = (entries, message) => t.assert.throws(() => Bundle.fromTar(entries, { integrityOf }), { message })
   const [lock, dir, ...files] = entriesOf()
   const [main, logoEntry, run] = files
-  refused([...entriesOf(), entry('src/extra.js', bytes('extra\n'))], 'src/extra.js is in it, but not in its stasis.lock.json')
-  refused([lock, main, run], 'assets/logo.png, which its stasis.lock.json attests, is not in it')
+  refused([...entriesOf(), entry('src/extra.js', bytes('extra\n'))], 'src/extra.js is not in stasis.lock.json')
+  refused([lock, main, run], 'assets/logo.png is in stasis.lock.json but missing')
   refused([lock, entry('src/main.js', bytes('MAIN\n')), logoEntry, run], /^stasis: src\/main\.js does not match the lockfile \(expected sha512-\S+, got sha512-\S+\)$/u)
-  refused([lock, main, logoEntry, { ...run, mode: 0o644 }], "bin/run.sh's execute bit is not the one its stasis.lock.json attests")
-  refused([lock, { ...main, mode: 0o744 }, logoEntry, run], "src/main.js's execute bit is not the one its stasis.lock.json attests")
-  for (const type of ['symlink', 'hardlink', 'character-device', 'fifo']) refused([...entriesOf(), { name: 'src/odd', type, mode: 0o644, data: new Uint8Array() }], `src/odd is a ${type}, which no stasis.lock.json attests`)
-  refused([dir, ...files], 'holds no stasis.lock.json at its top')
-  refused(entriesOf().map((one) => ({ ...one, name: `package/${one.name}` })), 'holds no stasis.lock.json at its top')
-  refused([entry('stasis.lock.json', bytes('{"version":0,"config":{"scope":"full"},"entries":[],"sources":{},"modules":{}}')), ...files], 'its stasis.lock.json is no stasis lockfile (lockfile must attest imports and formats)')
-  refused([entry('stasis.lock.json', bytes(`﻿${lockfile.serialize()}`)), ...files], /^its stasis\.lock\.json is no stasis lockfile/u)
+  refused([lock, main, logoEntry, { ...run, mode: 0o644 }], "bin/run.sh's execute bit differs from stasis.lock.json")
+  refused([lock, { ...main, mode: 0o744 }, logoEntry, run], "src/main.js's execute bit differs from stasis.lock.json")
+  for (const type of ['symlink', 'hardlink', 'character-device', 'fifo']) refused([...entriesOf(), { name: 'src/odd', type, mode: 0o644, data: new Uint8Array() }], `src/odd is a ${type}, not a file`)
+  refused([dir, ...files], 'no top-level stasis.lock.json')
+  refused(entriesOf().map((one) => ({ ...one, name: `package/${one.name}` })), 'no top-level stasis.lock.json')
+  refused([entry('stasis.lock.json', bytes('{"version":0,"config":{"scope":"full"},"entries":[],"sources":{},"modules":{}}')), ...files], 'stasis.lock.json: not a valid stasis lockfile (lockfile must attest imports and formats)')
+  refused([entry('stasis.lock.json', bytes(`﻿${lockfile.serialize()}`)), ...files], /^stasis\.lock\.json: not a valid stasis lockfile/u)
   // Code that is no UTF-8, whatever bytes its lockfile attests.
   const latin1 = Uint8Array.of(0x6d, 0xe9, 0x0a)
   const odd = (path, data, format) => {
@@ -61,8 +61,8 @@ test('Bundle.fromTar: refuses a tar other than exactly its stasis.lock.json\'s f
   refused(odd('src/evil.js', bytes('evil\n'), 'stat:file'), "bundle: 'src/evil.js' is a payload-free 'stat:file' record, yet carries content")
   refused(odd('.npmrc', bytes('x\n')), 'bundle: .npmrc is a file no bundle may carry')
   // A directory capture its lockfile records: a listing no tar holds, whether or not one is in it.
-  refused(odd('src', bytes('["main.js"]'), 'directory'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
-  refused(odd('src', bytes('["main.js"]'), 'directory').filter(({ name }) => name !== 'src'), "its stasis.lock.json records 'src' as a directory capture, which a .stasis.tgz can't carry")
+  refused(odd('src', bytes('["main.js"]'), 'directory'), "stasis.lock.json: a .stasis.tgz can't hold directory capture 'src'")
+  refused(odd('src', bytes('["main.js"]'), 'directory').filter(({ name }) => name !== 'src'), "stasis.lock.json: a .stasis.tgz can't hold directory capture 'src'")
 })
 
 test('bundle.toTar: what Bundle.fromTar takes back, the lockfile of its files at its top, each file by its path, an executable one 0o755, a stat record its lockfile\'s; a directory capture, a listing a tar can\'t carry, refused', (t) => {
@@ -74,5 +74,5 @@ test('bundle.toTar: what Bundle.fromTar takes back, the lockfile of its files at
   const recording = (formats, files = {}) => new Bundle({ ...bundle, repo: bundle.repo, formats: new Map([...bundle.formats, ...formats]), modules: new Map([['.', { ...bundle.modules.get('.'), files: { ...bundle.modules.get('.').files, ...files } }]]) })
   const stats = recording([['src/gone.js', 'stat:file'], ['lib', 'stat:directory']])
   t.assert.equal(back(stats).serialize(), stats.serialize(), 'stat records, payload-free, carried')
-  t.assert.throws(() => recording([['src', 'directory']], { src: '["main.js"]' }).toTar({ integrityOf }), { message: "bundle: 'src' is a directory capture, which a .stasis.tgz can't carry" })
+  t.assert.throws(() => recording([['src', 'directory']], { src: '["main.js"]' }).toTar({ integrityOf }), { message: "bundle: a .stasis.tgz can't hold directory capture 'src'" })
 })

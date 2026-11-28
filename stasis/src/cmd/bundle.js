@@ -2077,7 +2077,7 @@ const repoAttested = (recorded, repo) => Object.entries(recorded).every(([key, v
 const repoLabel = ({ github = '?', commit = '?', directory }) => `${github}@${commit}${directory ? `/${directory}` : ''}`
 
 // That the bundle of `serialized` (its bytes), to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis run
-// --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths it names.
+// --lock=frozen --bundle=load` loads them; stasis.config.json is read without the bundle paths and format it names.
 function loadsBeside(serialized, { at, lockAbs, label, root, scope, host = diskHost }) {
   // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
   const bytes = brotliCompressSync(serialized, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
@@ -2085,7 +2085,7 @@ function loadsBeside(serialized, { at, lockAbs, label, root, scope, host = diskH
     if (path === at) return bytes
     const data = host.readFile(path)
     if (basename(path) !== CONFIG_FILE) return data
-    const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...config } = JSON.parse(data.toString('utf8'))
+    const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, format: _format, ...config } = JSON.parse(data.toString('utf8'))
     return Buffer.from(JSON.stringify(config))
   }
   const served = { ...host, readFile }

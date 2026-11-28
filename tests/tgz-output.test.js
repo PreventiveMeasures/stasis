@@ -48,12 +48,12 @@ test('bundleFormat: --format, else the --output\'s name\'s, else br; refused whe
     bundleFormat('', { format: 'tgz' }), bundleFormat('', { format: 'tgz', output: '-' }), bundleFormat('', { format: 'br', output: 'x.stasis.code.br' }),
   ], ['br', 'br', 'tgz', 'tgz', 'tgz', 'tgz', 'br'])
   const refused = (options, message) => t.assert.throws(() => bundleFormat('p: ', options), { message: `p: ${message}` })
-  refused({ format: 'tgz', output: 'app.br' }, "--format=tgz writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got 'app.br')")
-  refused({ format: 'tgz', output: 'app.tgz' }, "--format=tgz writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got 'app.tgz')")
-  refused({ format: 'br', output: 'app.stasis.tgz' }, "--format=br writes a stasis.code.br, not --output=app.stasis.tgz, a .stasis.tgz's name")
+  refused({ format: 'tgz', output: 'app.br' }, "--format=tgz, but --output=app.br isn't a .stasis.tgz")
+  refused({ format: 'tgz', output: 'app.tgz' }, "--format=tgz, but --output=app.tgz isn't a .stasis.tgz")
+  refused({ format: 'br', output: 'app.stasis.tgz' }, '--format=br, but --output=app.stasis.tgz is a .stasis.tgz')
   refused({ format: 'zip' }, "--format must be br or tgz (got 'zip')")
-  refused({ format: 'tgz', brotliQuality: 5 }, '--brotli-quality compresses a stasis.code.br, not a .stasis.tgz')
-  refused({ output: 'app.stasis.tgz', brotliQuality: 5 }, '--brotli-quality compresses a stasis.code.br, not a .stasis.tgz')
+  refused({ format: 'tgz', brotliQuality: 5 }, "--brotli-quality doesn't apply to a .stasis.tgz")
+  refused({ output: 'app.stasis.tgz', brotliQuality: 5 }, "--brotli-quality doesn't apply to a .stasis.tgz")
 })
 
 test('stasis bundle --format: to stdout, refused as a usage error where it conflicts with the --output, --brotli-quality or --lockfile-only', withTmp((t, tmp) => {
@@ -63,9 +63,9 @@ test('stasis bundle --format: to stdout, refused as a usage error where it confl
   t.assert.equal(streamed.status, 0, streamed.stderr.toString())
   t.assert.deepStrictEqual([...readStasisTgz(streamed.stdout, '<stdout>').artifact.sources.keys()], ['src/a.js'])
   for (const [args, message] of [
-    [['--format=tgz', '--output=app.br'], "--format=tgz writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got 'app.br')"],
-    [['--format=br', '--output=app.stasis.tgz'], "--format=br writes a stasis.code.br, not --output=app.stasis.tgz, a .stasis.tgz's name"],
-    [['--output=app.stasis.tgz', '--brotli-quality=5'], '--brotli-quality compresses a stasis.code.br, not a .stasis.tgz'],
+    [['--format=tgz', '--output=app.br'], "--format=tgz, but --output=app.br isn't a .stasis.tgz"],
+    [['--format=br', '--output=app.stasis.tgz'], '--format=br, but --output=app.stasis.tgz is a .stasis.tgz'],
+    [['--output=app.stasis.tgz', '--brotli-quality=5'], "--brotli-quality doesn't apply to a .stasis.tgz"],
     [['--format=tgz', '--lockfile=x.lock.json', '--lockfile-only'], "--lockfile-only can't be combined with --format (no bundle is written)"],
   ]) {
     const refused = run(...args)
@@ -83,11 +83,11 @@ test('bundleFormat: stasis.config.json\'s format where no --format is given, els
     bundleFormat('', { output: 'x.br', exists: there('stasis.tgz') }), bundleFormat('', { configured: 'br', exists: there('stasis.tgz') }),
   ], ['tgz', 'tgz', 'br', 'tgz', 'br', 'br', 'br', 'br'])
   const refused = (options, message) => t.assert.throws(() => bundleFormat('p: ', options), { message: `p: ${message}` })
-  refused({ format: 'br', configured: 'tgz' }, "--format=br disagrees with stasis.config.json's format, tgz")
-  refused({ configured: 'tgz', output: 'app.br' }, "stasis.config.json's format tgz writes a .stasis.tgz: name --output stasis.tgz or <name>.stasis.tgz (got 'app.br')")
-  refused({ configured: 'br', output: 'app.stasis.tgz' }, "stasis.config.json's format br writes a stasis.code.br, not --output=app.stasis.tgz, a .stasis.tgz's name")
+  refused({ format: 'br', configured: 'tgz' }, '--format=br, but stasis.config.json sets format=tgz')
+  refused({ configured: 'tgz', output: 'app.br' }, "stasis.config.json: format=tgz, but --output=app.br isn't a .stasis.tgz")
+  refused({ configured: 'br', output: 'app.stasis.tgz' }, 'stasis.config.json: format=br, but --output=app.stasis.tgz is a .stasis.tgz')
   refused({ configured: 'zip' }, "stasis.config.json's format must be br or tgz (got 'zip')")
-  t.assert.throws(() => bundleFormat('', { exists: there('stasis.code.br', 'stasis.tgz') }), /stasis\.code\.br and stasis\.tgz are both there/u)
+  t.assert.throws(() => bundleFormat('', { exists: there('stasis.code.br', 'stasis.tgz') }), /both stasis\.code\.br and stasis\.tgz exist/u)
 })
 
 test('stasis bundle writes the root\'s bundle as stasis.config.json\'s format says, else as the bundle there is', withTmp(async (t, tmp) => {
@@ -96,15 +96,27 @@ test('stasis bundle writes the root\'s bundle as stasis.config.json\'s format sa
   writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({ format: 'tgz' }))
   await bundleCommand({ cwd, entries: ['src/a.js'] })
   t.assert.deepStrictEqual([existsSync(join(cwd, 'stasis.tgz')), existsSync(join(cwd, 'stasis.code.br'))], [true, false])
-  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'], format: 'br' }), { message: "bundleCommand: --format=br disagrees with stasis.config.json's format, tgz" })
+  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'], format: 'br' }), { message: 'bundleCommand: --format=br, but stasis.config.json sets format=tgz' })
   // No format: the stasis.tgz there, added to.
   writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({}))
   await bundleCommand({ cwd, entries: ['src/b.js'], add: true })
   t.assert.deepStrictEqual([[...parseFile(join(cwd, 'stasis.tgz')).sources.keys()], existsSync(join(cwd, 'stasis.code.br'))], [['src/a.js', 'src/b.js'], false])
   writeFileSync(join(cwd, 'stasis.code.br'), 'either\n')
-  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'] }), /stasis\.code\.br and stasis\.tgz are both there/u)
+  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'] }), /both stasis\.code\.br and stasis\.tgz exist/u)
   // A run's bundleFile naming a .stasis.tgz is no write of the build's, which writes its own output.
   writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({ bundleFile: 'run.stasis.tgz' }))
   await bundleCommand({ cwd, entries: ['src/a.js'], output: 'other.stasis.code.br' })
   t.assert.ok(existsSync(join(cwd, 'other.stasis.code.br')))
+}))
+
+test('stasis bundle with stasis.config.json\'s format: tgz rebuilds against the lockfile there, held to it (lock = frozen)', withTmp(async (t, tmp) => {
+  t.mock.method(console, 'warn', () => {})
+  const cwd = project(tmp)
+  writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({ format: 'tgz' }))
+  await bundleCommand({ cwd, entries: ['src/a.js'], lockfile: 'stasis.lock.json' })
+  t.assert.deepStrictEqual([existsSync(join(cwd, 'stasis.tgz')), existsSync(join(cwd, 'stasis.lock.json'))], [true, true])
+  await bundleCommand({ cwd, entries: ['src/a.js'] })
+  t.assert.deepStrictEqual([...parseFile(join(cwd, 'stasis.tgz')).sources.keys()], ['src/a.js'])
+  writeFileSync(join(cwd, 'src', 'a.js'), "console.log('changed')\n")
+  await t.assert.rejects(bundleCommand({ cwd, entries: ['src/a.js'] }), /stasis\.lock\.json/u)
 }))

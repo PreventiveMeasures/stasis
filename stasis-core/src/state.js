@@ -920,7 +920,7 @@ export class State {
   // named, its format's, or found; a build's, which writes its own output, doesn't.
   #refuseWritingTgz() {
     const tgz = [this.#bundlePath, this.config.resourcesBundleFile].find((file) => file !== undefined && isTgzName(file))
-    assert.ok(!this.#claim || tgz === undefined, `stasis: ${tgz} is a .stasis.tgz, which a run reads (bundle = load or frozen) and never writes`)
+    assert.ok(!this.#claim || tgz === undefined, `stasis: ${tgz}: a .stasis.tgz is read-only (bundle = load or frozen)`)
   }
 
   // Where none is named: the config's format's, else the stasis.code.br or stasis.tgz there, refused where both are for

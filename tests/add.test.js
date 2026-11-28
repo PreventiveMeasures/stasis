@@ -685,11 +685,11 @@ test('stasis add reads and writes a .stasis.tgz: named by bundleFile, by stasis.
 
   const core = runCli(coreCli, ['add', 'src/a.js'], { cwd: tmp })
   t.assert.notEqual(core.status, 0)
-  t.assert.match(core.stderr, /stasis\.tgz is a \.stasis\.tgz, which stasis reads and writes and stasis-core can't \(it writes a stasis\.code\.br\)/u)
+  t.assert.match(core.stderr, /stasis\.tgz: a \.stasis\.tgz needs stasis, not stasis-core/u)
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ format: 'tgz', bundleFile: 'app.br' }))
   const disagreeing = runCli(stasisCli, ['add', 'src/a.js'], { cwd: tmp })
   t.assert.notEqual(disagreeing.status, 0)
-  t.assert.match(disagreeing.stderr, /stasis\.config\.json: format tgz names a \.stasis\.tgz, stasis\.tgz or <name>\.stasis\.tgz, not 'app\.br'/u)
+  t.assert.match(disagreeing.stderr, /stasis\.config\.json: format=tgz, but 'app\.br' isn't a \.stasis\.tgz/u)
 }))
 
 test('stasis add passes over a .stasis.tgz in a directory it sweeps, as over a stasis.code.br', withTmp((t, tmp) => {
