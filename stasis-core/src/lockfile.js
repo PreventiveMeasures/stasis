@@ -1,4 +1,4 @@
-import { assert, assertScope, isPlainObject, mergedParts, moduleFileKey, moduleFileKeys, moduleInfo, normalizeRepo, parseParts, serializedParts } from './artifact-util.js'
+import { assert, assertScope, isPlainObject, mapFiles, mergedParts, moduleFileKeys, normalizeRepo, parseParts, serializedParts } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -36,12 +36,7 @@ export class Lockfile {
 
   // Imports and formats carry across, else a frozen run would skip those cross-checks.
   static fromBundle(bundle, integrityOf) {
-    const modules = new Map()
-    for (const [dir, m] of bundle.modules) {
-      const files = Object.create(null)
-      for (const [rel, content] of Object.entries(m.files)) files[rel] = integrityOf(moduleFileKey(dir, rel), content)
-      modules.set(dir, moduleInfo({ ...m, files }))
-    }
+    const modules = mapFiles(bundle.modules, integrityOf)
     return new Lockfile({ config: bundle.config, entries: bundle.entries, modules, imports: bundle.imports, formats: bundle.formats, executable: bundle.executable })
   }
 
