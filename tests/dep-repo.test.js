@@ -131,6 +131,25 @@ test('merging takes a dependency repo one side lacks, and holds two that differ 
   t.assert.deepStrictEqual({ ...merged({ ...DEP_REPO, commit: COMMIT }, DEP_REPO) }, { ...DEP_REPO, commit: COMMIT }, 'nor dropped from it')
 })
 
+test('a dependency repo may be stamped private, last, in a bundle alone, and a merge keeps a stamp either side gives its repository', (t) => {
+  const stamped = { private: true, ...DEP_REPO, commit: COMMIT }
+  const json = JSON.parse(bundleOf({ 'node_modules/dep': dep(stamped) }).serialize())
+  t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep'].repo), ['github', 'directory', 'commit', 'private'], 'canonical key order')
+  t.assert.deepStrictEqual({ ...Bundle.parse(JSON.stringify(json)).modules.get('node_modules/dep').repo }, { ...DEP_REPO, commit: COMMIT, private: true })
+  t.assert.equal(JSON.parse(lockOf({ 'node_modules/dep': dep(stamped) }).serialize()).modules['node_modules/dep'].repo, undefined, 'metadata: never in a lockfile')
+  for (const repo of [{ ...DEP_REPO, private: false }, { ...DEP_REPO, private: 'yes' }, { private: true }]) {
+    t.assert.throws(() => bundleOf({ 'node_modules/dep': dep(repo) }).serialize(), /bundle module 'node_modules\/dep' repo/u, JSON.stringify(repo))
+  }
+
+  const merged = (a, b) => ({ ...bundleOf({ 'node_modules/dep': dep(a) }).merge(bundleOf({ 'node_modules/dep': dep(b) })).modules.get('node_modules/dep').repo })
+  t.assert.deepStrictEqual(merged({ ...DEP_REPO, private: true }, DEP_REPO), { ...DEP_REPO, private: true }, "the existing side's, whole")
+  t.assert.deepStrictEqual(merged(DEP_REPO, { ...DEP_REPO, commit: COMMIT, private: true }), { ...DEP_REPO, private: true },
+    "the existing side's, with the added side's stamp of its repository, and no commit taken into it")
+  t.assert.deepStrictEqual(merged(DEP_REPO, { github: 'O/DEP', private: true }), { ...DEP_REPO, private: true }, 'in any spelling of its name')
+  t.assert.deepStrictEqual(merged(DEP_REPO, { github: 'o/other', private: true }), DEP_REPO, "another repository's stamp: not this one's")
+  t.assert.deepStrictEqual(merged(undefined, { ...DEP_REPO, private: true }), { ...DEP_REPO, private: true }, 'into a record of none')
+})
+
 test('State records a dependency repo, from its own package.json, in the bundle alone', withTmp((t, tmp) => {
   writeProject(tmp, { repository: { type: 'git', url: 'git+https://github.com/o/dep.git', directory: 'packages/dep' } })
   const state = capture(tmp, { bundle: 'replace', lock: 'replace' })
