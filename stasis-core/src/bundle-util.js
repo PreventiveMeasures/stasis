@@ -26,12 +26,12 @@ const VENDOR_DIRS = {
   next: ['dist/compiled'], // the dependencies Next.js compiles in, ~140, each with a trimmed package.json
 }
 
-export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
-
 export const manifestIdentity = (pkg) => ({ name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) })
 
-// `below`: whether any package.json under `vendorDir` covers the file at all.
-export function vendoredPackageOf(rel, vendorDir, read) {
+// Undefined outside `hostName`'s vendor dirs; `below`: whether any package.json under the one `rel` is in covers it.
+export function vendoredPackageOf(rel, hostName, read) {
+  const vendorDir = VENDOR_DIRS[hostName]?.find((dir) => rel.startsWith(`${dir}/`))
+  if (vendorDir === undefined) return undefined
   let below = false
   for (let dir = posix.dirname(rel); dir.startsWith(`${vendorDir}/`); dir = posix.dirname(dir)) {
     const pkg = read(dir)
@@ -84,18 +84,17 @@ function packageMetadata(pkgDir, pkg, inNodeModules, more) {
 
 // In node_modules a bucket's package.json needs name and version; outside, a name alone, as State#locateModule.
 // A malformed one is walked past, or with `strict` throws (its files would otherwise land in the parent's).
-export function findPackageMetadata(baseDir, fileRelPath, options) {
-  const read = memoized((rel) => readPackageJson(baseDir, rel, options))
-  const nm = splitNodeModulesPath(toPosix(fileRelPath))
+function findPackageMetadata(fileRelPath, read) {
+  const file = toPosix(fileRelPath)
+  const nm = splitNodeModulesPath(file)
   // The package a file in node_modules is in, which holds what is below it only with a name and version.
   const hostPkg = nm === null ? undefined : read(`${nm.dir}/package.json`)
   const holds = hostPkg?.name && hostPkg.version
   // A file in a vendored package is its host's, as State#locateModule has it.
-  const vendorDir = holds ? vendorDirOf(hostPkg.name, nm.rel) : undefined
-  const { below, vendored } = vendorDir === undefined ? {} : vendoredPackageOf(nm.rel, vendorDir, (sub) => read(`${nm.dir}/${sub}/package.json`))
-  if (below) {
-    const { dir: sub, ...identity } = vendored ?? {}
-    return packageMetadata(nm.dir, hostPkg, true, vendored && { vendored: { [sub]: identity } })
+  const vendor = holds ? vendoredPackageOf(nm.rel, hostPkg.name, (sub) => read(`${nm.dir}/${sub}/package.json`)) : undefined
+  if (vendor?.below) {
+    const { dir: sub, ...identity } = vendor.vendored ?? {}
+    return packageMetadata(nm.dir, hostPkg, true, vendor.vendored && { vendored: { [sub]: identity } })
   }
   // Only below a package with a name and version, where the walk past it stops.
   const isHostsNested = (sub, pkg) => sub !== undefined && holds && (pkg.private === true || isPackagesManifest(`${nm.dir}/${sub}/package.json`, pkg, hostPkg))
@@ -103,24 +102,26 @@ export function findPackageMetadata(baseDir, fileRelPath, options) {
   // that is the package's, or `private` (npm publishes none), as State#locateModule has it.
   let subpackages
   let nearest = true
-  for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
-    const pkg = read(toPosix(join(dir, 'package.json')))
-    const posixDir = toPosix(dir)
-    const inNodeModules = hasNodeModulesSegment(posixDir)
-    const sub = nm !== null && posixDir.startsWith(`${nm.dir}/`) ? posixDir.slice(nm.dir.length + 1) : undefined
+  for (let dir = posix.dirname(file); ; dir = posix.dirname(dir)) {
+    const pkg = read(posix.join(dir, 'package.json'))
+    const inNodeModules = hasNodeModulesSegment(dir)
+    const sub = nm !== null && dir.startsWith(`${nm.dir}/`) ? dir.slice(nm.dir.length + 1) : undefined
     if (isSubpackage(pkg?.name, hostPkg?.name, sub)) {
       if (nearest) subpackages = { [sub]: manifestIdentity(pkg) }
     } else if (pkg?.name && (pkg.version || !inNodeModules) && !isHostsNested(sub, pkg)) {
-      const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
+      const own = dir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
       return packageMetadata(dir, pkg, inNodeModules, own && { subpackages: own })
     }
     if (pkg?.name) nearest = false
-    if (dirname(dir) === dir) return null // '.' and a filesystem root are their own dirname
+    if (posix.dirname(dir) === dir) return null // '.' and a filesystem root are their own dirname
   }
 }
 
-// Once per directory, the only thing findPackageMetadata's answer depends on.
-export const packageLookup = (baseDir, options) => memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
+// Once per directory, the only thing findPackageMetadata's answer depends on; each package.json read once for all.
+export function packageLookup(baseDir, options) {
+  const read = memoized((rel) => readPackageJson(baseDir, rel, options))
+  return memoized((path) => findPackageMetadata(path, read), (path) => posix.dirname(path))
+}
 
 export const NO_ENTRY = new Set(['ENOENT', 'ENOTDIR'])
 

@@ -160,11 +160,6 @@ const isBucketDir = (dir) => typeof dir === 'string' && dir !== '' && !dir.inclu
 export const isSubpackage = (manifestName, hostName, dir) =>
   typeof manifestName === 'string' && isBucketDir(dir) && manifestName === `${hostName}/${dir}`
 
-const DIR_METADATA = {
-  vendored: () => true,
-  subpackages: (entry, name, sub) => isSubpackage(entry.name, name, sub),
-}
-
 export const entryDirOf = (entries, rel) => {
   for (let slash = rel.lastIndexOf('/'); slash > 0; slash = rel.lastIndexOf('/', slash - 1)) {
     if (Object.hasOwn(entries, rel.slice(0, slash))) return rel.slice(0, slash)
@@ -178,7 +173,8 @@ function carriedEntries(entries, files) {
   return carried.size === 0 ? undefined : Object.freeze(fromEntries(sortedByPath(carried).map((dir) => [dir, entries[dir]])))
 }
 
-const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: entries }, what) => {
+// The normalizer of a record's `field` of sub-directories of its bucket, each a package `named` as it must be.
+const dirMetadata = (field, named) => (dir, { name, ecosystem, files, [field]: entries }, what) => {
   if (entries === undefined) return undefined
   if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no ${field}`)
   if (!isPlainObject(entries)) assert(false, `${what} module '${dir}' ${field} must be an object`)
@@ -186,7 +182,7 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
     if (!isBucketDir(sub)) assert(false, `${what} module '${dir}' ${field}: invalid directory ${JSON.stringify(sub)}`)
     const entry = normalizeBlock(block, PACKAGE_BLOCK, `${what} module '${dir}' ${field} '${sub}'`)
     if (entry?.name === undefined) assert(false, `${what} module '${dir}' ${field} '${sub}' has no name`)
-    if (!DIR_METADATA[field](entry, name, sub)) assert(false, `${what} module '${dir}' ${field} '${sub}' is named '${entry.name}', not '${name}/${sub}'`)
+    if (!named(entry.name, name, sub)) assert(false, `${what} module '${dir}' ${field} '${sub}' is named '${entry.name}', not '${name}/${sub}'`)
     return [sub, entry]
   }))
   const carried = carriedEntries(normalized, files)
@@ -196,8 +192,10 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
 }
 
 const RECORD_METADATA = { directory: normalizeModuleDirectory, integrity: normalizeModuleIntegrity, patch: normalizeModulePatch, repo: normalizeModuleRepo }
+const DIR_METADATA = { vendored: dirMetadata('vendored', () => true), subpackages: dirMetadata('subpackages', isSubpackage) }
 const DIR_FIELDS = Object.keys(DIR_METADATA)
-const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
+const METADATA = { ...RECORD_METADATA, ...DIR_METADATA }
+const MODULE_METADATA = Object.keys(METADATA)
 const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]
 
 // An npm record with a `directory` is `npm:directory`'s, one without npm's: a record takes the tag with the value, as
@@ -283,12 +281,15 @@ export function heldToAccounts(modules, accounts, prefix = '') {
   }
 }
 
-function metadataOf(dir, info, what, fields, entriesOf) {
-  const metadata = {}
-  for (const [field, normalize] of Object.entries(RECORD_METADATA)) metadata[field] = fields.includes(field) ? normalize(dir, info, what) : undefined
-  for (const field of DIR_FIELDS) metadata[field] = fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, [field]: entriesOf(field) }, what) : undefined
-  return metadata
-}
+// `modules`, each file's value `map(file, value)`'s (`file` its flat key): one it maps to undefined is left out.
+export const mapFiles = (modules, map) => new Map(modules.entries().map(([dir, info]) => {
+  const files = Object.create(null)
+  for (const [rel, value] of Object.entries(info.files)) {
+    const mapped = map(moduleFileKey(dir, rel), value)
+    if (mapped !== undefined) files[rel] = mapped
+  }
+  return [dir, moduleInfo({ ...info, files })]
+}))
 
 // `scope` MUST be the artifact's own: a non-full-scope artifact records only its node_modules buckets.
 export function moduleFileKeys(modules, { scope = 'full' } = {}) {
@@ -365,12 +366,12 @@ export const BUNDLE_FILE = 'stasis.code.br'
 export const SCOPES = new Set(['node_modules', 'full'])
 export const assertScope = (scope, what) => assert(SCOPES.has(scope), `${what} scope must be node_modules or full, got ${JSON.stringify(scope)}`)
 
+// A file name (`base`) of `file`'s: `file`, or `<name>.<file>`.
+export const isNameOf = (base, file) => base === file || base.endsWith(`.${file}`)
+
 // In any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too. `<name>.stasis.lock.json` is a
 // `<name>.stasis.code.br`'s.
-export const isLockfileName = (path) => {
-  const base = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
-  return base === LOCK_FILE || base.endsWith(`.${LOCK_FILE}`)
-}
+export const isLockfileName = (path) => isNameOf(path.slice(path.lastIndexOf('/') + 1).toLowerCase(), LOCK_FILE)
 
 // Once extracted, each is the project's own: the lockfile a frozen extract checks, or a package manager's hook or config,
 // a Yarn PnP file or git metadata, which run code or redirect installs and imports.
@@ -500,19 +501,23 @@ function assertImports(imports) {
   }
 }
 
-export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
-  const metadata = written === true ? MODULE_METADATA : written === false ? [] : written
+// `record` (its `files` set) of the metadata `fields` alone, each held to what its bucket may carry.
+function heldRecord(dir, record, what, fields) {
+  const metadata = {}
+  for (const [field, normalize] of Object.entries(METADATA)) metadata[field] = fields.includes(field) ? normalize(dir, record, what) : undefined
+  return moduleInfo({ ...record, ...metadata })
+}
+
+export function groupModules(modules, { skipEmpty = false, metadata = MODULE_METADATA, what } = {}) {
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
     const inNodeModules = hasNodeModulesSegment(dir)
     if (inNodeModules) assert(info.name && info.version && info.files)
-    const files = fromEntries(sortedByPath(Object.entries(info.files), entryKey))
-    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({
-      ...info,
-      ...metadataOf(dir, { ...info, files }, what, metadata, (field) => carriedEntries(info[field], files)),
-      files,
-    })])
+    const record = { ...info, files: fromEntries(sortedByPath(Object.entries(info.files), entryKey)) }
+    // A sub-directory listed of none of its files (a bundle half's) is dropped, which parse refuses.
+    for (const field of DIR_FIELDS) if (metadata.includes(field)) record[field] = carriedEntries(info[field], record.files)
+    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, heldRecord(dir, record, what, metadata)])
   }
   return { modules: fromEntries(sortedByPath(grouped.modules, entryKey)), sources: fromEntries(sortedByPath(grouped.sources, entryKey)) }
 }
@@ -532,11 +537,7 @@ export function parseBuckets(json, what, fields = MODULE_METADATA) {
       // An array or a string would read as files named by index ('0', '1'...).
       if (!isPlainObject(info.files)) assert(false, `${what}: module '${dir}' files must be an object`)
       const files = fromEntries(Object.entries(info.files))
-      modules.set(dir, moduleInfo({
-        name: info.name, version: info.version ?? undefined, ecosystem: info.ecosystem,
-        ...metadataOf(dir, { ...info, files }, what, fields, (field) => info[field]),
-        files,
-      }))
+      modules.set(dir, heldRecord(dir, { ...info, version: info.version ?? undefined, files }, what, fields))
     }
   }
   return modules

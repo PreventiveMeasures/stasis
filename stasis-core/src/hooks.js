@@ -10,7 +10,7 @@ import { State } from './state.js'
 import { excludedText } from './policy.js'
 import { installFsHooks } from './fs.js'
 import { inScope, sha512integrity } from './state-util.js'
-import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, STYLESHEET_FORMATS, erasedTypeScriptFormat, nestedMap, upsert } from './util.js'
+import { GENERIC_FORMATS, NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, STYLESHEET_FORMATS, erasedTypeScriptFormat, upsert } from './util.js'
 
 // Snapshot off the namespace so `--fs` can't redirect stasis's own capture/shard reads.
 const { mkdtempSync, opendirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = fs
@@ -104,10 +104,9 @@ let entryUnseen = true
 // Until the CLI entry resolves, preloads (`--import tsx`) resolve from a DIRECTORY parent: runner infrastructure,
 // neither captured (it would misfile the entry) nor gated (a preload loads from disk under --bundle=load).
 let entryUnresolved = true
-// The infrastructure graph passes both hooks unobserved; each URL it reaches (with what its load returned, once
-// `loaded`) and its edges are kept for when the app reaches it.
+// The infrastructure graph passes both hooks unobserved; each URL it reaches is kept, with what its load returned
+// (once `loaded`) and its `edges`, for when the app reaches it.
 const infra = new Map()
-const infraEdges = new Map()
 // So the CJS shim detects an attested file a transplanted require.extensions handler (tsx's) ran from DISK.
 const servedFromBundle = new Set()
 
@@ -292,7 +291,7 @@ function load(url, context, nextLoad) {
 
   // Stashed so a later app edge can promote the module with the exact bytes that executed.
   if (entryUnresolved || infra.has(url)) {
-    const reached = upsert(infra, url, () => ({}))
+    const reached = upsert(infra, url, () => ({ edges: new Map() }))
     const result = loadCounted(nextLoad, url, context)
     reached.loaded ??= { source: result.source, format: result.format }
     return result
@@ -326,7 +325,7 @@ function load(url, context, nextLoad) {
 // The app reached a module a preload executed, whose load hook can't re-fire: else a dangling edge ships. One a
 // preload only resolved leaves the graph: the app's own load captures it.
 function promoteInfraUrl(url, resolvedAsEntry = false) {
-  const loaded = infra.get(url)?.loaded
+  const { loaded, edges } = infra.get(url) ?? {}
   infra.delete(url)
   if (loaded === undefined) return
   // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
@@ -335,9 +334,7 @@ function promoteInfraUrl(url, resolvedAsEntry = false) {
   if (isEntry) entryUnseen = false
   const source = sourceOrDisk(loaded.source, url)
   recording(() => state.addFile(url, { source, format: loaded.format ?? undefined, isEntry }))
-  const edges = infraEdges.get(url)
-  infraEdges.delete(url)
-  for (const [specifier, edge] of edges ?? []) {
+  for (const [specifier, edge] of edges) {
     recording(() => state.addImport(url, specifier, edge.url, edge.context))
     promoteInfraUrl(edge.url)
   }
@@ -373,15 +370,14 @@ function missIfExcluded(specifier, parentURL, url, conditions) {
 
 function resolve(specifier, context, nextResolve) {
   const { parentURL, conditions, importAttributes } = context
+  const infraParent = infra.get(parentURL)
   // A DIRECTORY parent can't shadow an app parent; any other pre-entry parent ([eval]'s import) fails closed below.
-  if (infra.has(parentURL) || (entryUnresolved && parentURL?.endsWith('/'))) {
+  if (infraParent !== undefined || (entryUnresolved && parentURL?.endsWith('/'))) {
     const res = nextResolve(specifier)
     if (!res.url.startsWith('node:')) {
-      upsert(infra, res.url, () => ({}))
-      if (infra.has(parentURL)) {
-        // Last-write-wins: only the final target can be the one a cached instance pins.
-        nestedMap(infraEdges, parentURL).set(specifier, { url: res.url, context: { conditions, format: res.format, importAttributes } })
-      }
+      upsert(infra, res.url, () => ({ edges: new Map() }))
+      // Last-write-wins: only the final target can be the one a cached instance pins.
+      infraParent?.edges.set(specifier, { url: res.url, context: { conditions, format: res.format, importAttributes } })
     }
     return res
   }

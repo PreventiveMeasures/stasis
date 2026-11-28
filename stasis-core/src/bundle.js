@@ -10,9 +10,10 @@ import {
   isPlainObject,
   isStatFormat,
   LOCK_FILE,
+  mapFiles,
   mergedParts,
   moduleFileKey,
-  moduleInfo,
+  moduleFileKeys,
   narrowExecutable,
   normalizeBlock,
   normalizeRepo,
@@ -175,15 +176,7 @@ export class Bundle {
 
   // A full-scope code bundle must declare an entry to be runnable (State checks it on load).
   get hasCode() {
-    return this.modules.entries().some(([dir, { files }]) =>
-      Object.keys(files).some((rel) => !Bundle.isResourceFormat(this.formats.get(moduleFileKey(dir, rel)))))
-  }
-
-  // What parse holds a bundle's files to, for one built in memory (as `stasis build` builds one of a lockfile): no file
-  // key twice, no file no bundle may carry, and no content for a payload-free stat record. Throws; returns `bundle`.
-  static checkFiles(bundle) {
-    checkedFileKeys(bundle.modules, bundle.formats, BUNDLE)
-    return bundle
+    return moduleFileKeys(this.modules).values().some((file) => !Bundle.isResourceFormat(this.formats.get(file)))
   }
 
   static parse(text) {
@@ -193,35 +186,27 @@ export class Bundle {
   // The bundle of a lockfile's files, each `read(file)`'s bytes (a Uint8Array; it throws where there is none) held to the
   // digest it records, `integrityOf(bytes)` (an SRI sha512, as state-util's sha512integrity), as a `stasis run
   // --lock=frozen` replay holds them; of the repository it records. A directory capture (format 'directory') is no file
-  // to load. Held to checkFiles, which Lockfile.parse does not hold a lockfile to.
+  // to load. Held to the file rules parse holds a bundle to and Lockfile.parse holds no lockfile to: no file key twice,
+  // no file no bundle may carry, and no content for a payload-free stat record.
   static fromLockfile(lockfile, { read, integrityOf }) {
     assert(lockfile.imports, 'stasis: lockfile has no recorded import graph')
     const formats = lockfile.formats ?? new Map()
     const text = utf8()
-    const modules = new Map()
-    for (const [dir, { files, ...info }] of lockfile.modules) {
-      const out = Object.create(null)
-      for (const [rel, integrity] of Object.entries(files)) {
-        const file = moduleFileKey(dir, rel)
-        const format = formats.get(file)
-        if (format === 'directory') continue
-        const bytes = read(file)
-        const actual = integrityOf(bytes)
-        if (actual !== integrity) throw new Error(`stasis: ${file} does not match the lockfile (expected ${integrity}, got ${actual})`)
-        if (format === 'resource:base64') {
-          out[rel] = base64(bytes)
-          continue
-        }
-        // Else UTF-8: a lossy transcode (U+FFFD) would serve other bytes than those verified.
-        try {
-          out[rel] = text.decode(bytes)
-        } catch (cause) {
-          throw new Error(`stasis: ${file} is recorded as '${format ?? 'code'}' but is not valid UTF-8`, { cause })
-        }
+    const modules = mapFiles(lockfile.modules, (file, integrity) => {
+      const format = formats.get(file)
+      if (format === 'directory') return undefined
+      const bytes = read(file)
+      const actual = integrityOf(bytes)
+      if (actual !== integrity) throw new Error(`stasis: ${file} does not match the lockfile (expected ${integrity}, got ${actual})`)
+      if (format === 'resource:base64') return base64(bytes)
+      // Else UTF-8: a lossy transcode (U+FFFD) would serve other bytes than those verified.
+      try {
+        return text.decode(bytes)
+      } catch (cause) {
+        throw new Error(`stasis: ${file} is recorded as '${format ?? 'code'}' but is not valid UTF-8`, { cause })
       }
-      modules.set(dir, moduleInfo({ ...info, files: out }))
-    }
-    return Bundle.checkFiles(new Bundle({
+    })
+    const bundle = new Bundle({
       config: lockfile.config,
       entries: lockfile.entries,
       modules,
@@ -230,7 +215,9 @@ export class Bundle {
       // To the files carried (a skipped `directory` drops out), keeping parse's rules true for a hand-built lockfile.
       executable: narrowExecutable(lockfile.executable, { modules, formats, scope: lockfile.config.scope }),
       repo: lockfile.repo,
-    }))
+    })
+    checkedFileKeys(modules, formats, BUNDLE)
+    return bundle
   }
 
   // The bundle of a .stasis.tgz's tar, unpacked (its entries `{ name, type, mode, data }`, as @preventive/archive's unpack
@@ -253,21 +240,19 @@ export class Bundle {
       throw new Error(`its ${LOCK_FILE} is no stasis lockfile${cause.message ? ` (${cause.message})` : ''}`, { cause })
     }
     for (const [file, format] of lockfile.formats) assert(format !== 'directory', `its ${LOCK_FILE} records '${file}' as a directory capture, which a .stasis.tgz can't carry`)
-    const read = new Set()
+    const read = new Set([LOCK_FILE])
     const bundle = Bundle.fromLockfile(lockfile, {
       integrityOf,
       read: (path) => {
-        const data = files.get(path)?.data
+        const { data, mode } = files.get(path) ?? {}
         assert(data !== undefined, `${path}, which its ${LOCK_FILE} attests, is not in it`)
+        assert(((mode & EXECUTE_BITS) !== 0) === lockfile.executable.has(path), `${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
         read.add(path)
         return data
       },
     })
-    for (const [path, { mode }] of files) {
-      if (path === LOCK_FILE) continue
-      assert(read.has(path), `${path} is in it, but not in its ${LOCK_FILE}`)
-      assert(((mode & EXECUTE_BITS) !== 0) === lockfile.executable.has(path), `${path}'s execute bit is not the one its ${LOCK_FILE} attests`)
-    }
+    const extra = files.keys().find((path) => !read.has(path))
+    assert(extra === undefined, `${extra} is in it, but not in its ${LOCK_FILE}`)
     return bundle
   }
 

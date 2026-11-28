@@ -7,7 +7,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { addCommand } from '@exodus/stasis-core/add'
-import { findPackageMetadata, packageRepo } from '@exodus/stasis-core/bundle-util'
+import { packageLookup, packageRepo } from '@exodus/stasis-core/bundle-util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { withTmp } from './tmp.helper.js'
@@ -54,10 +54,10 @@ test("a dependency repo is read as a build reads its own: a declared directory a
     t.assert.equal(packageRepo(pkg), undefined, `${JSON.stringify(pkg)}: repository alone names it`)
   }
   writeProject(dir, { repository: 'github:o/dep' })
-  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'),
+  t.assert.deepStrictEqual(packageLookup(dir)('node_modules/dep/index.js'),
     { pkgDir: 'node_modules/dep', name: 'dep', version: '1.0.0', ecosystem: 'npm', repo: { github: 'o/dep' } })
   writeProject(dir, { repository: { url: 'github:o/dep', directory: './' } })
-  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js').repo, { github: 'o/dep', directory: '' })
+  t.assert.deepStrictEqual(packageLookup(dir)('node_modules/dep/index.js').repo, { github: 'o/dep', directory: '' })
 }))
 
 test("a dependency repo is at the commit its package.json's gitHead names, a full one, beside the GitHub repository it names", withTmp((t, dir) => {
@@ -70,7 +70,7 @@ test("a dependency repo is at the commit its package.json's gitHead names, a ful
     t.assert.equal(packageRepo(pkg), undefined, `${JSON.stringify(pkg)}: a commit of no GitHub repository`)
   }
   writeProject(dir, { repository: 'github:o/dep', gitHead: COMMIT })
-  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js').repo, { github: 'o/dep', commit: COMMIT })
+  t.assert.deepStrictEqual(packageLookup(dir)('node_modules/dep/index.js').repo, { github: 'o/dep', commit: COMMIT })
 }))
 
 test('a dependency record carries repo after ecosystem in a bundle; a lockfile neither writes nor reads one', (t) => {

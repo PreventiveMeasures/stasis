@@ -89,13 +89,14 @@ const listed = (items) => {
 }
 
 const installedName = (dir) => splitNodeModulesPath(`${dir}/package.json`)?.name
+const manifestName = (manifest) => (typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : undefined)
 
-// The dependencies paths are in that no record names (a --fs stat's), by their directory alone: a link's real one.
-function unrecorded(paths, packages, links) {
-  const dirs = new Set(packages.map(({ dir }) => dir))
-  return [...paths].map((path) => splitNodeModulesPath(links.get(path) ?? path)?.dir).filter((dir) => dir !== undefined && !dirs.has(dir) && dirs.add(dir))
-    .map((dir) => ({ dir, name: installedName(dir) }))
-}
+// Each dependency once, as first given.
+const onePerDir = (packages) => [...Map.groupBy(packages, ({ dir }) => dir).values()].map(([first]) => first)
+
+// Each dependency a path is in, by its directory alone (a link's real one): so too one no record names (a --fs stat's).
+const installedIn = (paths, links) => [...new Set(paths.values().map((path) => splitNodeModulesPath(links.get(path) ?? path)?.dir))]
+  .filter((dir) => dir !== undefined).map((dir) => ({ dir, name: installedName(dir) }))
 
 const packageText = ({ dir, name, version, via }) => {
   const installed = installedName(dir)
@@ -119,7 +120,7 @@ export function linksOn(root, host = diskHost) {
   if (realRoot === undefined) return () => undefined
   const manifestOf = memoized((dir) => {
     const manifest = readPackageJson(realRoot, `${dir}/package.json`, { host })
-    const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : installedName(dir)
+    const name = manifestName(manifest) ?? installedName(dir)
     return { dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined }
   })
   return memoized((path) => {
@@ -132,28 +133,6 @@ export function linksOn(root, host = diskHost) {
     const dir = splitNodeModulesPath(rel)?.dir
     return { real: rel, pkg: dir === undefined ? undefined : { ...manifestOf(dir), via: path } }
   })
-}
-
-// A node_modules-scope artifact carries node_modules alone; a link into a dependency counts as that dependency.
-function artifactContents({ modules, formats, config }, linkOf) {
-  const scope = config?.scope ?? 'full'
-  const inScope = (path) => scope === 'full' || hasNodeModulesSegment(path)
-  const paths = moduleFileKeys(modules, { scope })
-  for (const file of formats?.keys() ?? []) if (inScope(file)) paths.add(file)
-  const isPackage = ([dir, info]) => Object.keys(info.files).length > 0 && inScope(dir) && dependencyEcosystem(dir, info.ecosystem) !== undefined
-  const packages = [...modules].filter(isPackage).map(([dir, { name, version }]) => ({ dir, name, version: version ?? undefined }))
-  const dirs = new Set(packages.map(({ dir }) => dir))
-  const links = new Map()
-  for (const path of paths) {
-    const link = linkOf(path)
-    if (link === undefined) continue
-    links.set(path, link.real)
-    if (link.pkg !== undefined && !dirs.has(link.pkg.dir)) {
-      dirs.add(link.pkg.dir)
-      packages.push(link.pkg)
-    }
-  }
-  return { paths, packages, links }
 }
 
 class Policy {
@@ -195,11 +174,12 @@ class Policy {
   // refused if a disallowing rule matches either, allowed only if an allowing rule matches both.
   assert({ paths, packages, links = new Map() }, hint = '') {
     const problems = []
+    const deps = onePerDir(packages)
     for (const [key, patterns] of this.#rules) {
       const allowing = ALLOWING.has(key)
       const isPath = PATH_KEYS.has(key)
       const offenders = []
-      for (const item of isPath ? paths : key === EXCLUDE ? [...packages, ...unrecorded(paths, packages, links)] : packages) {
+      for (const item of isPath ? paths : key === EXCLUDE ? onePerDir([...deps, ...installedIn(paths, links)]) : deps) {
         const names = isPath ? [item, links.get(item)] : [item.name, installedName(item.dir)]
         const matches = names.filter((name) => name !== undefined).map((name) => patterns.find(({ test }) => test(name)))
         const match = matches.find((found) => found !== undefined)
@@ -216,13 +196,26 @@ class Policy {
     if (problems.length > 0) throw new Error(`${this.label}: ${problems.join('; ')}${hint}`)
   }
 
-  assertArtifact(artifact, { hint, links }) {
-    this.assert(artifactContents(artifact, links), hint)
+  // A node_modules-scope artifact carries node_modules alone; a link into a dependency counts as that dependency.
+  assertArtifact({ modules, formats, config }, { hint, links: linkOf }) {
+    const scope = config?.scope ?? 'full'
+    const inScope = (path) => scope === 'full' || hasNodeModulesSegment(path)
+    const paths = moduleFileKeys(modules, { scope })
+    for (const file of formats?.keys() ?? []) if (inScope(file)) paths.add(file)
+    const isPackage = ([dir, info]) => Object.keys(info.files).length > 0 && inScope(dir) && dependencyEcosystem(dir, info.ecosystem) !== undefined
+    const packages = [...modules].filter(isPackage).map(([dir, { name, version }]) => ({ dir, name, version: version ?? undefined }))
+    const links = new Map()
+    for (const path of paths) {
+      const link = linkOf(path)
+      if (link === undefined) continue
+      links.set(path, link.real)
+      if (link.pkg !== undefined) packages.push(link.pkg)
+    }
+    this.assert({ paths, packages, links }, hint)
   }
 
   assertPath(path, pkg, link) {
-    const packages = pkg === undefined ? [] : [pkg]
-    if (link?.pkg !== undefined && link.pkg.dir !== pkg?.dir) packages.push(link.pkg)
+    const packages = [pkg, link?.pkg].filter((found) => found !== undefined)
     this.assert({ paths: [path], packages, links: link === undefined ? new Map() : new Map([[path, link.real]]) })
   }
 }
@@ -250,10 +243,7 @@ export function moduleExcluder(policies, root, host = diskHost) {
     const rel = real && fromRoot(real)
     return rel && dirOf(`${rel}/package.json`)
   })
-  const nameOf = memoized((dir) => {
-    const name = readPackageJson(root, `${dir}/package.json`, { host })?.name
-    return typeof name === 'string' && name !== '' ? name : undefined
-  })
+  const nameOf = memoized((dir) => manifestName(readPackageJson(root, `${dir}/package.json`, { host })))
   return (absolute, { installed = false } = {}) => {
     const real = installed ? undefined : realpathOf(host, absolute)
     const dir = real === undefined ? realDir(dirOf(fromRoot(absolute))) : dirOf(fromRoot(real))

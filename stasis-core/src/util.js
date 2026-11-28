@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { ARCHIVE_ALGORITHM, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, STYLESHEET_FORMATS, isLockfileName } from './artifact-util.js'
+import { ARCHIVE_ALGORITHM, CONFIG_FILE, EXECUTE_BITS, NODE_FORMATS, STYLESHEET_FORMATS, isLockfileName, isNameOf } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 export * from './artifact-util.js'
@@ -20,10 +20,7 @@ export const installedAccounts = (modules, root, options) => (modules.size > 0 &
 // (`globalThis[ARCHIVED](bytes, path)`, its bundle).
 export const TGZ_FILE = 'stasis.tgz'
 export const ARCHIVED = Symbol.for('@exodus/stasis-core/archived')
-export const isTgzName = (path) => {
-  const base = basename(path)
-  return base === TGZ_FILE || base.endsWith(`.${TGZ_FILE}`)
-}
+export const isTgzName = (path) => isNameOf(basename(path), TGZ_FILE)
 export const misnamedTgz = (path) => `${path} is a tgz, which is read as ${TGZ_FILE} or <name>.${TGZ_FILE} alone`
 // gzip's magic. No stasis bundle starts so: brotli's first byte would ask a 16 MiB window, where stasis writes zlib's 4 MiB.
 export const isGzip = (bytes) => bytes[0] === 0x1f && bytes[1] === 0x8b
