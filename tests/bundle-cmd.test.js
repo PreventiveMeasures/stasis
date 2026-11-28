@@ -6677,12 +6677,12 @@ cliTest('CLI: bundle --lockfile-only writes the lockfile alone, the one --lockfi
   t.assert.equal(readFileSync(join(tmp, 'locks', 'only.lock.json'), 'utf8'), readFileSync(join(tmp, 'beside.lock.json'), 'utf8'))
 }))
 
-cliTest('CLI: bundle --lockfile-only takes --lockfile, and no --output, --add or --brotli-quality, writing nothing', withTmp(async (t, tmp) => {
+cliTest('CLI: bundle --lockfile-only takes no empty --lockfile, --output, --add or --brotli-quality, writing nothing', withTmp(async (t, tmp) => {
   writeTree(tmp, { 'package.json': { name: 'lockfile-only', version: '1.0.0', type: 'module' }, 'a.js': 'export default 1\n' })
   const output = "--lockfile-only can't be combined with --output (no bundle is written)"
   const cases = [
-    [['--lockfile-only'], '--lockfile-only requires --lockfile=path'],
-    [['--lockfile=', '--lockfile-only'], '--lockfile-only requires --lockfile=path'],
+    [['--lockfile=', '--lockfile-only'], "--lockfile can't be empty: give a path, or leave it out for the default name"],
+    [['--lockfile-only', '--output=a.br'], output],
     [['--lockfile=l.json', '--lockfile-only', '--output=a.br'], output],
     [['--lockfile=l.json', '--lockfile-only', '--output=-'], output],
     [['--lockfile=l.json', '--lockfile-only', '--add'], "--lockfile-only can't be combined with --add (no bundle is merged into)"],
@@ -6690,13 +6690,14 @@ cliTest('CLI: bundle --lockfile-only takes --lockfile, and no --output, --add or
   ]
   const results = await Promise.all(cases.map(([args]) => runCli(['bundle', ...args, 'a.js'], { cwd: tmp })))
   t.assert.deepStrictEqual(results.map((r) => [r.status, r.stdout, r.stderr]), cases.map(([, error]) => [1, '', `Error: ${error}\nRun 'stasis --help' for usage.\n`]))
-  for (const file of ['l.json', 'a.br', 'stasis.code.br']) t.assert.ok(!existsSync(join(tmp, file)), `${file} must not be written`)
+  for (const file of ['l.json', 'a.br', 'stasis.code.br', 'stasis.lock.json']) t.assert.ok(!existsSync(join(tmp, file)), `${file} must not be written`)
 }))
 
-test('bundleCommand lockfileOnly takes a lockfile, and no output, add or brotliQuality, refused before anything is built', async (t) => {
+test('bundleCommand lockfileOnly takes no empty lockfile, output, add or brotliQuality, refused before anything is built', async (t) => {
   // An entry that isn't there: refused before it is looked for.
   const bundle = (options) => bundleCommand({ cwd: join(fixtures, 'basic'), entries: ['missing.js'], lockfileOnly: true, ...options })
-  await t.assert.rejects(bundle({}), { message: 'bundleCommand: --lockfile-only requires --lockfile=path' })
+  await t.assert.rejects(bundle({ lockfile: '' }), { message: "bundleCommand: --lockfile can't be empty: give a path, or leave it out for the default name" })
+  await t.assert.rejects(bundle({ output: 'a.br' }), { message: "bundleCommand: --lockfile-only can't be combined with --output (no bundle is written)" })
   await t.assert.rejects(bundle({ lockfile: 'l.json', output: 'a.br' }), { message: "bundleCommand: --lockfile-only can't be combined with --output (no bundle is written)" })
   await t.assert.rejects(bundle({ lockfile: 'l.json', add: true }), { message: "bundleCommand: --lockfile-only can't be combined with --add (no bundle is merged into)" })
   await t.assert.rejects(bundle({ lockfile: 'l.json', brotliQuality: 3 }), { message: "bundleCommand: --lockfile-only can't be combined with --brotli-quality (no bundle is compressed)" })
@@ -6831,8 +6832,9 @@ test('bundleCommand --add refuses a bundle and lockfile rooted above the root th
   await t.assert.rejects(captureWarningsAsync(() => bundleCommand({ ...options, add: true })), { message: otherRootRefusal('the bundle at out.br') })
   t.assert.deepStrictEqual(read(), written, 'nothing is written on refusal')
 
-  // Rebuilt without --add, both are rooted at `top/npm`, and --add adds to them there.
-  await captureWarningsAsync(() => bundleCommand(options))
+  // Rebuilt without --add (in replace: the lockfile there, frozen by default, is of the other root), both are rooted
+  // at `top/npm`, and --add adds to them there.
+  await captureWarningsAsync(() => bundleCommand({ ...options, env: { ...process.env, EXODUS_STASIS_LOCK: 'replace' } }))
   await captureWarningsAsync(() => bundleCommand({ ...options, entries: ['other.js'], add: true }))
   for (const artifact of parsed()) {
     t.assert.deepStrictEqual([...artifact.entries].toSorted(), ['index.js', 'other.js'])
