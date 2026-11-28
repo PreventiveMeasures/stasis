@@ -1,10 +1,10 @@
 # `stasis build`
 
 `stasis build` runs [esbuild](https://esbuild.github.io/) over a stasis
-artifact's entry point to produce a conventional, runnable JavaScript bundle,
-following the artifact's **recorded import graph exactly** instead of esbuild's
-own resolution: every import resolves to the edge stasis attested and every
-module's bytes come from the artifact, not disk.
+artifact's entry point to produce a runnable JavaScript bundle. It follows the
+artifact's **recorded import graph exactly**, not esbuild's resolution: every
+import resolves to the attested edge and every module's bytes come from the
+artifact, not disk.
 
 ```sh
 stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json|name.stasis.tgz) [entry]
@@ -19,39 +19,37 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--format` | esbuild output format `esm`\|`cjs`\|`iife`. Default `esm` (`iife` under `--platform=hermes`). |
 | `--platform` | Target platform `node`\|`browser`\|`neutral` (esbuild's), or `hermes`. Default `node`. See [Hermes](#hermes---platformhermes). |
 | `--babel` | Transform every code file with the project's own `babel.config.*` before bundling. See [`--babel`](#the-projects-babel-config---babel). |
-| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as `stasis bundle --flow` does: one marked `@flow`, and any other esbuild can't parse. On under `--metro` (not with `--babel`). See [Flow](#flow). |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files marked `@flow` or that esbuild can't parse. On under `--metro` (not with `--babel`). See [Flow](#flow). |
 | `--minify`, `--sourcemap` | Forwarded to esbuild. |
-| `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); value forwarded verbatim, must be valid JS as esbuild's CLI expects (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). Under `--metro`, `__DEV__` and `process.env.NODE_ENV` have Metro's release values unless given. |
+| `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); the value is passed verbatim and must be valid JS (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). Under `--metro`, `__DEV__` and `process.env.NODE_ENV` default to Metro's release values. |
 | `--external=PATTERN` (repeatable) | esbuild [external](https://esbuild.github.io/api/#external). See [Externals](#externals). |
 | `--loader=.EXT:NAME` (repeatable) | esbuild [loader](https://esbuild.github.io/api/#loader) override for an extension, e.g. `--loader=.js:jsx`, `--loader=.png:dataurl`. See [JSX in `.js`/`.ts`](#jsx-in-jsts). |
-| `--metro=PLATFORM` | Build a `--metro` bundle for one platform as Metro's release build builds it: its per-platform edges, each asset as Metro's asset module, JSX in `.js`, Flow stripped, and Metro's release defines. See [Metro](#metro---metroplatform). |
+| `--metro=PLATFORM` | Build a `--metro` bundle for one platform as Metro's release build does: that platform's edges, assets as Metro asset modules, JSX in `.js`, Flow stripped, Metro's release defines. See [Metro](#metro---metroplatform). |
 | `--assets-dest=DIR` | With `--metro`: copy the assets' files to `DIR` as `react-native bundle --assets-dest` does. |
 
-Where the artifact carries a `stasis.config.json` naming the entry, its options
-for it set some of these flags too: see [Entry options](#entry-options-stasisconfigjson).
+If the artifact's `stasis.config.json` names the entry, its options set some of
+these flags: see [Entry options](#entry-options-stasisconfigjson).
 
 `--format`/`--platform`/`--minify`/`--sourcemap`/`--define` only steer esbuild's
 output; the import graph is fixed by the artifact. `--platform=hermes` and
-`--babel` additionally transform each file's *content* on its way into the
-bundle — the graph they follow is still exactly the recorded one. `--metro`
-picks one platform's targets of the recorded per-platform edges, and gives each
-asset the one edge Metro adds to it: to the asset registry the artifact carries.
+`--babel` also transform each file's *content*, still following the recorded
+graph. `--metro` picks one platform's targets of the per-platform edges, and
+adds one edge to each asset: to the asset registry the artifact carries.
 
 ## Entry options (`stasis.config.json`)
 
 A bundle carries the project's `stasis.config.json` at its root when the config
 sets [`extra`](file-formats.md#stasisconfigjson) (`"extra": []` adds the config
 alone). If the config's [`entries`](bundle.md#entry-options-stasisconfigjson)
-names the entry being built, `stasis build` reads that entry's options from it.
-It reads them itself, apart from how `stasis bundle` uses them, and takes only
-the ones that say how the code is built:
+names the entry being built, `stasis build` takes the entry's options that say
+how the code is built:
 
 | Option | Becomes |
 | - | - |
 | `"jsx": true` | `--loader=.js:jsx` |
-| `"flow": true` | `--flow` (not with `--babel`, whose config compiles Flow itself) |
-| `"define": ["K=V", ...]` | `--define=K=V` for each, under the `--define`s given, which take precedence per key |
-| `"metro": true` | `--metro=PLATFORM` for its one `platforms` entry, and all `--metro` turns on with it. With several, `--metro` is required, one of them |
+| `"flow": true` | `--flow`, unless `--babel` |
+| `"define": ["K=V", ...]` | `--define=K=V` for each |
+| `"metro": true` | `--metro=PLATFORM` for its one `platforms` entry, with all `--metro` implies. With several, `--metro` is required, one of them |
 
 ```json
 { "extra": [], "entries": { "index.js": { "metro": true, "platforms": ["ios", "android"], "define": ["process.env.API=\"https://api.example.com\""] } } }
@@ -61,28 +59,26 @@ the ones that say how the code is built:
 stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # --define=process.env.API=... from the config
 ```
 
-- The config's own `define` (see [Defines](bundle.md#defines---define)) is
-  read as every entry's `define`, whether its `entries` names the entry or not.
-  A config that sets it beside an entry's own is refused.
-- A flag given always wins: an explicit `--loader=.js:...` takes precedence over
-  `jsx`, and a `--define` over the config's value for its key.
-- An explicit `--metro` must be one of the config's `platforms`, since those are
-  the platforms the bundle was made for.
+- The config's top-level `define` (see [Defines](bundle.md#defines---define))
+  applies to every entry, named in `entries` or not. A config that sets it
+  beside an entry's own is refused.
+- A flag given always wins: an explicit `--loader=.js:...` over `jsx`, and a
+  `--define` over the config's value for its key.
+- An explicit `--metro` must be one of the config's `platforms`.
 - `stasis build` prints the flags it took from the config.
-- The config's other options (`resources`, `conditions`, `babel` and so on) say
-  how the bundle was made and are not read.
-- An entry is named as `stasis bundle` names it: by its path from the config's
-  directory, which is the artifact's root, or by a
-  [glob pattern](bundle.md#entry-patterns) matching that path, as Node's
-  `path.matchesGlob` matches it, none in a `node_modules`. A key that is its
-  path is taken before a pattern, and a pattern `stasis bundle` refuses for a
-  `.` or `..` in it is refused here too.
+- The config's other options (`resources`, `conditions`, `babel` and so on) are
+  not read.
+- An entry is named as in `stasis bundle`: by its path from the config's
+  directory (the artifact's root), or by a
+  [glob pattern](bundle.md#entry-patterns) matching that path by Node's
+  `path.matchesGlob`, never an entry in a `node_modules`. An exact path key is
+  taken before a pattern, and a pattern with a `.` or `..` segment is refused.
 
 ## Externals
 
-`--external=PATTERN` only affects specifiers the artifact does **not** record —
-handed back to esbuild as misses. Re-declare capture-time externals with it so
-esbuild leaves them as runtime imports; it can't un-inline an attested edge.
+`--external=PATTERN` only affects specifiers the artifact does **not** record,
+which are handed back to esbuild. Re-declare capture-time externals with it to
+keep them as runtime imports; it can't un-inline an attested edge.
 
 ```sh
 # the captured bundle imported a native module that was external at capture; keep it external
@@ -96,24 +92,22 @@ private members, `let`/`const`, arrow functions, async generators or `for await`
 `--platform=hermes` downlevels every code file before the final bundle:
 
 1. **esbuild pre-transform** — lowers class fields / private members / static
-   blocks / `using` into plain class syntax (stripping TypeScript and compiling
-   JSX on the way), the shape Babel's class transform can consume.
+   blocks / `using` into plain class syntax, stripping TypeScript and compiling
+   JSX.
 2. **Babel worker pool** — applies `@babel/plugin-transform-block-scoping` and
-   `@babel/plugin-transform-classes`, the two lowerings esbuild refuses to do.
+   `@babel/plugin-transform-classes`.
 3. **Final esbuild bundle** — lowers arrows, async generators and `for await`,
-   keeps its own helpers off `let`/`const`, and fails closed if a `class` or
-   `let`/`const` somehow survived.
+   and fails if a `class` or `let`/`const` survived.
 
-`--format` defaults to `iife` and `esm` is rejected (Hermes has no
-`import`/`export`); `cjs` stays available for post-processing pipelines. esbuild
-itself runs as platform `neutral`.
+`--format` defaults to `iife`; `esm` is rejected, `cjs` allowed. esbuild runs
+as platform `neutral`.
 
 ```sh
 stasis build --platform=hermes --output=out.js app.code.br   # feed out.js to hermesc
 ```
 
 Babel is resolved **from the project** (the directory you run `stasis build`
-in), never from stasis's own dependencies — add the deps to the project:
+in), never from stasis's own dependencies:
 
 ```sh
 npm i -D @babel/core @babel/plugin-transform-block-scoping @babel/plugin-transform-classes
@@ -122,15 +116,15 @@ npm i -D @babel/core @babel/plugin-transform-block-scoping @babel/plugin-transfo
 ## Metro (`--metro=PLATFORM`)
 
 A [`stasis bundle --metro --platforms=ios,android`](bundle.md#metro---metro) bundle
-is for every platform it names at once; Metro builds one platform at a time.
-`--metro=PLATFORM` builds the bundle for `PLATFORM` the way Metro does:
+covers every platform it names. `--metro=PLATFORM` builds it for one, as Metro
+does:
 
 - **Per-platform edges.** An import that resolves differently per platform
   (`./where` to `where.ios.js` or `where.android.js`) takes `PLATFORM`'s
-  target. If an edge records no target for `PLATFORM`, the build fails: the
-  bundle wasn't made for it. Without `--metro`, such an edge fails the build.
+  target; an edge with no target for `PLATFORM` fails the build. Without
+  `--metro`, any such edge fails the build.
 - **Assets.** Each asset an import reaches (`require('./img/logo.png')`, a
-  resource carried with `--resources`) becomes the module Metro builds of it:
+  resource carried with `--resources`) becomes Metro's asset module:
 
   ```js
   module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({
@@ -139,36 +133,31 @@ is for every platform it names at once; Metro builds one platform at a time.
   ```
 
   so `require()` returns the asset's registry id, as `<Image source>` expects.
-  The descriptor comes from every file of the asset that the bundle carries
-  in its directory, the same files Metro reads for `PLATFORM`: each scale
-  (`logo@2x.png`, `logo@3x.png`), and `PLATFORM`'s own files (`logo.ios.png`)
-  where it has any. `scales` lists them in order, `hash` is the md5 of their
-  bytes, and `width`/`height` are the first file's dimensions divided by its
-  scale (images only). `httpServerLocation` is the asset's directory, relative
-  to the artifact's root, under `/assets`. This is Metro 0.87's
-  `getAssetData`, image-size parsing included, as
+  The descriptor is built from the asset's files the bundle carries in its
+  directory, those Metro reads for `PLATFORM`: each scale (`logo@2x.png`,
+  `logo@3x.png`), and `PLATFORM`'s own files (`logo.ios.png`) if any. `scales`
+  lists them in order, `hash` is the md5 of their bytes, and `width`/`height`
+  are the first file's dimensions divided by its scale (images only).
+  `httpServerLocation` is `/assets` plus the asset's directory relative to the
+  artifact's root. This is Metro 0.87's `getAssetData`, image-size parsing
+  included, as
   [`@preventive/rn`](https://github.com/PreventiveMeasures/libraries/tree/main/rn)
-  builds it, computed from the bytes the artifact carries.
-- **As a release build.** It builds as `react-native bundle --dev false`
-  does, and as `stasis bundle --metro` reads the files: JSX in `.js` parses
-  (`--loader=.js:jsx`, unless a `--loader` names `.js`), Flow types are
-  stripped (`--flow`, not with `--babel`, whose config compiles Flow itself),
-  and `__DEV__` is defined as `false` and
-  `process.env.NODE_ENV` as `"production"`, the values Metro's release build
-  gives them. Outside Metro's prelude `__DEV__` is no global at all, and React
-  Native reads it everywhere. A `--define`, or the entry's `define`, for either
-  name gives it that value instead, the other keeping its default
+  builds it, run on the artifact's bytes.
+- **As a release build.** It builds as `react-native bundle --dev false` does:
+  JSX in `.js` parses (`--loader=.js:jsx`, unless a `--loader` names `.js`),
+  Flow types are stripped (`--flow`, unless `--babel`), `__DEV__` is defined as
+  `false` and `process.env.NODE_ENV` as `"production"`. A `--define`, or the
+  entry's `define`, for either name overrides that one only
   (`--define=__DEV__=true`).
 - **The asset registry.** `react-native/Libraries/Image/AssetRegistry` (React
-  Native's `assetRegistryPath`) resolves to the copy the bundle carries.
-  `stasis bundle --metro` carries one for each asset but records no edge to
-  it, because Metro adds it after the source. The build takes the nearest
-  `node_modules/react-native` above the asset, otherwise the only copy the
-  bundle carries (pnpm's). It fails if the bundle carries none (bundle from a
-  project with `react-native` installed).
+  Native's `assetRegistryPath`) resolves to a copy the bundle carries
+  (`stasis bundle --metro` carries one but records no edge to it): the nearest
+  `node_modules/react-native` above the asset, else the bundle's only copy
+  (pnpm's). The build fails if the bundle carries none (bundle from a project
+  with `react-native` installed).
 
-`--assets-dest=DIR` copies each asset's files out the way `react-native bundle
---assets-dest` (React Native 0.88's) does for `PLATFORM`: `android` uses
+`--assets-dest=DIR` copies each asset's files as React Native 0.88's
+`react-native bundle --assets-dest` does for `PLATFORM`: `android` uses
 Android's `res/` layout (`drawable-mdpi/img_logo.png` … `drawable-xxhdpi/`, a
 scale with no density of its own as `drawable-<dpi>dpi/`, `raw/` for
 non-drawable types, plus `raw/keep.xml`). Any other platform uses iOS's layout
@@ -181,46 +170,42 @@ stasis build --platform=hermes --metro=ios --assets-dest=ios/build --output=ios/
 stasis build --platform=hermes --metro=android --assets-dest=android/app/src/main/res --output=android/app/src/main/assets/index.android.js stasis.code.br
 ```
 
-`--output` names a file only when it ends in `.js`/`.cjs`/`.mjs` (`main.jsbundle`
-would be a directory), so compile the `.js` into the bundle the app loads with
-hermesc, e.g. `hermesc -emit-binary -out ios/build/main.jsbundle ios/build/main.js`.
+`--output` names a file only when it ends in `.js`/`.cjs`/`.mjs`
+(`main.jsbundle` would be a directory), so compile the `.js` with hermesc, e.g.
+`hermesc -emit-binary -out ios/build/main.jsbundle ios/build/main.js`.
 
 A `--loader` naming an asset's extension takes precedence over the asset
-module. A project's own Metro `assetRegistryPath`, `transformer.publicPath`
-and `transformer.assetPlugins` are not applied, because they live in its Metro
-config, which is code. iOS asset catalogs (`--asset-catalog-dest`) are not
-written. A bundle records no list of the platforms it was made for, so an
-asset or edge that has no per-platform variant can't reveal that a bundle
-made only for `ios` is being built for `android`.
+module. A project's Metro config `assetRegistryPath`, `transformer.publicPath`
+and `transformer.assetPlugins` are not applied. iOS asset catalogs
+(`--asset-catalog-dest`) are not written. A bundle doesn't record the platforms
+it was made for, so building an `ios`-only bundle for `android` goes unnoticed
+wherever no asset or edge has a per-platform variant.
 
 ## The project's Babel config (`--babel`)
 
 `--babel` runs every code file through the project's own
-`babel.config.(js|cjs|mjs|json)` — resolved from the project directory, plugins
-and presets included — **instead of** the built-in pipeline, with no esbuild
-pre-transform: Babel sees each file's attested bytes verbatim, exactly as the
-project's own toolchain (e.g. Metro) would hand them over. The config's output
-must be plain JS that esbuild can parse (a config that leaves TS/JSX in place
-fails the build).
+`babel.config.(js|cjs|mjs|json)` (resolved from the project directory, plugins
+and presets included) **instead of** the built-in pipeline: Babel gets each
+file's attested bytes verbatim. Its output must be plain JS that esbuild can
+parse; a config that leaves TS/JSX in place fails the build.
 
-Combined with `--platform=hermes`, the project config **replaces** steps 1–2 of
-the built-in downlevel while the final bundle's Hermes feature checks still
-apply — so a config that doesn't lower classes or `let`/`const` fails closed
-rather than shipping a bundle Hermes can't parse.
+With `--platform=hermes`, the config **replaces** steps 1–2 of the downlevel;
+step 3's Hermes checks still apply, so a config that doesn't lower classes or
+`let`/`const` fails the build.
 
 ```sh
 stasis build --babel --platform=hermes --output=out.js app.code.br
 ```
 
 `--babel` needs `@babel/core` installed in the project (a dev dependency is
-fine); a missing config or a missing install fails with instructions.
+fine); a missing config or install fails with instructions.
 
 ## esbuild is an optional peer dependency
 
-esbuild is not a hard dependency of `@exodus/stasis`. Install it where stasis can find it:
+esbuild is not a hard dependency of `@exodus/stasis`. Install it:
 
 ```sh
-npm i -D esbuild      # local (a peer dep, or any project copy)
+npm i -D esbuild      # locally (a peer dep, or any project copy)
 npm i -g esbuild      # or globally
 ```
 
@@ -228,16 +213,14 @@ npm i -g esbuild      # or globally
 
 ## Entry point
 
-The entry point is the optional second positional argument:
-
 | Artifact records | Entry argument |
 | - | - |
 | **one** entry | Optional; that entry is used. |
 | **several** entries | Required; omitting it (or naming an unrecorded entry) fails with the list of available entries. |
 
-The selector matches the artifact's recorded, project-relative entry paths (e.g.
-`src/index.js`); a leading `./` is tolerated and a cwd-relative path is normalized
-into the project root before matching.
+The entry matches the artifact's recorded project-relative entry paths (e.g.
+`src/index.js`); a leading `./` is allowed, and a cwd-relative path is made
+relative to the project root before matching.
 
 ```sh
 stasis build app.stasis.code.br src/worker.js   # build the src/worker.js entry
@@ -253,69 +236,60 @@ stasis build app.stasis.code.br src/worker.js   # build the src/worker.js entry
 
 A specifier the artifact doesn't record is handed back to esbuild, which
 externalizes it. Where disk bytes differ from the artifact, a bundle uses its own
-bytes and a lockfile fails the build closed.
+bytes and a lockfile fails the build.
 
-A [`.stasis.tgz`](file-formats.md#stasistgz) is built as the bundle of its
-files: like a bundle it needs nothing on disk, and like a lockfile each file is
-held to its `sha512`, as the tgz is read, before the build starts.
+A [`.stasis.tgz`](file-formats.md#stasistgz) builds like a bundle, needing
+nothing on disk; each of its files is checked against its `sha512` as the tgz
+is read, before the build starts.
 
 ## Scope and language
 
-`stasis build` requires a **full-scope** artifact — a `node_modules`-scope one
-omits the entry and the workspace's own code.
+`stasis build` requires a **full-scope** artifact; a `node_modules`-scope one
+lacks the entry and the workspace's own code.
 
-Only JavaScript/TypeScript is supported, with the stylesheets it imports
-(`css`, esbuild's `css` loader, their `url()`s each by the loader of its
-extension: see [Stylesheets](bundle.md#stylesheets-css)). The entry being built
-may be `.js`/`.cjs`/`.mjs`/`.ts`/`.cts`/`.mts`/`.jsx`/`.tsx`, loader chosen
-from the extension. JSX compiles to esbuild's default classic runtime
+Only JavaScript/TypeScript is supported, plus the stylesheets it imports
+(`css`, by esbuild's `css` loader, each `url()` by its extension's loader: see
+[Stylesheets](bundle.md#stylesheets-css)). The entry may be
+`.js`/`.cjs`/`.mjs`/`.ts`/`.cts`/`.mts`/`.jsx`/`.tsx`, its loader chosen by
+extension. JSX compiles to esbuild's default classic runtime
 (`React.createElement`), overridable per file with a `/** @jsx ... */` pragma;
 esbuild's `jsx`/`jsxFactory` options are not exposed and `--platform` does not
 affect the JSX runtime. Solidity/PHP/Bash/Rust entries are rejected.
 
 ### JSX in `.js`/`.ts`
 
-JSX is parsed automatically only in `.jsx`/`.tsx` files. JSX in plain `.js` files
-(the React Native convention) otherwise fails with *"The JSX syntax extension is
-not currently enabled"*. Opt in per extension with `--loader` (any esbuild
-loader, e.g. `--loader=.mjs:jsx`):
+JSX is parsed automatically only in `.jsx`/`.tsx` files; JSX in a `.js` file
+fails with *"The JSX syntax extension is not currently enabled"*. Opt in per
+extension with `--loader` (e.g. `--loader=.mjs:jsx`):
 
 ```sh
 stasis build --output=out.js --loader=.js:jsx app.code.br   # parse JSX in .js
 ```
 
-The static `stasis bundle` scanner has the same blind spot for the same reason:
-JSX in a `.js`/`.cjs`/`.mjs` file is an *"Unexpected token"* parse error, which
-fails the bundle (`JS bundle would be broken at load time`), as every parse error
-does: a file the scanner can't parse has an import graph it can't record. Pass `--jsx` (its
-counterpart to `build`'s `--loader`) so the scanner parses past the JSX to the
-import graph and stores the JSX source verbatim for `stasis build --loader=.js:jsx`
-to transform later:
+`stasis bundle` fails the same way: JSX in a `.js`/`.cjs`/`.mjs` file is an
+*"Unexpected token"* parse error, which fails the bundle (`JS bundle would be
+broken at load time`). Pass it `--jsx` to parse past the JSX and store the
+source verbatim for `stasis build --loader=.js:jsx` to transform:
 
 ```sh
 stasis bundle --jsx index.js                          # JSX-in-.js
 stasis bundle --metro --platforms=ios,android index.js  # React Native: --metro turns --jsx on
 ```
 
-`--jsx` is off by default and only covers the `.js`/`.cjs`/`.mjs` family, whose
-extension can't tell whether a file holds JSX; the `.ts` family is left JSX-free
-because its `<T>` generics collide with JSX (put JSX-in-TS in a `.tsx` file, as
-TypeScript itself requires). `.jsx`/`.tsx` files need no flag: like esbuild, the
-scanner parses them as JSX/TSX by extension, so a `.jsx`/`.tsx` entry — or a
-dependency reached through one, e.g. a package whose React Native entry is
-`src/index.tsx` — is scanned and bundled (its JSX source stored verbatim for
-`stasis build` to transform), and the `--metro`/`--mainFields` resolver probes
-`.jsx`/`.tsx` for extensionless imports, in Metro's default order (`js`, `jsx`,
-`json`, `ts`, `tsx`).
+`--jsx` is off by default and only covers `.js`/`.cjs`/`.mjs`; the `.ts` family
+is never parsed as JSX (put JSX-in-TS in a `.tsx` file). `.jsx`/`.tsx` files
+need no flag: the scanner parses them as JSX/TSX by extension, as an entry or as
+a dependency (e.g. a package whose React Native entry is `src/index.tsx`), and
+stores their source verbatim for `stasis build` to transform. The
+`--metro`/`--mainFields` resolver probes `.jsx`/`.tsx` for extensionless
+imports, in Metro's default order (`js`, `jsx`, `json`, `ts`, `tsx`).
 
 ### Flow
 
-esbuild doesn't parse Flow. `--flow` strips Flow type syntax from
-`.js`/`.cjs`/`.mjs`/`.jsx` files as Metro's Babel (React Native's preset)
-strips it, with the same `flow-remove-types` that `stasis bundle --flow` uses
-(stasis's own dependency, never the project's), then hands the result to
-esbuild, or to the `--platform=hermes` downlevel. `--metro` turns it on, as
-`stasis bundle --metro` does:
+esbuild doesn't parse Flow. `--flow` strips Flow types from
+`.js`/`.cjs`/`.mjs`/`.jsx` files as React Native's Babel preset does, using
+stasis's own `flow-remove-types` (not the project's), before esbuild or the
+`--platform=hermes` downlevel. `--metro` turns it on:
 
 ```sh
 stasis bundle --flow index.js
@@ -323,66 +297,55 @@ stasis build --flow --output=main.js stasis.code.br
 stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # --flow too
 ```
 
-- A file marked `@flow`, anywhere in it, is Flow: it is stripped whether or not
-  esbuild parses it as it is, and syntax both Flow and JS can read is Flow's
-  (`id<number>(5)` calls `id`, where esbuild would read comparisons), as the
-  preset parses such a file with hermes-parser.
-- Any other file is stripped only where esbuild can't parse it (Flow types
-  without the pragma), and syntax both can read is JS's (`a < b > (c)`
-  compares), as Babel's own Flow parser reads a file not marked. One esbuild
-  parses is left as written.
-- An import listing types alone (`import { type A } from`) is dropped whole, as
-  Babel's Flow transform drops it. A `--metro` bundle records no edge for it.
-- Stripping removes types only. Flow syntax that compiles to code (`component`
-  and `hook` declarations, `enum`s, `match`) stays, so such a file fails the
-  build, as it fails `stasis bundle --flow`, unless it is React Native's own,
-  which is lowered first.
+- A file marked `@flow` anywhere is always stripped, and syntax both Flow and JS
+  can read is read as Flow (`id<number>(5)` calls `id`).
+- Any other file is stripped only if esbuild can't parse it, and syntax both can
+  read is read as JS (`a < b > (c)` compares).
+- An import of types alone (`import { type A } from`) is dropped whole; a
+  `--metro` bundle records no edge for it.
+- Stripping removes types only: a file with Flow syntax that compiles to code
+  (`component` and `hook` declarations, `enum`s, `match`) fails the build, as
+  it fails `stasis bundle --flow`, unless it is React Native's own, which is
+  lowered first.
 
 [`--babel`](#the-projects-babel-config---babel) compiles all of Flow instead:
-React Native's preset strips the types and compiles `component`, `hook` and
-`enum` too, as Metro does. The project's config gets each file's bytes as they
-are, so `--flow` and `--babel` don't combine.
+React Native's preset also compiles `component`, `hook` and `enum`. `--flow`
+and `--babel` don't combine.
 
 ### Non-code assets (`--resources`)
 
-Not every import graph is loadable purely in JS: a React Native entry may
-`import logo from './logo.png'`, and Metro consumes such assets from the bundle.
-By default a reached non-code file is fatal — it *"a source bundle can't carry"*.
-Pass `--resources=<ext-or-name>[,…]` to carry the allowlisted files as resources
+A React Native entry may `import logo from './logo.png'`. By default a reached
+non-code file is fatal (*"a source bundle can't carry"*). Pass
+`--resources=<ext-or-name>[,…]` to carry the allowlisted files as resources
 instead, with their import edges recorded:
 
 ```sh
 stasis bundle --metro --platforms=ios,android --resources=png,svg,ttf index.js
 ```
 
-Each carried file is stored by content — `resource` for UTF-8 (e.g. `.svg`),
-`resource:base64` for binary (e.g. `.png`) — the same formats the `--metro` native
-capture and the esbuild/webpack plugins use. The allowlist entries are bare
-extensions (`png`) or extensionless filenames (`LICENSE`); code extensions are
-rejected (they're always tracked as code). Only files *reached through the import
-graph* are carried — an allowlisted extension that nothing imports adds nothing.
-`--resources` is JS-only and pairs with plain, `--mainFields`, and `--metro` alike.
+Each file is stored as `resource` if UTF-8 (e.g. `.svg`), else
+`resource:base64` (e.g. `.png`). Allowlist entries are bare extensions (`png`)
+or extensionless filenames (`LICENSE`); code extensions are rejected. Only files
+*reached through the import graph* are carried. `--resources` is JS-only and
+works with plain, `--mainFields` and `--metro` alike.
 
-A resource is carried, not built: `stasis build` (esbuild) needs either a matching
-`--loader` (e.g. `--loader=.png:dataurl`) to emit one, or
-[`--metro=PLATFORM`](#metro---metroplatform) to build it as Metro's asset module.
-An entry that imports an asset with neither fails at build time with esbuild's
-*No loader is configured for ".png" files*. The bundle or lockfile carries the
-bytes for attestation and for Metro regardless.
+To emit a resource, `stasis build` needs a matching `--loader` (e.g.
+`--loader=.png:dataurl`) or [`--metro=PLATFORM`](#metro---metroplatform), which
+builds it as Metro's asset module. With neither, an entry that imports one fails
+with esbuild's *No loader is configured for ".png" files*.
 
 ## Known limitation: CommonJS default-import interop
 
-When an ESM module default-imports a CommonJS dependency that marks itself
-`__esModule` (the Babel/TypeScript shape — `exports.__esModule = true;
-exports.default = …`), `import dep from 'cjs-pkg'` binds differently under the two
-interop conventions:
+When an ESM module default-imports a CommonJS dependency that sets `__esModule`
+(`exports.__esModule = true; exports.default = …`), `import dep from 'cjs-pkg'`
+binds differently:
 
 | | `dep` binds to | Reach the value via |
 | - | - | - |
 | **Node** / `stasis run` (ignores `__esModule`) | the whole `module.exports` | `dep.default` |
 | **esbuild** / `stasis build` (bundler convention) | `module.exports.default` directly | `dep` |
 
-Only the interop shim differs; the recorded graph is followed exactly. Named
-imports (`import { x } from …`) and CommonJS packages that don't set `__esModule`
-are unaffected. This matches the esbuild/webpack capture plugins, so the
-divergence is only against `stasis run` and a plain on-disk `esbuild` build.
+The recorded graph is still followed exactly. Named imports (`import { x } from
+…`) and CommonJS packages that don't set `__esModule` are unaffected. The
+esbuild/webpack capture plugins match `stasis build`, so the divergence is only
+against `stasis run` and a plain on-disk `esbuild` build.
