@@ -8,13 +8,12 @@ import {
   applyRemappings,
   buildSolidityTree,
   collectSolidityFilesFromDisk,
-  discoverSolidityConfig,
   expandSolidityEntries,
   extractSolImports,
   resolveSolImport,
 } from '../stasis/src/loaders/solidity.js'
 import { diskHost } from '@exodus/stasis-core/host'
-import { findRemappingsWithContext, foundryProject, foundryTomlRemappings, parseRemappingLines } from '../stasis/src/loaders/foundry.js'
+import { discoverSolidityConfig, findRemappingsWithContext, foundryProject, foundryTomlRemappings, parseRemappingLines } from '../stasis/src/loaders/foundry.js'
 import { readGitmodules, solidityOwnership } from '../stasis/src/loaders/solidity-ownership.js'
 import { captureWarnings, captureWarningsAsync } from './warnings.helper.js'
 
